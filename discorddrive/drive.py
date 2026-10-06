@@ -10,7 +10,7 @@ import threading
 
 from .backend import DiscordBackend, LocalBackend, is_encrypted_index
 from .cache import ChunkCache
-from .config import Config
+from .config import Config, launcher
 from .crypto import CryptoEngine, generate_key, parse_key
 from .discord_api import DiscordAPI
 from .fs import DiscordDriveFS
@@ -54,7 +54,7 @@ class DiscordDrive:
         else:
             if not self.cfg.is_configured():
                 raise ValueError(
-                    "DiscordDrive is not configured yet. Run 'discorddrive setup' or provide bot_token and channel_id."
+                    f"DiscordDrive is not configured yet. Run '{launcher()} setup' or provide bot_token and channel_id."
                 )
             self.api = DiscordAPI(self.cfg.bot_token)
             self.backend = DiscordBackend(self.api, self.cfg.channel_id)
@@ -123,13 +123,13 @@ class DiscordDrive:
         except Exception as e:
             raise RuntimeError(
                 f"No encryption key is configured and Discord could not be checked for existing data ({e}). "
-                "Run 'discorddrive setup' to configure a key."
+                f"Run '{launcher()} setup' to configure a key."
             ) from e
         if latest is not None and is_encrypted_index(latest):
             raise RuntimeError(
                 "This channel already contains an encrypted DiscordDrive, but no encryption key is configured. "
                 "Copy 'encryption_key' from the config of the machine that created it, or run "
-                "'discorddrive setup -p <passphrase>' with the same passphrase."
+                f"'{launcher()} setup -p <passphrase>' with the same passphrase."
             )
         self.cfg.encryption_key = generate_key().hex()
         self.cfg.save()
@@ -256,9 +256,9 @@ def _prepare_mount_dir(mp):
         unmount(mp, lazy=True)
         entries = os.listdir(mp)
     if os.path.ismount(mp):
-        raise RuntimeError(f"Something is already mounted on {mp}. Run 'discorddrive stop' first.")
+        raise RuntimeError(f"Something is already mounted on {mp}. Run '{launcher()} stop' first.")
     if entries:
         raise RuntimeError(
             f"Mount directory {mp} is not empty; mounting over it would hide those files. "
-            "Move them elsewhere or choose another mount point (discorddrive setup -m <dir>)."
+            f"Move them elsewhere or choose another mount point ({launcher()} setup -m <dir>)."
         )

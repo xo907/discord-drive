@@ -34,6 +34,11 @@ def default_data_dir() -> str:
 DEFAULT_CONFIG_PATH = os.path.join(default_config_dir(), "config.json")
 
 
+def launcher() -> str:
+    """How users run DiscordDrive commands on this system (for messages)."""
+    return "DiscordDrive.cmd" if sys.platform == "win32" else "./discorddrive.sh"
+
+
 def config_path() -> str:
     """The config file in use (DISCORDDRIVE_CONFIG overrides the default location)."""
     return os.environ.get("DISCORDDRIVE_CONFIG") or DEFAULT_CONFIG_PATH

@@ -9,7 +9,7 @@ import time
 
 from .backend import DiscordBackend, is_encrypted_index
 from .cache import ChunkCache
-from .config import Config, config_path, default_data_dir, normalize_mount_point
+from .config import Config, config_path, default_data_dir, launcher, normalize_mount_point
 from .crypto import CryptoEngine, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
@@ -70,7 +70,7 @@ def get_crypto_from_cfg(cfg: Config):
     if not cfg.encryption_enabled:
         return None
     if not cfg.encryption_key:
-        raise SystemExit("[ERROR] Encryption is enabled but no key is configured. Run 'discorddrive setup'.")
+        raise SystemExit(f"[ERROR] Encryption is enabled but no key is configured. Run '{launcher()} setup'.")
     try:
         return CryptoEngine(parse_key(cfg.encryption_key))
     except Exception as e:
@@ -226,7 +226,8 @@ def cmd_setup(args):
     cfg.save()
 
     print(f"\n[SUCCESS] Configuration saved to: {config_path()}")
-    print("You can now mount your virtual drive with: python -m discorddrive mount")
+    start = "start_drive.cmd" if sys.platform == "win32" else "./start_drive.sh"
+    print(f"Start the drive with: {start}   (or in the foreground: {launcher()} mount)")
     return 0
 
 
@@ -304,7 +305,7 @@ def cmd_status(args):
         except ValueError:
             enc_info = "ENABLED but the configured key is INVALID (run setup again)"
     elif cfg.encryption_enabled and not cfg.encryption_key:
-        enc_info = "Enabled (no key yet: one is generated on first mount, or run 'discorddrive setup')"
+        enc_info = f"Enabled (no key yet: one is generated on first mount, or run '{launcher()} setup')"
     else:
         enc_info = "Disabled"
     print(f"Encryption:      {enc_info}")
@@ -369,7 +370,7 @@ def cmd_mount(args):
 
     cfg = Config.load()
     if not cfg.is_configured() and not args.mock:
-        print("[ERROR] DiscordDrive is not configured. Run 'python -m discorddrive setup' first.")
+        print(f"[ERROR] DiscordDrive is not configured. Run '{launcher()} setup' first.")
         return 1
 
     mount_point = normalize_mount_point(args.mount or cfg.mount_point)
@@ -661,7 +662,7 @@ def cmd_versions(args):
             print(f"  {i:>7}  {_fmt_time(v['superseded'])}  {_fmt_size(v['size']):>10}  "
                   f"{labels.get(v['reason'], v['reason'])}")
         if rows:
-            print("\nRestore one with: discorddrive restore-version <path> <number> [--as <new path>]")
+            print(f"\nRestore one with: {launcher()} restore-version <path> <number> [--as <new path>]")
         return 0
     finally:
         idx.close()
@@ -677,7 +678,7 @@ def cmd_restore_version(args):
             return 1
         rows = idx.versions_for(node["uid"])
         if not 1 <= args.number <= len(rows):
-            print(f"[ERROR] {vpath} has {len(rows)} version(s); pick a number from 'discorddrive versions'.")
+            print(f"[ERROR] {vpath} has {len(rows)} version(s); pick a number from '{launcher()} versions'.")
             return 1
         v = rows[args.number - 1]
         if args.as_path:
@@ -712,7 +713,7 @@ def cmd_deleted(args):
             return 0
         for v in rows:
             print(f"{_fmt_time(v['superseded'])}  {_fmt_size(v['size']):>10}  {v['path']}")
-        print("\nRecover one with: discorddrive undelete <path>")
+        print(f"\nRecover one with: {launcher()} undelete <path>")
         return 0
     finally:
         idx.close()
@@ -726,7 +727,7 @@ def cmd_undelete(args):
         vpath = normalize_virtual_path(args.path, cfg.mount_point)
         matches = [v for v in idx.deleted_files(vpath) if (v["path"] or "").lower() == vpath.lower()]
         if not matches:
-            print(f"[ERROR] No deleted file kept at {vpath}. See 'discorddrive deleted'.")
+            print(f"[ERROR] No deleted file kept at {vpath}. See '{launcher()} deleted'.")
             return 1
         v = matches[0]
         op = _put_op_for_version(idx, v, v["uid"], v["parent_uid"], v["name"])
