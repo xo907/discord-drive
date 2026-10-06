@@ -417,6 +417,13 @@ on Linux (background starts also write `mount.log` next to it).
   local disk until they are uploaded (the memory-only setting only affects files you *read*). Current
   versions pause the copy instead of filling the disk; update, then re-run the copy (rsync skips what
   is already there). On a small disk you can also lower the backlog: `config staging_max_bytes 2147483648`.
+  If it still happens, check what is using the disk (`df -h /`, `du -sh ~/.cache`): when copying
+  *from* another cloud mount such as rclone, that mount's own cache can fill the disk. DiscordDrive's
+  log says so. Limit it, e.g. remount with `rclone mount ... --vfs-cache-mode minimal --vfs-cache-max-size 1G`.
+  To make a long copy resume by itself after any error:
+  ```bash
+  until rsync -rt --inplace --info=progress2 /source/ /mnt/discord/target/; do sleep 60; done
+  ```
 - **`/mnt/discord` looks empty although the drive is running.** If your terminal was already
   *inside* that folder when the drive started, it keeps showing the plain folder underneath. Leave
   and come back: `cd ~ && ls /mnt/discord`.

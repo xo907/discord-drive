@@ -70,6 +70,7 @@ class DiscordDriveFS(Operations):
         self.uploader = None
         self.capacity = 1 << 50         # advertised size: 1 PiB
         self._staging_usage = (0.0, 0)  # (timestamp, bytes) cache for _pending_staging_bytes
+        self._space_warned = 0.0
 
     # ================================================================ helpers
     def staging_path(self, nid):
@@ -125,6 +126,13 @@ class DiscordDriveFS(Operations):
         def reason():
             pending = self._pending_staging_bytes()
             if not pending and self.uploader.is_idle():
+                free = self._free_disk()
+                if min_free > 0 and free is not None and free < min_free and time.time() - self._space_warned > 300:
+                    self._space_warned = time.time()
+                    log.warning("The local disk is almost full (%.2f GiB free), but not because of DiscordDrive: "
+                                "nothing is waiting to upload. Writes may fail with 'No space left on device'; "
+                                "free up space elsewhere (other caches, e.g. rclone's VFS cache, logs, images).",
+                                free / 2**30)
                 return None
             if limit > 0 and pending >= limit:
                 return f"upload backlog is {pending / 2**30:.1f} GiB (limit {limit / 2**30:.1f} GiB)"
