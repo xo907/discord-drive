@@ -13,7 +13,7 @@ from .config import Config, config_path, default_data_dir, normalize_mount_point
 from .crypto import CryptoEngine, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
-from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, FUSE_ERROR
+from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, unmount, FUSE_ERROR
 from .index import Index
 from .journal import Journal
 
@@ -146,7 +146,7 @@ def cmd_setup(args):
         if lib:
             print(f"  [OK] Linux FUSE library found: {lib}")
         else:
-            print("  [WARNING] libfuse2 was not found! Run: sudo apt install -y libfuse2 fuse")
+            print("  [WARNING] libfuse2 was not found! Run ./install_debian.sh (or: apt install libfuse2)")
 
     # Configure End-to-End Encryption
     print("\nConfiguring Zero-Knowledge Encryption (AES-256-GCM)...")
@@ -316,7 +316,7 @@ def cmd_status(args):
         display_mp = f"Drive {cfg.mount_point}"
     else:
         lib = find_linux_fuse_lib()
-        print(f"FUSE Driver:     {'libfuse (' + lib + ')' if lib else 'NOT FOUND (Run: sudo apt install -y libfuse2 fuse)'}")
+        print(f"FUSE Driver:     {'libfuse (' + lib + ')' if lib else 'NOT FOUND (run ./install_debian.sh, or: apt install libfuse2)'}")
         display_mp = f"Mount {cfg.mount_point}"
     print(f"{display_mp} Status:  {'MOUNTED (Active)' if is_mounted(cfg.mount_point) else 'Not mounted'}")
 
@@ -488,7 +488,7 @@ def cmd_stop(args):
                 pid = None
         # Unmounting makes the FUSE loop return so the daemon shuts down cleanly
         # (flushing uploads and backing up the index).
-        subprocess.run(["fusermount", "-u", mp], capture_output=True)
+        unmount(mp)
         if pid:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -507,7 +507,7 @@ def cmd_stop(args):
                 break
             time.sleep(0.5)
         if os.path.ismount(mp):
-            subprocess.run(["fusermount", "-uz", mp], capture_output=True)
+            unmount(mp, lazy=True)
         try:
             os.remove(pid_file)
         except OSError:

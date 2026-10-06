@@ -6,6 +6,8 @@ import glob
 import logging
 import os
 import platform
+import shutil
+import subprocess
 import sys
 
 log = logging.getLogger("discorddrive.fuse_loader")
@@ -87,6 +89,20 @@ def find_linux_fuse_lib():
     return None
 
 
+def unmount(mount_point, lazy=False) -> bool:
+    """Unmount a FUSE mount on Linux with fusermount (FUSE 2), fusermount3 (FUSE 3; also
+    handles FUSE 2 mounts) or, as root without either, plain umount."""
+    tool = shutil.which("fusermount") or shutil.which("fusermount3")
+    if tool:
+        cmd = [tool, "-uz" if lazy else "-u", mount_point]
+    else:
+        cmd = ["umount", "-l", mount_point] if lazy else ["umount", mount_point]
+    try:
+        return subprocess.run(cmd, capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
 class _DummyOperations:
     pass
 
@@ -103,6 +119,13 @@ class _DummyFuseModule:
 
 
 FUSE_ERROR = None
+
+_LIBFUSE_MISSING = (
+    "libfuse2 was not found on this Linux system.\n"
+    "FUSE is required to mount the virtual DiscordDrive filesystem.\n\n"
+    "To install it on Debian / Ubuntu / Raspberry Pi OS, run ./install_debian.sh\n"
+    "or: apt install libfuse2   (libfuse2t64 on Debian 13+ / Ubuntu 24.04+)"
+)
 
 
 def load_fuse():
@@ -122,13 +145,7 @@ def load_fuse():
             if lib:
                 os.environ["FUSE_LIBRARY_PATH"] = lib
             else:
-                FUSE_ERROR = (
-                    "libfuse2 was not found on this Linux system.\n"
-                    "FUSE is required to mount the virtual DiscordDrive filesystem.\n\n"
-                    "To install it on Debian / Ubuntu / Raspberry Pi OS, run:\n"
-                    "    sudo apt update && sudo apt install -y libfuse2 fuse python3-cryptography\n\n"
-                    "(On Debian 13+ / Trixie: sudo apt install -y libfuse2t64 fuse python3-cryptography)"
-                )
+                FUSE_ERROR = _LIBFUSE_MISSING
                 return _DummyFuseModule(FUSE_ERROR)
 
     try:
@@ -136,13 +153,7 @@ def load_fuse():
         return fuse
     except (EnvironmentError, OSError) as e:
         if sys.platform.startswith("linux"):
-            FUSE_ERROR = (
-                "libfuse2 was not found on this Linux system.\n"
-                "FUSE is required to mount the virtual DiscordDrive filesystem.\n\n"
-                "To install it on Debian / Ubuntu / Raspberry Pi OS, run:\n"
-                "    sudo apt update && sudo apt install -y libfuse2 fuse python3-cryptography\n\n"
-                "(On Debian 13+ / Trixie: sudo apt install -y libfuse2t64 fuse python3-cryptography)"
-            )
+            FUSE_ERROR = _LIBFUSE_MISSING
         else:
             FUSE_ERROR = f"Failed to load FUSE: {e}"
         return _DummyFuseModule(FUSE_ERROR)

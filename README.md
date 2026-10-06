@@ -333,7 +333,7 @@ as files in `<folder>`.
 - **"Mount directory is not empty" (Linux):** DiscordDrive refuses to mount on top of existing
   files, because they would be hidden. Move them away or pick another directory.
 - **"Transport endpoint is not connected" (Linux):** an earlier instance crashed. Starting again
-  cleans this up automatically, or run `fusermount -uz /mnt/discord`.
+  cleans this up automatically, or run `fusermount -uz /mnt/discord` (`fusermount3 -uz` on FUSE 3 systems).
 - **"Found index checkpoint ... could not restore it":** this device has a different encryption key
   than the one that wrote the drive. The drive refuses to start empty rather than overwrite your index.
 - **A "Recovered files" folder appeared:** a change arrived for a file whose folder had been deleted

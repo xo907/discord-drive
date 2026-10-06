@@ -5,7 +5,6 @@ import logging
 import os
 import secrets
 import signal
-import subprocess
 import sys
 import threading
 
@@ -15,7 +14,7 @@ from .config import Config
 from .crypto import CryptoEngine, generate_key, parse_key
 from .discord_api import DiscordAPI
 from .fs import DiscordDriveFS
-from .fuse_loader import find_winfsp_dll, fuse, FUSE_ERROR
+from .fuse_loader import find_winfsp_dll, fuse, unmount, FUSE_ERROR
 from .index import Index
 from .journal import Journal
 from .uploader import Uploader
@@ -254,7 +253,7 @@ def _prepare_mount_dir(mp):
         if e.errno != errno.ENOTCONN:
             raise
         log.warning("Clearing stale mount on %s (previous instance did not exit cleanly)", mp)
-        subprocess.run(["fusermount", "-uz", mp], capture_output=True)
+        unmount(mp, lazy=True)
         entries = os.listdir(mp)
     if os.path.ismount(mp):
         raise RuntimeError(f"Something is already mounted on {mp}. Run 'discorddrive stop' first.")
