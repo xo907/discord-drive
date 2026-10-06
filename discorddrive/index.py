@@ -684,6 +684,14 @@ class Index:
         with self.lock:
             self.db.execute("INSERT OR REPLACE INTO kv(key, value) VALUES(?, ?)", (key, value))
 
+    def kv_delete(self, key):
+        with self.lock:
+            self.db.execute("DELETE FROM kv WHERE key=?", (key,))
+
+    def kv_keys(self, prefix):
+        with self.lock:
+            return [r[0] for r in self.db.execute("SELECT key FROM kv WHERE key LIKE ?", (prefix + "%",))]
+
     # ---------------------------------------------------------------- stats
     def stats(self, max_age=5.0):
         t, cached = self._stats_cache

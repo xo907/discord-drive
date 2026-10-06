@@ -1,6 +1,7 @@
 """Background upload queue, chunker and trash cleaner. (Index checkpoints live in journal.py.)"""
 
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -33,7 +34,46 @@ class Uploader:
         self._upload_threads = []
         self._trash_thread = None
 
+    # ----------------------------------------------------- resumable uploads
+    # After every uploaded piece, the list of pieces is saved under "upload:<nid>" in the
+    # index, so an interrupted upload (restart, crash, network error) continues where it
+    # stopped instead of starting over. A record only applies to the same file version.
+
+    @staticmethod
+    def _progress_key(nid):
+        return f"upload:{nid}"
+
+    def _load_progress(self, nid):
+        try:
+            return json.loads(self.index.kv_get(self._progress_key(nid)) or "null")
+        except ValueError:
+            return None
+
+    def _save_progress(self, nid, version, size, chunk_size, chunks):
+        self.index.kv_set(self._progress_key(nid), json.dumps(
+            {"v": version, "size": size, "chunk_size": chunk_size, "chunks": chunks}, separators=(",", ":")))
+
+    def _drop_progress(self, nid, trash=True):
+        rec = self._load_progress(nid)
+        self.index.kv_delete(self._progress_key(nid))
+        if trash and rec and rec.get("chunks"):
+            self.index.trash_add([c["message_id"] for c in rec["chunks"]])
+
+    def _cleanup_stale_progress(self):
+        for key in self.index.kv_keys("upload:"):
+            try:
+                nid = int(key.split(":", 1)[1])
+            except ValueError:
+                continue
+            node = self.index.get(nid)
+            if node is None or node["is_dir"] or node["state"] == "synced":
+                self._drop_progress(nid)
+
     def start(self):
+        try:
+            self._cleanup_stale_progress()
+        except Exception as e:
+            log.debug("Could not clean up old upload records: %s", e)
         with self._lock:
             if self._running:
                 return
@@ -142,6 +182,7 @@ class Uploader:
         node = self.index.get(nid)
         if node is None or node["is_dir"] or node["state"] == "synced":
             self._failures.pop(nid, None)
+            self._drop_progress(nid)
             return
 
         staging_path = self.fs.staging_path(nid)
@@ -154,8 +195,6 @@ class Uploader:
         path = self.index.path_of(nid)
         file_size = os.path.getsize(staging_path)
         pinned = self.index.is_pinned(nid)
-
-        log.info("Starting upload of %s (%d bytes, version %d)", path, file_size, version)
 
         # 3. Handle empty (0-byte) files
         if file_size == 0:
@@ -170,6 +209,14 @@ class Uploader:
 
         try:
             with open(staging_path, "rb") as f:
+                uploaded_chunks = self._resume_point(nid, f, version, file_size, chunk_size)
+                chunk_idx = len(uploaded_chunks)
+                total = (file_size + chunk_size - 1) // chunk_size
+                if chunk_idx:
+                    log.info("Resuming upload of %s at piece %d of %d", path, chunk_idx + 1, total)
+                else:
+                    log.info("Starting upload of %s (%d bytes, version %d)", path, file_size, version)
+                f.seek(chunk_idx * chunk_size)
                 while True:
                     if not self._running:
                         raise _Interrupted("shutting down")
@@ -205,6 +252,7 @@ class Uploader:
                         "size": len(chunk_data),
                         "sha256": sha256,
                     })
+                    self._save_progress(nid, version, file_size, chunk_size, uploaded_chunks)
                     if pinned:
                         # Offline-pinned: keep a local copy so it never has to be downloaded again
                         try:
@@ -214,23 +262,23 @@ class Uploader:
                     chunk_idx += 1
 
         except _Interrupted as why:
-            if uploaded_chunks:
-                self.index.trash_add([c["message_id"] for c in uploaded_chunks])
+            # The pieces uploaded so far are recorded; the next attempt continues from there
+            # (if the file is changed meanwhile, the record no longer matches and is discarded).
             if self._running:
-                log.info("Upload of %s interrupted (%s); will retry later", path, why)
+                log.info("Upload of %s interrupted (%s); will continue later", path, why)
                 self.enqueue(nid, delay=self.cfg.upload_delay)
             return
         except Exception as e:
-            if uploaded_chunks:
-                # Don't leak orphaned attachments
-                self.index.trash_add([c["message_id"] for c in uploaded_chunks])
-            if self.index.get(nid) is not None:
+            if self.index.get(nid) is None:
+                self._drop_progress(nid)
+            else:
                 self.index.update(nid, state="error")
             delay = self._retry_later(nid)
             log.error("Failed uploading chunk %d for %s: %s (retrying in %.0fs)", chunk_idx, path, e, delay)
             return
 
-        # 5. Commit freshly uploaded chunks
+        # 5. Commit freshly uploaded chunks (commit_upload trashes them if the file changed meanwhile)
+        self._drop_progress(nid, trash=False)
         if self.fs.commit_upload(nid, version, uploaded_chunks):
             self._failures.pop(nid, None)
             if self.journal is not None:
@@ -239,6 +287,26 @@ class Uploader:
         elif self.index.get(nid) is not None:
             log.info("%s changed during upload; re-queued", path)
             self.enqueue(nid, delay=self.cfg.upload_delay)
+
+    def _resume_point(self, nid, f, version, file_size, chunk_size):
+        """Pieces already uploaded for exactly this content, checked against the local file."""
+        rec = self._load_progress(nid)
+        if not rec:
+            return []
+        if rec.get("v") != version or rec.get("size") != file_size or rec.get("chunk_size") != chunk_size:
+            self._drop_progress(nid)
+            return []
+        good = []
+        for c in rec.get("chunks") or []:
+            f.seek(c["idx"] * chunk_size)
+            data = f.read(chunk_size)
+            if c["idx"] != len(good) or len(data) != c["size"] or hashlib.sha256(data).hexdigest() != c["sha256"]:
+                break
+            good.append(c)
+        stale = [c["message_id"] for c in (rec.get("chunks") or [])[len(good):]]
+        if stale:
+            self.index.trash_add(stale)
+        return good
 
     # -------------------------------------------------------- backup & trash
     def _trash_loop(self):
