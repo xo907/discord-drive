@@ -603,6 +603,11 @@ class DiscordDriveFS(Operations):
                 on.mtime = mtime
         return 0
 
+    def lock(self, path, fh, cmd, lock):
+        # "Not supported" makes the kernel / WinFsp handle file locks locally, which is
+        # what applications expect from a single-user network-style drive.
+        raise FuseOSError(errno.ENOSYS)
+
     def chmod(self, path, mode):
         return 0
 

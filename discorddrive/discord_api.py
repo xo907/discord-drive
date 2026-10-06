@@ -21,6 +21,17 @@ API_BASE = "https://discord.com/api/v10"
 USER_AGENT = "DiscordDrive (https://github.com/xo907/discord-drive, 0.1)"
 
 
+def _ram_tmpdir():
+    """A RAM-backed temp folder on Linux, so uploads keep working when the disk is full."""
+    d = "/dev/shm"
+    if os.name == "posix" and os.path.isdir(d) and os.access(d, os.W_OK):
+        return d
+    return None
+
+
+_TMPDIR = _ram_tmpdir()
+
+
 class DiscordError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(f"Discord HTTP {status}: {message}")
@@ -66,7 +77,8 @@ class DiscordAPI:
         cmd = [self.curl_bin or "curl", "-s", "-S", "-X", method, "--max-time", str(int(self.timeout))]
         temp_files = []
         try:
-            with tempfile.NamedTemporaryFile(delete=False) as hf:
+            # Only two tiny files (headers); request data goes through stdin, never to disk.
+            with tempfile.NamedTemporaryFile(delete=False, dir=_TMPDIR) as hf:
                 hdr_path = hf.name
             temp_files.append(hdr_path)
             cmd.extend(["-D", hdr_path])
@@ -80,37 +92,32 @@ class DiscordAPI:
 
             # Pass headers through a file so the bot token never appears in the
             # process list (command lines are visible to other local users).
-            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="\n") as rf:
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="\n", dir=_TMPDIR) as rf:
                 for k, v in req_headers.items():
                     rf.write(f"{k}: {v}\n")
                 req_hdr_path = rf.name
             temp_files.append(req_hdr_path)
             cmd.extend(["-H", f"@{req_hdr_path}"])
 
+            stdin_data = None
             if multipart_file:
                 # tuple of (field_name, filename, data_bytes, optional_payload_json)
                 field_name, filename, data_bytes, payload_json = multipart_file
-                with tempfile.NamedTemporaryFile(delete=False) as df:
-                    df.write(data_bytes)
-                    data_path = df.name
-                temp_files.append(data_path)
+                stdin_data = data_bytes
                 # curl's -F syntax treats ; , and " specially inside the filename
                 safe_name = "".join("_" if ch in '";,\r\n' else ch for ch in filename)
-                cmd.extend(["-F", f"{field_name}=@{data_path};filename={safe_name}"])
+                cmd.extend(["-F", f"{field_name}=@-;filename={safe_name}"])
                 if payload_json:
                     # --form-string: no @file / <file / ;type= interpretation of the value
                     cmd.extend(["--form-string", f"payload_json={payload_json}"])
             elif body is not None:
                 if isinstance(body, str):
                     body = body.encode("utf-8")
-                with tempfile.NamedTemporaryFile(delete=False) as bf:
-                    bf.write(body)
-                    body_path = bf.name
-                temp_files.append(body_path)
-                cmd.extend(["--data-binary", f"@{body_path}"])
+                stdin_data = body
+                cmd.extend(["--data-binary", "@-"])
 
             cmd.append(url)
-            proc = subprocess.run(cmd, capture_output=True)
+            proc = subprocess.run(cmd, capture_output=True, input=stdin_data)
             raw = proc.stdout
             if proc.returncode != 0 and b"__HTTP_STATUS__:" not in raw:
                 err = proc.stderr.decode("utf-8", "replace").strip() or f"curl exit code {proc.returncode}"
