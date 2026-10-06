@@ -34,6 +34,29 @@ def default_data_dir() -> str:
 DEFAULT_CONFIG_PATH = os.path.join(default_config_dir(), "config.json")
 
 
+def parse_size(text: str) -> int:
+    """'1500', '500M', '2G', '1.5T', '2GB' or '2GiB' -> bytes (binary units)."""
+    t = text.strip().upper().replace(" ", "")
+    for suffix in ("IB", "B"):
+        if t.endswith(suffix) and len(t) > len(suffix) and t[-len(suffix) - 1] in "KMGT":
+            t = t[:-len(suffix)]
+            break
+    mult = {"K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}.get(t[-1:], 1)
+    if mult > 1:
+        t = t[:-1]
+    value = float(t)
+    if value < 0:
+        raise ValueError("must not be negative")
+    return int(value * mult)
+
+
+def format_size(n: int) -> str:
+    for unit, mult in (("T", 2**40), ("G", 2**30), ("M", 2**20), ("K", 2**10)):
+        if n >= mult:
+            return f"{n / mult:.4g}{unit}"
+    return f"{n} bytes"
+
+
 def launcher() -> str:
     """How users run DiscordDrive commands on this system (for messages)."""
     return "DiscordDrive.cmd" if sys.platform == "win32" else "./discorddrive.sh"
@@ -65,6 +88,7 @@ class Config:
     upload_threads: int = 3            # chunks/files uploaded in parallel
     staging_max_bytes: int = 10 * 1024 * MiB  # pause new file creation while this much is waiting to upload (0 = no limit)
     min_free_disk_bytes: int = 2 * 1024 * MiB  # also pause while the local disk has less free space than this
+    max_file_size: int = 0             # refuse files larger than this (0 = no limit)
     delete_remote: bool = True         # delete Discord messages when files are deleted/overwritten
     index_backup_interval: float = 600.0  # seconds between index checkpoints (when something changed)
     poll_interval: float = 2.0         # seconds between checks for changes made on other devices

@@ -70,6 +70,7 @@ class DiscordDriveFS(Operations):
         self.capacity = 1 << 50         # advertised size: 1 PiB
         self._staging_usage = (0.0, 0)  # (timestamp, bytes) cache for _pending_staging_bytes
         self._space_warned = 0.0
+        self._size_warned = {}
 
     # ================================================================ helpers
     def staging_path(self, nid):
@@ -106,6 +107,16 @@ class DiscordDriveFS(Operations):
             return shutil.disk_usage(self.staging_dir).free
         except OSError:
             return None
+
+    def _check_size_limit(self, new_size, path):
+        """max_file_size: refuse to let a file grow beyond the configured limit."""
+        limit = int(getattr(self.cfg, "max_file_size", 0) or 0)
+        if limit > 0 and new_size > limit:
+            if self._size_warned.get(path, 0) < time.time() - 60:
+                self._size_warned[path] = time.time()
+                log.warning("Refused to write %s: files larger than %.1f MiB are not allowed (max_file_size).",
+                            path, limit / 2**20)
+            raise FuseOSError(errno.EFBIG)
 
     def _ensure_room(self, nbytes, what, max_wait=1800.0):
         """Hard rule: DiscordDrive never takes the local disk below `min_free_disk_bytes`, so
@@ -463,6 +474,7 @@ class DiscordDriveFS(Operations):
 
     def write(self, path, data, offset, fh):
         nid, _, on = self._handle(fh)
+        self._check_size_limit(offset + len(data), path)
         self._ensure_room(len(data), path)
         with on.lock:
             self._materialize(on)
@@ -473,6 +485,7 @@ class DiscordDriveFS(Operations):
         return len(data)
 
     def truncate(self, path, length, fh=None):
+        self._check_size_limit(length, path)
         temp_fh = None
         with self.lock:
             if fh is not None and fh in self.handles:

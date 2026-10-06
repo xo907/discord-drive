@@ -185,6 +185,17 @@ The config is stored outside the repository:
 | Linux | `~/.config/DiscordDrive/config.json` (mode 600) | `~/.local/share/DiscordDrive/` |
 
 Change settings with `config <name> <value>` (run `config` alone to list them), or edit the file.
+Sizes accept units, e.g. `config max_file_size 2G` or `config min_free_disk_bytes 4G`.
+
+Useful limits:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `max_file_size` | `0` (no limit) | Refuse files larger than this ("File too large"), so one huge file can't tie up the disk and uploads for hours |
+| `min_free_disk_bytes` | `2G` | Never take the local disk below this much free space |
+| `staging_max_bytes` | `10G` | Pause writing while this much is waiting to upload |
+| `cache_mode` | `disk` | `memory` keeps files you open in RAM only |
+
 `DISCORDDRIVE_CONFIG`, `DISCORDDRIVE_TOKEN` and `DISCORDDRIVE_CHANNEL` environment variables
 override the config file location, token, and channel. See [`config.example.json`](config.example.json)
 for every option.
@@ -428,6 +439,8 @@ on Linux (background starts also write `mount.log` next to it).
   If it still happens, check what is using the disk (`df -h /`, `du -sh ~/.cache`): when copying
   *from* another cloud mount such as rclone, that mount's own cache can fill the disk. DiscordDrive's
   log says so. Limit it, e.g. remount with `rclone mount ... --vfs-cache-mode minimal --vfs-cache-max-size 1G`.
+  If you set `max_file_size`, give rsync the same limit with `--max-size=2G` so it *skips* larger
+  files; otherwise rsync stops at the first one with "File too large".
   To make a long copy resume by itself after any error:
   ```bash
   until rsync -rt --info=progress2 /source/ /mnt/discord/target/; do sleep 60; done

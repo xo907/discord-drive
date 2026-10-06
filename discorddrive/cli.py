@@ -10,7 +10,7 @@ import time
 
 from .backend import DiscordBackend, is_encrypted_index
 from .cache import ChunkCache
-from .config import Config, config_path, default_data_dir, launcher, normalize_mount_point
+from .config import Config, config_path, default_data_dir, format_size, launcher, normalize_mount_point, parse_size
 from .crypto import AuthenticationError, CryptoEngine, KeyRing, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
@@ -293,7 +293,8 @@ def cmd_config(args):
                 raise ValueError("expected true or false")
             value = raw.lower() in ("true", "yes", "on", "1")
         elif kind in (int, "int"):
-            value = int(raw)
+            # sizes accept units: 500M, 2G, 1.5T ...
+            value = parse_size(raw) if args.key.endswith("_bytes") or args.key == "max_file_size" else int(raw)
         elif kind in (float, "float"):
             value = float(raw)
         else:
@@ -308,7 +309,9 @@ def cmd_config(args):
         value = normalize_mount_point(value)
     setattr(cfg, args.key, value)
     cfg.save()
-    print(f"[OK] {args.key} = {value}  (restart the drive for it to take effect)")
+    shown = f"{value} ({format_size(value)})" if isinstance(value, int) and value >= 2**10 and (
+        args.key.endswith("_bytes") or args.key == "max_file_size") else value
+    print(f"[OK] {args.key} = {shown}  (restart the drive for it to take effect)")
     return 0
 
 
@@ -466,6 +469,8 @@ def cmd_status(args):
     print(f"Mount Point:     {cfg.mount_point}")
     print(f"Chunk Size:      {cfg.chunk_size // (1024 * 1024)} MiB")
     print(f"Data Directory:  {cfg.resolved_data_dir}")
+    if cfg.max_file_size:
+        print(f"Max File Size:   {format_size(cfg.max_file_size)}")
     if (cfg.cache_mode or "disk").lower() == "memory":
         print(f"Read Cache:      memory only ({cfg.memory_cache_bytes // (1024 * 1024)} MiB RAM, nothing on disk)")
     else:
