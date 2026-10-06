@@ -68,10 +68,10 @@ Open **File Explorer**: your new drive is **Z:**. Anything you put there is stor
 
 ### Step 2b: Linux (Debian, Ubuntu, Raspberry Pi OS)
 
-Open a terminal and paste:
+Open a terminal and paste (works both as a normal user with `sudo` and as `root`):
 
 ```bash
-sudo apt update && sudo apt install -y git && git clone https://github.com/xo907/discord-drive.git ~/DiscordDrive && cd ~/DiscordDrive && ./install_debian.sh
+S=$(command -v sudo); $S apt update && $S apt install -y git && git clone https://github.com/xo907/discord-drive.git ~/DiscordDrive && cd ~/DiscordDrive && ./install_debian.sh
 ```
 
 Then run setup. Paste the bot token and channel ID, press **Enter** at "Enable encryption?", and type
