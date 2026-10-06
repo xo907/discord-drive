@@ -118,6 +118,9 @@ once, then stop and start the drive:
 
 **Using a second computer?** Do Step 2 on it with the **same bot token, channel ID, and encryption
 password**. Everything you stored appears there automatically, and changes sync both ways within seconds.
+Setup checks the key against your existing drive. If it says the key doesn't match (for example
+because the drive was set up with an older version or a random key), copy the key over instead:
+run `export-key` on a computer where the drive works, then `setup -k <that key>` on the new one.
 
 > **Back up your encryption password** (or the `encryption_key` from the config file). Without it,
 > the data in Discord cannot be decrypted. Nobody can recover it for you.
@@ -203,6 +206,7 @@ restore-version <file> <n> [--as p]  Bring back version n (or save it as a new f
 deleted [<folder>]                   List deleted files that can still be recovered
 undelete <path>                      Recover a deleted file
 config [<name> [<value>]]            Show or change a setting
+export-key                           Show the encryption key, to copy it to another device
 backup                Save an index checkpoint now (normally automatic)
 restore               Rebuild the local index from the channel (drive must be stopped)
 context-menu install  Add "Make available offline" / "Free up space" to Explorer (Windows)
@@ -420,14 +424,24 @@ on Linux (background starts also write `mount.log` next to it).
   after the *last* entry is tolerated.
 - **Files from another device don't show up.** Run `status` on both devices and compare:
   - **key fingerprint** must be identical. If not, run `setup` again with the same encryption
-    password (or `setup -k <encryption_key from the other device>`).
+    password. If setup says the key doesn't match the existing drive, copy the key instead: run
+    `export-key` on a working device, then `setup -k <that key>` on this one.
   - **Channel** must be the same.
   - **Journal** must show a message number (not "not started"). If it says "not started", that
     device is still running an old version; see [Updating](#updating).
   - **Pending Publish** on the device that made the change should be 0.
-- **"Found index checkpoint ... could not restore it".** This device has a different encryption key
-  than the one that wrote the drive. It refuses to start empty rather than overwrite your index. Fix
-  the key as above.
+- **"Found index checkpoint ... could not restore it" / "Decryption / authentication failed".** This
+  device has a different encryption key from the one that wrote the drive, so it refuses to start
+  rather than show (and later save) an empty drive. This happens when the drive was created with an
+  older version, which turned the same password into a different key on each computer, or with a
+  random key. Copy the real key over:
+  1. On a device where the drive works: `export-key` (`DiscordDrive.cmd export-key` or `./discorddrive.sh export-key`).
+  2. On this device: `setup -k <that key>`, then start the drive. Setup confirms the key matches.
+
+  From Windows to a Linux machine in one step, without the key appearing on screen:
+  ```powershell
+  (Get-Content "$env:APPDATA\DiscordDrive\config.json" | ConvertFrom-Json).encryption_key | ssh user@host 'read k; cd ~/DiscordDrive && ./discorddrive.sh setup -m /mnt/discord -k "$k"'
+  ```
 - **A "Recovered files" folder appeared.** A change arrived for a file whose folder had been
   deleted on another device at the same time. The file was put here instead of being lost.
 - **Bot invite says "successful" but the bot did not join.** The invite URL must include `scope=bot`.

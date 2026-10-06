@@ -10,7 +10,7 @@ import time
 from .backend import DiscordBackend, is_encrypted_index
 from .cache import ChunkCache
 from .config import Config, config_path, default_data_dir, launcher, normalize_mount_point
-from .crypto import CryptoEngine, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
+from .crypto import AuthenticationError, CryptoEngine, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
 from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, unmount, FUSE_ERROR
@@ -217,6 +217,26 @@ def cmd_setup(args):
     else:
         print(f"  [OK] Existing encryption key retained (fingerprint {key_fingerprint(enc_key_hex)}).")
 
+    # A key that cannot read the drive already in this channel would only fail later, at mount.
+    if existing_encrypted and enc_enabled and enc_key_hex:
+        print("Checking the key against the drive already stored in this channel...")
+        crypto = CryptoEngine(parse_key(enc_key_hex))
+        try:
+            DiscordBackend(api, channel_id, crypto=crypto).load_index_message(latest)
+            print("  [OK] The key matches the existing drive.")
+        except AuthenticationError:
+            print("  [FAIL] This key cannot read the drive already stored in this channel. Nothing was saved.")
+            print("         Copy the key from a device where the drive works:")
+            print(f"           on that device:  {launcher()} export-key")
+            print(f"           on this device:  {launcher()} setup -k <the key it shows>")
+            print("         (Drives set up with older versions derived keys from passwords differently,")
+            print("          so the same password can give a different key.)")
+            return 1
+        except Exception as e:
+            print(f"  [WARNING] Could not verify the key right now ({e}); saving it anyway.")
+        finally:
+            crypto.close()
+
     cfg.bot_token = token
     cfg.channel_id = channel_id
     cfg.mount_point = mount_point
@@ -279,6 +299,22 @@ def cmd_config(args):
     setattr(cfg, args.key, value)
     cfg.save()
     print(f"[OK] {args.key} = {value}  (restart the drive for it to take effect)")
+    return 0
+
+
+def cmd_export_key(args):
+    """Print the encryption key so it can be copied to another device (setup -k <key>)."""
+    cfg = Config.load()
+    if not cfg.encryption_key:
+        print("[ERROR] No encryption key is configured on this device.")
+        return 1
+    if sys.stdout.isatty():
+        print("Your encryption key (keep it secret; anyone with it and your bot token can read your files):",
+              file=sys.stderr)
+    print(cfg.encryption_key)
+    if sys.stdout.isatty():
+        print(f"Fingerprint {key_fingerprint(cfg.encryption_key)}. On the other device run: "
+              f"{launcher()} setup -k <key>", file=sys.stderr)
     return 0
 
 
@@ -910,6 +946,7 @@ def main():
     # status
     subparsers.add_parser("status", help="Show current status and sync statistics")
     subparsers.add_parser("mountpoint", help="Print the configured mount point (for scripts)")
+    subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
     p_config = subparsers.add_parser("config", help="Show or change a setting (e.g. config cache_mode memory)")
     p_config.add_argument("key", nargs="?", help="Setting name")
     p_config.add_argument("value", nargs="?", help="New value")
@@ -963,6 +1000,8 @@ def main():
         return cmd_setup(args)
     elif args.command == "config":
         return cmd_config(args)
+    elif args.command == "export-key":
+        return cmd_export_key(args)
     elif args.command == "mountpoint":
         print(Config.load().mount_point)
         return 0
