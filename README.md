@@ -35,13 +35,15 @@ in Discord, click **+** in the server list → **Create My Own**).
 
 ### Step 2a: Windows 10 / 11
 
-Open **PowerShell** (Start menu → type `PowerShell` → Enter) and paste:
+Open a normal **PowerShell** (Start menu → type `PowerShell` → Enter; **not** "Run as administrator")
+and paste:
 
 ```powershell
 winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements; winget install -e --id WinFsp.WinFsp --source winget --accept-package-agreements --accept-source-agreements; winget install -e --id Git.Git --source winget --accept-package-agreements --accept-source-agreements
 ```
 
-Click **Yes** if Windows asks for permission. When it is done, **close PowerShell and open a new one**
+Click **Yes** if Windows asks for permission. "Found an existing package already installed" just means
+you already have that program, which is fine. When it is done, **close PowerShell and open a new one**
 (so it finds the programs you just installed), then paste:
 
 ```powershell
@@ -96,9 +98,12 @@ Your files are in **`/mnt/discord`**.
 | Start | `.\start_drive.cmd` | `./start_drive.sh` |
 | Stop | `.\stop_drive.cmd` | `./stop_drive.sh` |
 | Status | `.\DiscordDrive.cmd status` | `./discorddrive.sh status` |
-| Update to the latest version | `git pull`, then stop and start | `git pull`, then stop and start |
+| Update to the latest version | see [Updating](#updating) | see [Updating](#updating) |
 
 On Windows you can also just double-click `start_drive.cmd` / `stop_drive.cmd` in File Explorer.
+
+Stuck? See [Troubleshooting](#troubleshooting): it covers every problem we have run into on
+Windows and Linux.
 
 **Optional: keep nothing on this computer.** By default, files you open are cached on disk so they
 open faster next time. To stream them from Discord every time instead (cached in RAM only), run this
@@ -325,22 +330,110 @@ as files in `<folder>`.
 
 ---
 
+## Updating
+
+Stop the drive **before** updating and start it again afterwards. If you only run "start", it sees
+the old version still running, prints `already mounted`, and keeps using the old code.
+
+Windows (in the `DiscordDrive` folder):
+
+```powershell
+.\stop_drive.cmd; git pull; .\start_drive.cmd
+```
+
+Linux (in `~/DiscordDrive`):
+
+```bash
+./stop_drive.sh && git pull && ./start_drive.sh
+```
+
+Copying the files over yourself instead of using `git` (e.g. from Windows with `scp`)? Copying from
+Windows drops Linux's "executable" permission, so restore it before starting:
+
+```bash
+chmod +x ~/DiscordDrive/*.sh
+```
+
+Your settings, key and data are stored outside the program folder, so updating never touches them.
+
+---
+
 ## Troubleshooting
 
-- **The drive letter does not appear (Windows):** check `%LOCALAPPDATA%\DiscordDrive\discorddrive.log`.
-  A leftover process from an earlier run can block the mount; run `stop_drive.cmd`, then start again.
-  `start_drive.cmd` (hidden window through `mount_silent.vbs`) is more reliable than `mount -b`.
-- **"Mount directory is not empty" (Linux):** DiscordDrive refuses to mount on top of existing
-  files, because they would be hidden. Move them away or pick another directory.
-- **"Transport endpoint is not connected" (Linux):** an earlier instance crashed. Starting again
-  cleans this up automatically, or run `fusermount -uz /mnt/discord` (`fusermount3 -uz` on FUSE 3 systems).
-- **"Found index checkpoint ... could not restore it":** this device has a different encryption key
-  than the one that wrote the drive. The drive refuses to start empty rather than overwrite your index.
-- **A "Recovered files" folder appeared:** a change arrived for a file whose folder had been deleted
-  on another device at the same time. The file was put here instead of being lost.
-- **Files from another device don't show up:** check that both devices show the same key
-  fingerprint and channel in `status`, and that "Pending Publish" on the other device is 0.
-- **Bot invite says "successful" but the bot did not join:** the invite URL must include `scope=bot`.
+The log is the first place to look:
+`%LOCALAPPDATA%\DiscordDrive\discorddrive.log` on Windows, `~/.local/share/DiscordDrive/discorddrive.log`
+on Linux (background starts also write `mount.log` next to it).
+
+### Windows
+
+- **`winget` fails with "Failed when searching source: msstore" / "server certificate did not match".**
+  The Microsoft Store source is blocked or intercepted (antivirus, company network). The Quick Start
+  command already avoids it with `--source winget`. If you typed your own `winget` command, add that.
+- **`winget` says "Found an existing package already installed… No available upgrade found".**
+  Not an error: that program is already installed. Carry on with the next step.
+- **`git`, `py` or `python` "is not recognized" right after installing.** Close PowerShell and open
+  a new one; already-open windows don't see newly installed programs.
+- **The drive started, but Z: is not in File Explorer.** You probably started it from an
+  **Administrator** PowerShell (the prompt shows `C:\WINDOWS\system32>`). Drives started as
+  administrator are invisible to your normal Explorer. Run `.\stop_drive.cmd` there, then start it
+  again from a normal PowerShell, or by double-clicking `start_drive.cmd`.
+- **The drive letter does not appear at all.** A leftover process from an earlier run can block
+  the mount: run `.\stop_drive.cmd`, then `.\start_drive.cmd`. `start_drive.cmd` is more reliable
+  than `mount -b`. Also check that WinFsp is installed (`.\DiscordDrive.cmd status` shows it).
+- **New files from another device don't show in an open Explorer window.** Press **F5**. Explorer
+  does not refresh network-style drives by itself.
+
+### Linux
+
+- **`sudo: command not found`.** You're logged in as `root` on a system without `sudo` (typical for
+  a VPS). The Quick Start command and `install_debian.sh` handle this automatically; just leave
+  `sudo` out of any command you type yourself.
+- **`python: command not found`.** Linux calls it `python3`. Use the scripts (`./start_drive.sh`,
+  `./discorddrive.sh <command>`), which call the right one.
+- **`apt` fails with "404 Not Found" for `python3-cryptography` (or another package).** Seen on
+  Debian 11, which has reached end of life: its security mirror lists updates whose files were
+  removed. `install_debian.sh` retries automatically with the release's own version. By hand:
+  ```bash
+  apt-get install -y -t "$(. /etc/os-release; echo $VERSION_CODENAME)" python3-cryptography
+  ```
+- **`apt` wants to remove `fuse3`.** Don't let it: other software (Docker volumes, rclone, sshfs…)
+  may need it. DiscordDrive only needs the FUSE 2 *library* (`libfuse2`) and works with either
+  `fuse` or `fuse3` tools. `install_debian.sh` keeps whichever one is installed.
+- **`E: Unable to locate package libfuse2t64`** (or `libfuse2`). The library was renamed:
+  `libfuse2` on Debian 11/12 and Ubuntu up to 22.04, `libfuse2t64` on Debian 13+ and Ubuntu 24.04+.
+  The installer picks the right name.
+- **The installer warns that `/dev/fuse` does not exist.** Some VPS types (OpenVZ/LXC containers)
+  have no FUSE support, so the drive cannot be mounted. Ask the provider to enable FUSE, or use a
+  KVM-based server.
+- **`start_drive.sh` says "already mounted" after an update.** The old version is still running;
+  see [Updating](#updating).
+- **"Mount directory is not empty".** DiscordDrive refuses to mount on top of existing files,
+  because they would be hidden. Move them away or pick another directory (`./discorddrive.sh setup -m <dir>`).
+- **"Transport endpoint is not connected".** An earlier instance crashed. Starting again cleans
+  this up automatically, or run `fusermount -uz /mnt/discord` (`fusermount3 -uz` on FUSE 3 systems).
+
+### All platforms
+
+- **Editing the config by hand broke it** ("not valid JSON", "Expecting ',' delimiter"). Every
+  line except the last needs a comma at the end. Easier: change settings with
+  `config <name> <value>` (e.g. `config cache_mode memory`) instead of editing the file. A comma
+  after the *last* entry is tolerated.
+- **Files from another device don't show up.** Run `status` on both devices and compare:
+  - **key fingerprint** must be identical. If not, run `setup` again with the same encryption
+    password (or `setup -k <encryption_key from the other device>`).
+  - **Channel** must be the same.
+  - **Journal** must show a message number (not "not started"). If it says "not started", that
+    device is still running an old version; see [Updating](#updating).
+  - **Pending Publish** on the device that made the change should be 0.
+- **"Found index checkpoint ... could not restore it".** This device has a different encryption key
+  than the one that wrote the drive. It refuses to start empty rather than overwrite your index. Fix
+  the key as above.
+- **A "Recovered files" folder appeared.** A change arrived for a file whose folder had been
+  deleted on another device at the same time. The file was put here instead of being lost.
+- **Bot invite says "successful" but the bot did not join.** The invite URL must include `scope=bot`.
+- **Want to confirm encryption is on?** `status` shows `Encryption: ENABLED (AES-256-GCM | key
+  fingerprint …)`, and the log says `Zero-knowledge AES-256-GCM encryption ACTIVE` at every start.
+  In the Discord channel, attachments are named `chk_<random>.bin` with no message text.
 
 ## License
 
