@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="430" viewBox="0 0 960 430" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="DiscordDrive overview: devices sync through DiscordDrive, which stores encrypted pieces in a private Discord channel">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c83fd"/>
+    </marker>
+  </defs>
+  <rect width="960" height="430" rx="16" fill="#0d1117"/>
+
+  <text x="40" y="54" fill="#e6edf3" font-size="27" font-weight="700">DiscordDrive</text>
+  <text x="40" y="81" fill="#8b949e" font-size="15">Your files on every device, stored as encrypted pieces in a private Discord channel</text>
+
+  <!-- devices -->
+  <g>
+    <rect x="40" y="120" width="230" height="68" rx="10" fill="#161b22" stroke="#30363d"/>
+    <rect x="58" y="137" width="28" height="19" rx="2" fill="none" stroke="#7c83fd" stroke-width="2"/>
+    <path d="M65 165 h14 M72 156 v9" stroke="#7c83fd" stroke-width="2" fill="none"/>
+    <text x="102" y="149" fill="#e6edf3" font-size="15" font-weight="600">Windows PC</text>
+    <text x="102" y="171" fill="#8b949e" font-size="13" font-family="Consolas, 'SFMono-Regular', Menlo, monospace">Z:\</text>
+
+    <rect x="40" y="208" width="230" height="68" rx="10" fill="#161b22" stroke="#30363d"/>
+    <rect x="58" y="226" width="28" height="9" rx="2" fill="none" stroke="#7c83fd" stroke-width="2"/>
+    <rect x="58" y="240" width="28" height="9" rx="2" fill="none" stroke="#7c83fd" stroke-width="2"/>
+    <circle cx="80" cy="230.5" r="1.6" fill="#7c83fd"/><circle cx="80" cy="244.5" r="1.6" fill="#7c83fd"/>
+    <text x="102" y="237" fill="#e6edf3" font-size="15" font-weight="600">Linux server</text>
+    <text x="102" y="259" fill="#8b949e" font-size="13" font-family="Consolas, 'SFMono-Regular', Menlo, monospace">/mnt/discord</text>
+
+    <rect x="40" y="296" width="230" height="68" rx="10" fill="#161b22" stroke="#30363d"/>
+    <rect x="58" y="313" width="28" height="22" rx="3" fill="none" stroke="#7c83fd" stroke-width="2"/>
+    <path d="M62 318 h4 M62 323 h4 M62 328 h4" stroke="#7c83fd" stroke-width="1.6"/>
+    <rect x="72" y="319" width="9" height="9" rx="1" fill="#7c83fd"/>
+    <text x="102" y="325" fill="#e6edf3" font-size="15" font-weight="600">Raspberry Pi</text>
+    <text x="102" y="347" fill="#8b949e" font-size="13" font-family="Consolas, 'SFMono-Regular', Menlo, monospace">/mnt/discord</text>
+  </g>
+
+  <!-- sync arrows -->
+  <g stroke="#7c83fd" stroke-width="2" fill="none">
+    <path d="M274 154 L341 178" marker-start="url(#arr)" marker-end="url(#arr)"/>
+    <path d="M274 242 L341 242" marker-start="url(#arr)" marker-end="url(#arr)"/>
+    <path d="M274 330 L341 306" marker-start="url(#arr)" marker-end="url(#arr)"/>
+  </g>
+
+  <!-- core -->
+  <rect x="345" y="112" width="275" height="260" rx="12" fill="#161b22" stroke="#7c83fd" stroke-width="1.5"/>
+  <rect x="365" y="134" width="16" height="12" rx="2" fill="#7c83fd"/>
+  <path d="M368 134 v-4 a5 5 0 0 1 10 0 v4" stroke="#7c83fd" stroke-width="2" fill="none"/>
+  <text x="391" y="146" fill="#e6edf3" font-size="17" font-weight="700">DiscordDrive</text>
+  <g font-size="14" fill="#c9d1d9">
+    <g transform="translate(367,180)"><circle r="8" fill="#238636"/><path d="M-3.5 0 l2.5 2.5 l4.5 -5" stroke="#fff" stroke-width="1.8" fill="none"/><text x="18" y="5">Splits files into 9 MB pieces</text></g>
+    <g transform="translate(367,215)"><circle r="8" fill="#238636"/><path d="M-3.5 0 l2.5 2.5 l4.5 -5" stroke="#fff" stroke-width="1.8" fill="none"/><text x="18" y="5">Encrypts them (AES-256-GCM)</text></g>
+    <g transform="translate(367,250)"><circle r="8" fill="#238636"/><path d="M-3.5 0 l2.5 2.5 l4.5 -5" stroke="#fff" stroke-width="1.8" fill="none"/><text x="18" y="5">Streams only what you open</text></g>
+    <g transform="translate(367,285)"><circle r="8" fill="#238636"/><path d="M-3.5 0 l2.5 2.5 l4.5 -5" stroke="#fff" stroke-width="1.8" fill="none"/><text x="18" y="5">Syncs changes in seconds</text></g>
+    <g transform="translate(367,320)"><circle r="8" fill="#238636"/><path d="M-3.5 0 l2.5 2.5 l4.5 -5" stroke="#fff" stroke-width="1.8" fill="none"/><text x="18" y="5">Keeps old versions for 30 days</text></g>
+  </g>
+
+  <!-- to channel -->
+  <path d="M624 242 L682 242" stroke="#7c83fd" stroke-width="2" fill="none" marker-start="url(#arr)" marker-end="url(#arr)"/>
+  <text x="653" y="231" fill="#8b949e" font-size="11" text-anchor="middle">encrypted</text>
+
+  <!-- channel -->
+  <rect x="686" y="100" width="236" height="284" rx="12" fill="#161b22" stroke="#30363d"/>
+  <text x="704" y="129" fill="#e6edf3" font-size="15" font-weight="700"># drive</text>
+  <text x="764" y="129" fill="#8b949e" font-size="12">private channel</text>
+  <line x1="686" y1="142" x2="922" y2="142" stroke="#30363d"/>
+  <g font-family="Consolas, 'SFMono-Regular', Menlo, monospace" font-size="11.5">
+    <rect x="700" y="154" width="208" height="38" rx="6" fill="#1c2129"/>
+    <rect x="710" y="161" width="16" height="22" rx="2" fill="#2d333b" stroke="#7c83fd"/>
+    <text x="734" y="171" fill="#9ea8ff">chk_3f9a12c0…d4e1.bin</text>
+    <text x="734" y="186" fill="#8b949e" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5">9.00 MB</text>
+
+    <rect x="700" y="198" width="208" height="38" rx="6" fill="#1c2129"/>
+    <rect x="710" y="205" width="16" height="22" rx="2" fill="#2d333b" stroke="#7c83fd"/>
+    <text x="734" y="215" fill="#9ea8ff">chk_b72c55e0…3c04.bin</text>
+    <text x="734" y="230" fill="#8b949e" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5">9.00 MB</text>
+
+    <rect x="700" y="242" width="208" height="38" rx="6" fill="#1c2129"/>
+    <text x="710" y="259" fill="#c9d1d9">DDOP1 REVOQ8kz3Rw1p+Qx…</text>
+    <text x="710" y="273" fill="#8b949e" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5">encrypted sync record</text>
+
+    <rect x="700" y="286" width="208" height="38" rx="6" fill="#1c2129"/>
+    <rect x="710" y="293" width="16" height="22" rx="2" fill="#2d333b" stroke="#7c83fd"/>
+    <text x="734" y="303" fill="#9ea8ff">chk_0d8e4a7f…9e13.bin</text>
+    <text x="734" y="318" fill="#8b949e" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5">4.27 MB</text>
+
+    <rect x="700" y="330" width="208" height="38" rx="6" fill="#1c2129" stroke="#d29922" stroke-opacity="0.6"/>
+    <text x="710" y="347" fill="#d29922" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600">PINNED</text>
+    <text x="760" y="347" fill="#c9d1d9" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11">index checkpoint</text>
+    <text x="710" y="361" fill="#8b949e" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5">encrypted file list</text>
+  </g>
+
+  <text x="480" y="410" fill="#8b949e" font-size="13" text-anchor="middle">Discord only ever sees random names and encrypted bytes: never your file names, folders or contents.</text>
+</svg>

@@ -7,6 +7,8 @@ Files you save to the drive are staged locally, split into chunks, encrypted, an
 attachments to your channel. Reading only downloads the chunks that cover the requested byte range,
 so videos stream and seek without downloading the whole file first.
 
+<p align="center"><img src="docs/images/overview.svg" alt="Your devices sync through DiscordDrive, which stores encrypted pieces in a private Discord channel" width="100%"></p>
+
 > **Heads-up:** using Discord as general-purpose file storage may violate Discord's Terms of
 > Service, and Discord can delete messages, attachments, or your bot/account at any time. Treat
 > DiscordDrive as an experiment, **not** as your only copy of anything important.
@@ -102,6 +104,8 @@ Your files are in **`/mnt/discord`**.
 
 On Windows you can also just double-click `start_drive.cmd` / `stop_drive.cmd` in File Explorer.
 
+<p align="center"><img src="docs/images/status.svg" alt="Example output of the status command" width="720"></p>
+
 Stuck? See [Troubleshooting](#troubleshooting): it covers every problem we have run into on
 Windows and Linux.
 
@@ -128,6 +132,8 @@ run `export-key` on a computer where the drive works, then `setup -k <that key>`
 ---
 
 ## Features
+
+<p align="center"><img src="docs/images/what-discord-sees.svg" alt="What you see on the drive compared with what Discord stores: only random names and encrypted data" width="100%"></p>
 
 - **Client-side encryption (AES-256-GCM).** Chunks and index backups are encrypted before upload.
   Attachments get random names (`chk_<random>.bin`) and empty message text, so Discord never sees
