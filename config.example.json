@@ -13,6 +13,7 @@
   "download_threads": 4,
   "upload_threads": 3,
   "staging_max_bytes": 10737418240,
+  "min_free_disk_bytes": 2147483648,
   "delete_remote": true,
   "index_backup_interval": 600.0,
   "poll_interval": 2.0,

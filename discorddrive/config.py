@@ -64,6 +64,7 @@ class Config:
     download_threads: int = 4
     upload_threads: int = 3            # chunks/files uploaded in parallel
     staging_max_bytes: int = 10 * 1024 * MiB  # pause new file creation while this much is waiting to upload (0 = no limit)
+    min_free_disk_bytes: int = 2 * 1024 * MiB  # also pause while the local disk has less free space than this
     delete_remote: bool = True         # delete Discord messages when files are deleted/overwritten
     index_backup_interval: float = 600.0  # seconds between index checkpoints (when something changed)
     poll_interval: float = 2.0         # seconds between checks for changes made on other devices

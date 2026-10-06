@@ -15,6 +15,7 @@ import bisect
 import errno
 import logging
 import os
+import shutil
 import stat
 import threading
 import time
@@ -51,6 +52,7 @@ class OpenNode:
         self.dirty = False       # written since the last time it was queued for upload
         self.deleted = False
         self.mtime = None        # mtime to record when the file is finalized
+        self.unchecked = 0       # bytes written since free disk space was last checked
 
 
 class DiscordDriveFS(Operations):
@@ -99,28 +101,53 @@ class DiscordDriveFS(Operations):
         self._staging_usage = (time.time(), used)
         return used
 
-    def _wait_for_staging_space(self, max_wait=1800.0):
-        """Back-pressure for big copies: block new files while the upload backlog is too large.
+    def _free_disk(self):
+        try:
+            return shutil.disk_usage(self.staging_dir).free
+        except OSError:
+            return None
 
-        Only closed files count, so an application holding several large files
-        open can never deadlock itself. Gives up after `max_wait` seconds (e.g.
-        when Discord is unreachable) rather than hanging the caller forever.
+    def _wait_for_staging_space(self, max_wait=1800.0, min_free=None):
+        """Back-pressure for big copies: block while the upload backlog is too large or the
+        local disk is nearly full, until uploads catch up (they delete their local copies).
+
+        Only closed files count towards the backlog, so an application holding several
+        large files open can never deadlock itself. Waiting only happens while uploads are
+        pending (otherwise nothing would free space), and gives up after `max_wait` seconds
+        (e.g. when Discord is unreachable) rather than hanging the caller forever.
         """
-        limit = int(getattr(self.cfg, "staging_max_bytes", 0) or 0)
-        if limit <= 0 or self.uploader is None:
+        if self.uploader is None:
             return
+        limit = int(getattr(self.cfg, "staging_max_bytes", 0) or 0)
+        if min_free is None:
+            min_free = int(getattr(self.cfg, "min_free_disk_bytes", 0) or 0)
+
+        def reason():
+            pending = self._pending_staging_bytes()
+            if not pending and self.uploader.is_idle():
+                return None
+            if limit > 0 and pending >= limit:
+                return f"upload backlog is {pending / 2**30:.1f} GiB (limit {limit / 2**30:.1f} GiB)"
+            free = self._free_disk()
+            if min_free > 0 and free is not None and free < min_free:
+                return (f"only {free / 2**30:.1f} GiB free on the local disk "
+                        f"(keeping {min_free / 2**30:.1f} GiB free); {pending / 2**30:.1f} GiB waiting to upload")
+            return None
+
         start = time.time()
         next_log = start
-        while self._pending_staging_bytes() >= limit:
+        why = reason()
+        while why:
             now = time.time()
             if now - start > max_wait:
-                log.warning("Upload backlog still above the staging limit after %.0fs; continuing anyway", max_wait)
+                log.warning("Still waiting after %.0fs (%s); continuing anyway", max_wait, why)
                 return
             if now >= next_log:
-                log.info("Upload backlog is %.1f GiB (limit %.1f GiB); waiting for uploads before creating more files",
-                         self._pending_staging_bytes() / 2**30, limit / 2**30)
+                log.info("Pausing writes until uploads catch up: %s", why)
                 next_log = now + 30.0
             time.sleep(1.0)
+            self._staging_usage = (0.0, 0)
+            why = reason()
 
     def _get(self, path):
         n = self.index.resolve(path)
@@ -396,6 +423,15 @@ class DiscordDriveFS(Operations):
 
     def write(self, path, data, offset, fh):
         nid, _, on = self._handle(fh)
+        # A single huge file can fill the disk on its own: check free space every 64 MiB
+        # and pause (keeping a small reserve) while other files are still uploading.
+        on.unchecked += len(data)
+        if on.unchecked >= 64 * 2**20:
+            on.unchecked = 0
+            reserve = min(512 * 2**20, int(getattr(self.cfg, "min_free_disk_bytes", 0) or 0))
+            free = self._free_disk()
+            if reserve and free is not None and free < reserve:
+                self._wait_for_staging_space(min_free=reserve)
         with on.lock:
             self._materialize(on)
             on.f.seek(offset)

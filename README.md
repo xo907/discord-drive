@@ -148,8 +148,8 @@ run `export-key` on a computer where the drive works, then `setup -k <that key>`
   changes made while offline are sent when the connection comes back.
 - **Disaster recovery.** Encrypted index checkpoints are pinned in the channel. A fresh install
   restores the whole folder tree automatically.
-- **Back-pressure.** Large copies pause new file creation while the upload backlog exceeds
-  `staging_max_bytes`, so a big `rsync` cannot fill your local disk.
+- **Back-pressure.** Large copies pause while the upload backlog exceeds `staging_max_bytes` or
+  free disk space drops below `min_free_disk_bytes`, so a big `rsync` cannot fill your local disk.
 
 ## Requirements
 
@@ -269,7 +269,7 @@ File contents live in Discord. Locally, DiscordDrive only uses:
 | What | Location (data dir) | How long |
 |---|---|---|
 | Index (file list, versions) | `index.db` | Always; usually a few MB |
-| Files being written | `staging/` | Until the upload finishes, then deleted. Capped by `staging_max_bytes`. A file must be complete before it can be split and encrypted, so this cannot be avoided. |
+| Files being written | `staging/` | Until the upload finishes, then deleted. Writing pauses when more than `staging_max_bytes` (10 GiB) is waiting to upload or the disk has less than `min_free_disk_bytes` (2 GiB) free, and resumes as uploads finish. A file must be complete before it can be split and encrypted, so this cannot be avoided. |
 | Files being edited | `staging/` | An existing file is downloaded completely while it is open for writing, then removed after it is re-uploaded |
 | Viewed files (read cache) | `cache/` | **Disk mode (default):** kept up to `cache_max_bytes` (5 GiB) so re-opening is instant. **Memory mode:** never written to disk |
 | Offline-pinned files | `cache/` | Until you unpin them (`free-space`) |
@@ -412,6 +412,10 @@ on Linux (background starts also write `mount.log` next to it).
 - **The installer warns that `/dev/fuse` does not exist.** Some VPS types (OpenVZ/LXC containers)
   have no FUSE support, so the drive cannot be mounted. Ask the provider to enable FUSE, or use a
   KVM-based server.
+- **"No space left on device" while copying a lot of files.** Files you copy *in* are kept on the
+  local disk until they are uploaded (the memory-only setting only affects files you *read*). Current
+  versions pause the copy instead of filling the disk; update, then re-run the copy (rsync skips what
+  is already there). On a small disk you can also lower the backlog: `config staging_max_bytes 2147483648`.
 - **`/mnt/discord` looks empty although the drive is running.** If your terminal was already
   *inside* that folder when the drive started, it keeps showing the plain folder underneath. Leave
   and come back: `cd ~ && ls /mnt/discord`.
