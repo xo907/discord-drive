@@ -1,0 +1,33 @@
+# Secrets: never commit a real config (bot token + encryption key)
+config.json
+*.config.json
+.env
+
+# Build / packaging artifacts
+*.tar.gz
+*.zip
+dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime data if a data_dir is pointed inside the repo
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.pid
+staging/
+cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

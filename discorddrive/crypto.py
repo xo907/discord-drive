@@ -1,0 +1,248 @@
+"""Hardware-accelerated zero-knowledge AES-256-GCM encryption.
+
+Supports:
+- Windows: Native Windows Cryptography API: Next Generation (bcrypt.dll) with hardware AES-NI.
+- Linux/macOS: Python cryptography package (python3-cryptography / pip install cryptography).
+
+Both produce the same format, so data written on one platform reads on the other.
+"""
+
+import ctypes
+import hashlib
+import logging
+import os
+import secrets
+import sys
+
+log = logging.getLogger("discorddrive.crypto")
+
+MAGIC = b"DENC"  # DiscordDrive Encrypted
+NONCE_SIZE = 12
+TAG_SIZE = 16
+KEY_SIZE = 32     # 256 bits
+
+
+class CryptoError(Exception):
+    pass
+
+
+class AuthenticationError(CryptoError):
+    pass
+
+
+def derive_key(passphrase: str, salt: bytes = None, iterations: int = 200_000) -> tuple[bytes, bytes]:
+    """Derives a 256-bit AES key from a passphrase using PBKDF2-HMAC-SHA256."""
+    if salt is None:
+        salt = os.urandom(16)
+    key = hashlib.pbkdf2_hmac("sha256", passphrase.encode("utf-8"), salt, iterations, dklen=KEY_SIZE)
+    return key, salt
+
+
+def channel_salt(channel_id: str) -> bytes:
+    """Deterministic per-channel salt, so the same passphrase yields the same key on every machine."""
+    return hashlib.sha256(f"DiscordDrive:{channel_id}".encode("utf-8")).digest()[:16]
+
+
+def generate_key() -> bytes:
+    """Generates a cryptographically secure 256-bit key."""
+    return secrets.token_bytes(KEY_SIZE)
+
+
+def parse_key(key_hex: str) -> bytes:
+    """Validates a hex-encoded 256-bit key."""
+    try:
+        key = bytes.fromhex((key_hex or "").strip())
+    except ValueError:
+        raise ValueError("encryption key is not valid hex") from None
+    if len(key) != KEY_SIZE:
+        raise ValueError(f"encryption key must be {KEY_SIZE * 2} hex characters, got {len(key) * 2}")
+    return key
+
+
+def key_fingerprint(key_hex: str) -> str:
+    """Short, non-secret identifier for a key (safe to print or log)."""
+    return hashlib.sha256(b"DiscordDrive-fp:" + bytes.fromhex(key_hex)).hexdigest()[:12]
+
+
+_USE_BCRYPT = sys.platform == "win32" and hasattr(ctypes, "windll")
+
+if _USE_BCRYPT:
+    from ctypes import wintypes
+    bcrypt = ctypes.windll.bcrypt
+
+    class BCRYPT_AUTH_MODE_INFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.ULONG),
+            ("dwInfoVersion", wintypes.ULONG),
+            ("pbNonce", ctypes.c_char_p),
+            ("cbNonce", wintypes.ULONG),
+            ("pbAuthData", ctypes.c_char_p),
+            ("cbAuthData", wintypes.ULONG),
+            ("pbTag", ctypes.c_char_p),
+            ("cbTag", wintypes.ULONG),
+            ("pbMacContext", ctypes.c_char_p),
+            ("cbMacContext", wintypes.ULONG),
+            ("cbAAD", wintypes.ULONG),
+            ("cbData", wintypes.ULARGE_INTEGER),
+            ("dwFlags", wintypes.ULONG),
+        ]
+else:
+    bcrypt = None
+
+
+class CryptoEngine:
+    def __init__(self, key: bytes):
+        if len(key) != KEY_SIZE:
+            raise ValueError(f"Key must be exactly {KEY_SIZE} bytes (256 bits), got {len(key)}")
+        self.key = key
+        self._aesgcm = None
+
+        if _USE_BCRYPT:
+            self._hAlg = wintypes.HANDLE()
+            self._hKey = wintypes.HANDLE()
+            self._init_bcrypt()
+        else:
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                self._aesgcm = AESGCM(self.key)
+            except ImportError:
+                raise ImportError(
+                    "AES-256-GCM encryption on this platform requires the 'cryptography' package. "
+                    "Install it via: sudo apt install python3-cryptography  (or: pip install cryptography)"
+                ) from None
+
+    def _init_bcrypt(self):
+        st = bcrypt.BCryptOpenAlgorithmProvider(ctypes.byref(self._hAlg), "AES", None, 0)
+        if st != 0:
+            raise CryptoError(f"BCryptOpenAlgorithmProvider failed with status {hex(st)}")
+
+        chain_mode = "ChainingModeGCM"
+        st = bcrypt.BCryptSetProperty(
+            self._hAlg, "ChainingMode", chain_mode, (len(chain_mode) + 1) * 2, 0
+        )
+        if st != 0:
+            bcrypt.BCryptCloseAlgorithmProvider(self._hAlg, 0)
+            raise CryptoError(f"BCryptSetProperty(ChainingModeGCM) failed with status {hex(st)}")
+
+        st = bcrypt.BCryptGenerateSymmetricKey(
+            self._hAlg, ctypes.byref(self._hKey), None, 0, self.key, len(self.key), 0
+        )
+        if st != 0:
+            bcrypt.BCryptCloseAlgorithmProvider(self._hAlg, 0)
+            raise CryptoError(f"BCryptGenerateSymmetricKey failed with status {hex(st)}")
+
+    def close(self):
+        if _USE_BCRYPT:
+            if getattr(self, "_hKey", None):
+                bcrypt.BCryptDestroyKey(self._hKey)
+                self._hKey = wintypes.HANDLE()
+            if getattr(self, "_hAlg", None):
+                bcrypt.BCryptCloseAlgorithmProvider(self._hAlg, 0)
+                self._hAlg = wintypes.HANDLE()
+
+    def __del__(self):
+        self.close()
+
+    def encrypt(self, data: bytes, aad: bytes = b"") -> bytes:
+        """Encrypts data with AES-256-GCM.
+        Returns: [MAGIC (4B)] + [NONCE (12B)] + [TAG (16B)] + [CIPHERTEXT]
+        """
+        if self._aesgcm is not None:
+            nonce = os.urandom(NONCE_SIZE)
+            ct_and_tag = self._aesgcm.encrypt(nonce, data, aad or None)
+            ciphertext = ct_and_tag[:-TAG_SIZE]
+            tag = ct_and_tag[-TAG_SIZE:]
+            return MAGIC + nonce + tag + ciphertext
+
+        nonce = os.urandom(NONCE_SIZE)
+        tag = ctypes.create_string_buffer(TAG_SIZE)
+        ciphertext = ctypes.create_string_buffer(len(data))
+        cb_result = wintypes.ULONG()
+
+        auth_info = BCRYPT_AUTH_MODE_INFO()
+        auth_info.cbSize = ctypes.sizeof(BCRYPT_AUTH_MODE_INFO)
+        auth_info.dwInfoVersion = 1
+        auth_info.pbNonce = nonce
+        auth_info.cbNonce = NONCE_SIZE
+        auth_info.pbTag = ctypes.cast(tag, ctypes.c_char_p)
+        auth_info.cbTag = TAG_SIZE
+        if aad:
+            auth_info.pbAuthData = aad
+            auth_info.cbAuthData = len(aad)
+
+        st = bcrypt.BCryptEncrypt(
+            self._hKey,
+            data,
+            len(data),
+            ctypes.byref(auth_info),
+            None,
+            0,
+            ciphertext,
+            len(ciphertext),
+            ctypes.byref(cb_result),
+            0,
+        )
+        if st != 0:
+            raise CryptoError(f"AES-GCM encryption failed with status {hex(st)}")
+
+        return MAGIC + nonce + tag.raw + ciphertext.raw[:cb_result.value]
+
+    def decrypt(self, payload: bytes, aad: bytes = b"") -> bytes:
+        """Decrypts and authenticates payload with AES-256-GCM.
+        Raises AuthenticationError if corrupted or wrong key.
+        """
+        min_len = len(MAGIC) + NONCE_SIZE + TAG_SIZE
+        if len(payload) < min_len:
+            raise AuthenticationError("Payload is too short to be a valid encrypted block")
+
+        if payload[:len(MAGIC)] != MAGIC:
+            raise AuthenticationError("Invalid magic header; data is not encrypted or corrupted")
+
+        offset = len(MAGIC)
+        nonce = payload[offset : offset + NONCE_SIZE]
+        offset += NONCE_SIZE
+        tag = payload[offset : offset + TAG_SIZE]
+        offset += TAG_SIZE
+        ciphertext = payload[offset:]
+
+        if self._aesgcm is not None:
+            try:
+                return self._aesgcm.decrypt(nonce, ciphertext + tag, aad or None)
+            except Exception as e:
+                raise AuthenticationError(
+                    "Decryption / authentication failed. Wrong encryption key or corrupted data!"
+                ) from e
+
+        plaintext = ctypes.create_string_buffer(len(ciphertext))
+        cb_result = wintypes.ULONG()
+
+        auth_info = BCRYPT_AUTH_MODE_INFO()
+        auth_info.cbSize = ctypes.sizeof(BCRYPT_AUTH_MODE_INFO)
+        auth_info.dwInfoVersion = 1
+        auth_info.pbNonce = nonce
+        auth_info.cbNonce = NONCE_SIZE
+        auth_info.pbTag = tag
+        auth_info.cbTag = TAG_SIZE
+        if aad:
+            auth_info.pbAuthData = aad
+            auth_info.cbAuthData = len(aad)
+
+        st = bcrypt.BCryptDecrypt(
+            self._hKey,
+            ciphertext,
+            len(ciphertext),
+            ctypes.byref(auth_info),
+            None,
+            0,
+            plaintext,
+            len(plaintext),
+            ctypes.byref(cb_result),
+            0,
+        )
+        if st != 0:
+            raise AuthenticationError(
+                f"Decryption / authentication failed (status {hex(st if st >= 0 else (1 << 32) + st)}). "
+                "Wrong encryption key or corrupted data!"
+            )
+
+        return plaintext.raw[:cb_result.value]

@@ -1,0 +1,347 @@
+# DiscordDrive
+
+**DiscordDrive** turns a private Discord channel into an encrypted virtual drive: a drive letter
+on Windows (e.g. `Z:\`) or a mount directory on Linux (e.g. `/mnt/discord`).
+
+Files you save to the drive are staged locally, split into chunks, encrypted, and uploaded as
+attachments to your channel. Reading only downloads the chunks that cover the requested byte range,
+so videos stream and seek without downloading the whole file first.
+
+> **Heads-up:** using Discord as general-purpose file storage may violate Discord's Terms of
+> Service, and Discord can delete messages, attachments, or your bot/account at any time. Treat
+> DiscordDrive as an experiment, **not** as your only copy of anything important.
+
+---
+
+## Quick start
+
+About 10 minutes. You need a Discord account and a server you own (any empty server works:
+in Discord, click **+** in the server list → **Create My Own**).
+
+### Step 1: Create the Discord bot (same for Windows and Linux)
+
+1. Go to <https://discord.com/developers/applications> → **New Application** → type any name → **Create**.
+2. On the left click **Bot** → **Reset Token** → **Yes, do it!** → **Copy**.
+   Paste the token somewhere for a minute; you need it in Step 2.
+3. On the left click **OAuth2** and copy the **Client ID**. Paste it into this link in place of
+   `YOUR_CLIENT_ID`, open the link, choose your server, and click **Authorize**:
+   ```text
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot&permissions=109568
+   ```
+4. In your server, create a text channel for storage (for example `#drive`). Only you and the bot
+   should be able to see it: in the channel's settings → **Permissions**, make it private and add your bot.
+5. In Discord, go to **User Settings → Advanced** and turn on **Developer Mode**. Then right-click
+   the channel → **Copy Channel ID**. You need this in Step 2 as well.
+
+### Step 2a: Windows 10 / 11
+
+Open **PowerShell** (Start menu → type `PowerShell` → Enter) and paste:
+
+```powershell
+winget install -e --id Python.Python.3.12; winget install -e --id WinFsp.WinFsp; winget install -e --id Git.Git
+```
+
+Click **Yes** if Windows asks for permission. When it is done, **close PowerShell and open a new one**
+(so it finds the programs you just installed), then paste:
+
+```powershell
+git clone https://github.com/xo907/discord-drive.git "$HOME\DiscordDrive"; cd "$HOME\DiscordDrive"; .\DiscordDrive.cmd setup
+```
+
+Setup asks five questions:
+
+| Question | What to type |
+|---|---|
+| Discord Bot Token | the token from Step 1 |
+| Private Discord Channel ID | the channel ID from Step 1 |
+| Mount Point Drive Letter `[Z:]` | press **Enter** (or type another free letter) |
+| Enable Zero-Knowledge Encryption? `[Y/n]` | press **Enter** |
+| Encryption Password | a password you will remember. **Use the same one on all your computers.** |
+
+Start the drive:
+
+```powershell
+.\start_drive.cmd
+```
+
+Open **File Explorer**: your new drive is **Z:**. Anything you put there is stored in Discord.
+
+### Step 2b: Linux (Debian, Ubuntu, Raspberry Pi OS)
+
+Open a terminal and paste:
+
+```bash
+sudo apt update && sudo apt install -y git && git clone https://github.com/xo907/discord-drive.git ~/DiscordDrive && cd ~/DiscordDrive && ./install_debian.sh
+```
+
+Then run setup. Paste the bot token and channel ID, press **Enter** at "Enable encryption?", and type
+an encryption password (the **same one on all your computers**):
+
+```bash
+./discorddrive.sh setup -m /mnt/discord
+```
+
+Start the drive:
+
+```bash
+./start_drive.sh
+```
+
+Your files are in **`/mnt/discord`**.
+
+### Everyday use
+
+| | Windows (in the `DiscordDrive` folder) | Linux (in `~/DiscordDrive`) |
+|---|---|---|
+| Start | `.\start_drive.cmd` | `./start_drive.sh` |
+| Stop | `.\stop_drive.cmd` | `./stop_drive.sh` |
+| Status | `.\DiscordDrive.cmd status` | `./discorddrive.sh status` |
+| Update to the latest version | `git pull`, then stop and start | `git pull`, then stop and start |
+
+On Windows you can also just double-click `start_drive.cmd` / `stop_drive.cmd` in File Explorer.
+
+**Optional: keep nothing on this computer.** By default, files you open are cached on disk so they
+open faster next time. To stream them from Discord every time instead (cached in RAM only), run this
+once, then stop and start the drive:
+
+```powershell
+.\DiscordDrive.cmd config cache_mode memory
+```
+```bash
+./discorddrive.sh config cache_mode memory
+```
+
+**Using a second computer?** Do Step 2 on it with the **same bot token, channel ID, and encryption
+password**. Everything you stored appears there automatically, and changes sync both ways within seconds.
+
+> **Back up your encryption password** (or the `encryption_key` from the config file). Without it,
+> the data in Discord cannot be decrypted. Nobody can recover it for you.
+
+---
+
+## Features
+
+- **Client-side encryption (AES-256-GCM).** Chunks and index backups are encrypted before upload.
+  Attachments get random names (`chk_<random>.bin`) and empty message text, so Discord never sees
+  file names, folder structure, or contents. It can still see how many chunks there are, their
+  sizes, and when they were uploaded.
+- **Real drive / mount.** Uses [WinFsp](https://winfsp.dev/) on Windows and libfuse on Linux,
+  so any application can use it.
+- **Streaming and seeking.** Byte-range reads, read-ahead, and an on-disk LRU chunk cache.
+- **Files on demand.** After upload the local copy is removed. Files take no local space until opened.
+  With the memory-only cache, opened files are not stored on disk either (see below).
+- **Offline pinning.** Keep chosen files or folders cached locally (on Windows, also from the
+  Explorer right-click menu).
+- **Live sync between devices.** Changes made on one computer appear on the others within a few
+  seconds. Edits made on two devices at the same time are merged without losing either one.
+- **File versions and undelete.** Replaced and deleted files are kept for 30 days (configurable).
+  You can list them, bring back an older version, or recover a deleted file.
+- **Crash-safe.** A local SQLite (WAL) index. Unfinished uploads resume on the next start, and
+  changes made while offline are sent when the connection comes back.
+- **Disaster recovery.** Encrypted index checkpoints are pinned in the channel. A fresh install
+  restores the whole folder tree automatically.
+- **Back-pressure.** Large copies pause new file creation while the upload backlog exceeds
+  `staging_max_bytes`, so a big `rsync` cannot fill your local disk.
+
+## Requirements
+
+| | Windows 10/11 | Linux (Debian, Ubuntu, Raspberry Pi OS, ...) |
+|---|---|---|
+| Python | 3.9+ | 3.9+ |
+| Filesystem driver | [WinFsp](https://winfsp.dev/rel/) | `libfuse2` (`libfuse2t64` on Debian 13+) + `fuse` |
+| Encryption | built in (Windows CNG) | `python3-cryptography` |
+| HTTP | `curl` (ships with Windows) | `curl` (or Python's urllib fallback) |
+
+There are no other dependencies. A copy of [fusepy](https://github.com/fusepy/fusepy) is
+vendored in `discorddrive/_vendor/` (ISC license).
+
+---
+
+## Configuration
+
+The bot only needs *View Channels, Send Messages, Attach Files, Read Message History* and
+*Manage Messages* (plus *Pin Messages* where Discord lists it separately); that is what
+`permissions=109568` in the invite link grants. No privileged gateway intents are needed.
+
+The config is stored outside the repository:
+
+| | Config (token + key) | Data (index, cache, staging, log) |
+|---|---|---|
+| Windows | `%APPDATA%\DiscordDrive\config.json` | `%LOCALAPPDATA%\DiscordDrive\` |
+| Linux | `~/.config/DiscordDrive/config.json` (mode 600) | `~/.local/share/DiscordDrive/` |
+
+Change settings with `config <name> <value>` (run `config` alone to list them), or edit the file.
+`DISCORDDRIVE_CONFIG`, `DISCORDDRIVE_TOKEN` and `DISCORDDRIVE_CHANNEL` environment variables
+override the config file location, token, and channel. See [`config.example.json`](config.example.json)
+for every option.
+
+
+---
+
+## Usage
+
+| Task | Windows | Linux |
+|---|---|---|
+| Start in background | `start_drive.cmd` | `./start_drive.sh` |
+| Run in foreground (Ctrl+C to stop) | `DiscordDrive.cmd mount` | `./discorddrive.sh mount` |
+| Stop | `stop_drive.cmd` | `./stop_drive.sh` |
+| Status | `status_drive.cmd` | `./discorddrive.sh status` |
+| Clear local cache | `clear_cache.cmd` | `./clear_cache.sh` |
+
+Other commands (`DiscordDrive.cmd <cmd>` / `./discorddrive.sh <cmd>`):
+
+```text
+offline <path>        Pin a file/folder and download it for offline use   (alias: pin)
+free-space [<path>]   Evict cached data (one path, or --all)               (alias: unpin)
+versions <file>                      List the older versions kept for a file
+restore-version <file> <n> [--as p]  Bring back version n (or save it as a new file p)
+deleted [<folder>]                   List deleted files that can still be recovered
+undelete <path>                      Recover a deleted file
+config [<name> [<value>]]            Show or change a setting
+backup                Save an index checkpoint now (normally automatic)
+restore               Rebuild the local index from the channel (drive must be stopped)
+context-menu install  Add "Make available offline" / "Free up space" to Explorer (Windows)
+```
+
+Paths can be given as `Z:\Folder\file.mp4`, `/mnt/discord/Folder/file.mp4`, or `/Folder/file.mp4`.
+
+### Start automatically on Linux (systemd)
+
+`install_debian.sh` prints the exact commands. In short:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp discorddrive.service ~/.config/systemd/user/    # edit the paths if the repo is not ~/DiscordDrive
+systemctl --user daemon-reload
+systemctl --user enable --now discorddrive
+sudo loginctl enable-linger "$USER"                 # keep running when you are logged out
+```
+
+### Sharing over Samba / with other users (Linux)
+
+Set `"allow_other": true` in the config, or pass `mount --allow-other`. This requires
+`user_allow_other` in `/etc/fuse.conf`, which `install_debian.sh` enables.
+
+---
+
+## Using the same drive on several devices
+
+Every device needs the **same bot token, channel, and encryption key**. Either use the same
+passphrase during `setup` (the key is derived from the passphrase and the channel ID, so it comes
+out identical), or copy `encryption_key` from the first device's config. If `setup` sees that the
+channel already holds an encrypted drive, it refuses to generate a new random key.
+
+Devices stay in sync while they are running:
+
+- A new or changed file appears on the other devices as soon as its upload finishes, plus up to
+  `poll_interval` seconds (default 2). New folders, renames, moves, and deletes appear within a few seconds.
+- A device that was off catches up when it starts.
+- **Simultaneous changes are merged, never overwritten:**
+  - If two devices create a file with the same name, one keeps the name and the other becomes
+    `name (conflict xxxxxx).ext`.
+  - Folders with the same name are merged.
+  - If the same file is edited on two devices, the edit that reaches Discord last wins. The other
+    edit is kept as a version (`discorddrive versions <file>`).
+  - If one device deletes a file while another edits it, the edit wins.
+- Windows Explorer does not refresh open folders by itself; press F5 to see changes made elsewhere.
+
+**Upgrading from an older DiscordDrive:** update and start **one** device first. It converts its
+index and publishes it. Then update the others: they adopt the published index automatically. Any of
+their files that were still waiting to upload are kept and uploaded afterwards.
+
+---
+
+## What is stored on your computer
+
+File contents live in Discord. Locally, DiscordDrive only uses:
+
+| What | Location (data dir) | How long |
+|---|---|---|
+| Index (file list, versions) | `index.db` | Always; usually a few MB |
+| Files being written | `staging/` | Until the upload finishes, then deleted. Capped by `staging_max_bytes`. A file must be complete before it can be split and encrypted, so this cannot be avoided. |
+| Files being edited | `staging/` | An existing file is downloaded completely while it is open for writing, then removed after it is re-uploaded |
+| Viewed files (read cache) | `cache/` | **Disk mode (default):** kept up to `cache_max_bytes` (5 GiB) so re-opening is instant. **Memory mode:** never written to disk |
+| Offline-pinned files | `cache/` | Until you unpin them (`free-space`) |
+
+**Memory-only cache.** To keep viewed files off the disk entirely, set `"cache_mode": "memory"`
+in the config, or start with `mount --cache memory`. Chunks you view are held only in RAM
+(`memory_cache_bytes`, 256 MiB by default, enough for smooth streaming and seeking), and anything
+previously cached on disk is deleted at startup. Re-opening a file downloads it from Discord again,
+so it is slower.
+
+---
+
+## How it works
+
+```
+ application ──► WinFsp / libfuse ──► DiscordDriveFS (fs.py)
+                                         │
+              ┌──────────────────────────┼─────────────────────────┐
+              ▼                          ▼                         ▼
+     SQLite index (index.py)    staging files (writes)    chunk cache (cache.py)
+     tree, chunk map, trash              │                         ▲
+              │                          ▼                         │
+              │                   Uploader (uploader.py)    downloads on read
+              │                   chunk → encrypt → POST           │
+              ├──── change journal (ops) ◄────► Discord channel ◄┘
+              └──── periodic checkpoint ───────►     (journal.py)
+```
+
+- **Writing:** data goes to a staging file. When the last handle closes, the file is queued.
+  Upload workers (`upload_threads`, default 3) split it into `chunk_size` pieces (9 MiB, just under
+  the 10 MiB attachment limit for non-boosted servers), encrypt each piece, and post it as its own
+  message. When all pieces are uploaded, the chunk list in the index is swapped atomically. The
+  previous content is kept as a version, and expired versions are deleted from Discord in the background.
+- **Syncing:** every change to the tree (file uploaded, folder created, rename, move, delete,
+  timestamp) is recorded together with the local change and posted to the channel as a small
+  encrypted "operation" message. Every device reads the channel every `poll_interval` seconds and
+  applies all operations in Discord's message order, which is the same on every device, so all
+  devices converge on the same tree. Files and folders have stable random IDs, so renames and edits
+  on one device are matched up on the others.
+- **Reading:** if a staging copy exists it is used. Otherwise the needed chunks are downloaded
+  (checked against their SHA-256, with expired CDN links refreshed), cached, and read ahead.
+- **Checkpoints:** every `index_backup_interval` seconds (when something changed), a device uploads
+  a gzip-compressed, encrypted SQLite snapshot of the index and pins it. The snapshot records its
+  position in the journal, so a new device restores it and replays only the operations after it.
+  Snapshots only reference data that is fully uploaded.
+
+| Module | Purpose |
+|---|---|
+| `cli.py` | Command-line interface |
+| `config.py` | Configuration file handling |
+| `drive.py` | Startup, mount and shutdown |
+| `fs.py` | FUSE operations, staging, back-pressure |
+| `uploader.py` | Upload workers, trash cleanup |
+| `journal.py` | Multi-device sync: publishing, polling, and applying operations; checkpoints |
+| `index.py` | SQLite metadata index, conflict handling, versions, snapshots |
+| `cache.py` | On-disk LRU chunk cache with de-duplicated parallel downloads |
+| `backend.py` | Discord storage adapter (and a local folder backend for testing) |
+| `discord_api.py` | Minimal Discord REST client (curl or urllib) with retry and rate-limit handling |
+| `crypto.py` | AES-256-GCM via Windows CNG or the `cryptography` package |
+| `fuse_loader.py` | Finds WinFsp / libfuse and loads the vendored fusepy |
+
+You can try it without Discord: `python -m discorddrive mount --mock <folder>` stores "messages"
+as files in `<folder>`.
+
+---
+
+## Troubleshooting
+
+- **The drive letter does not appear (Windows):** check `%LOCALAPPDATA%\DiscordDrive\discorddrive.log`.
+  A leftover process from an earlier run can block the mount; run `stop_drive.cmd`, then start again.
+  `start_drive.cmd` (hidden window through `mount_silent.vbs`) is more reliable than `mount -b`.
+- **"Mount directory is not empty" (Linux):** DiscordDrive refuses to mount on top of existing
+  files, because they would be hidden. Move them away or pick another directory.
+- **"Transport endpoint is not connected" (Linux):** an earlier instance crashed. Starting again
+  cleans this up automatically, or run `fusermount -uz /mnt/discord`.
+- **"Found index checkpoint ... could not restore it":** this device has a different encryption key
+  than the one that wrote the drive. The drive refuses to start empty rather than overwrite your index.
+- **A "Recovered files" folder appeared:** a change arrived for a file whose folder had been deleted
+  on another device at the same time. The file was put here instead of being lost.
+- **Files from another device don't show up:** check that both devices show the same key
+  fingerprint and channel in `status`, and that "Pending Publish" on the other device is 0.
+- **Bot invite says "successful" but the bot did not join:** the invite URL must include `scope=bot`.
+
+## License
+
+[MIT](LICENSE). The vendored `discorddrive/_vendor/fuse.py` keeps its original ISC license.
