@@ -38,7 +38,7 @@ in Discord, click **+** in the server list → **Create My Own**).
 Open **PowerShell** (Start menu → type `PowerShell` → Enter) and paste:
 
 ```powershell
-winget install -e --id Python.Python.3.12; winget install -e --id WinFsp.WinFsp; winget install -e --id Git.Git
+winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements; winget install -e --id WinFsp.WinFsp --source winget --accept-package-agreements --accept-source-agreements; winget install -e --id Git.Git --source winget --accept-package-agreements --accept-source-agreements
 ```
 
 Click **Yes** if Windows asks for permission. When it is done, **close PowerShell and open a new one**
