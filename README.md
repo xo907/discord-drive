@@ -207,6 +207,8 @@ deleted [<folder>]                   List deleted files that can still be recove
 undelete <path>                      Recover a deleted file
 config [<name> [<value>]]            Show or change a setting
 export-key                           Show the encryption key, to copy it to another device
+verify [<path>]                      Check that files can be downloaded and decrypted
+log [-n 30] [--errors]               Show the end of the log file
 backup                Save an index checkpoint now (normally automatic)
 restore               Rebuild the local index from the channel (drive must be stopped)
 context-menu install  Add "Make available offline" / "Free up space" to Explorer (Windows)
@@ -364,7 +366,8 @@ Your settings, key and data are stored outside the program folder, so updating n
 
 ## Troubleshooting
 
-The log is the first place to look:
+If the drive doesn't start, the start script now prints the reason. Otherwise the log is the first
+place to look; `log --errors` shows recent problems without hunting for the file:
 `%LOCALAPPDATA%\DiscordDrive\discorddrive.log` on Windows, `~/.local/share/DiscordDrive/discorddrive.log`
 on Linux (background starts also write `mount.log` next to it).
 
@@ -409,6 +412,9 @@ on Linux (background starts also write `mount.log` next to it).
 - **The installer warns that `/dev/fuse` does not exist.** Some VPS types (OpenVZ/LXC containers)
   have no FUSE support, so the drive cannot be mounted. Ask the provider to enable FUSE, or use a
   KVM-based server.
+- **`/mnt/discord` looks empty although the drive is running.** If your terminal was already
+  *inside* that folder when the drive started, it keeps showing the plain folder underneath. Leave
+  and come back: `cd ~ && ls /mnt/discord`.
 - **`start_drive.sh` says "already mounted" after an update.** The old version is still running;
   see [Updating](#updating).
 - **"Mount directory is not empty".** DiscordDrive refuses to mount on top of existing files,
@@ -442,6 +448,11 @@ on Linux (background starts also write `mount.log` next to it).
   ```powershell
   (Get-Content "$env:APPDATA\DiscordDrive\config.json" | ConvertFrom-Json).encryption_key | ssh user@host 'read k; cd ~/DiscordDrive && ./discorddrive.sh setup -m /mnt/discord -k "$k"'
   ```
+- **A file won't open ("I/O error", "invalid argument", or the player just stops).** Run
+  `verify <path>` (or `verify` for the whole drive; it downloads everything once). It lists every
+  file that can't be downloaded or decrypted and why. "Encrypted with a different key" means that
+  file was uploaded while this setup used another key, so it can only be read with that old key.
+  If an older version of it exists, `versions <path>` and `restore-version` can bring it back.
 - **A "Recovered files" folder appeared.** A change arrived for a file whose folder had been
   deleted on another device at the same time. The file was put here instead of being lost.
 - **Bot invite says "successful" but the bot did not join.** The invite URL must include `scope=bot`.

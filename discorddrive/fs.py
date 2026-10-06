@@ -19,6 +19,8 @@ import stat
 import threading
 import time
 
+from .cache import IntegrityError
+from .crypto import AuthenticationError
 from .fuse_loader import fuse
 from .index import ROOT_ID
 
@@ -199,11 +201,27 @@ class DiscordDriveFS(Operations):
                     tmp = p + ".part"
                     with open(tmp, "wb") as out:
                         for c in chunks:
-                            out.write(self.cache.read(c, 0, c["size"]))
+                            out.write(self._read_chunk(on.nid, c, 0, c["size"]))
                     os.replace(tmp, p)
                     on.f = open(p, "r+b")
         if truncate_to is not None:
             on.f.truncate(truncate_to)
+
+    def _read_chunk(self, nid, chunk, start, length):
+        """Read part of a chunk; failures become a clear log line and an I/O error for the application."""
+        try:
+            return self.cache.read(chunk, start, length)
+        except AuthenticationError:
+            log.error("Cannot decrypt %s (message %s): it was encrypted with a different key, or the data is "
+                      "damaged. Older versions may still be readable (see the 'versions' command).",
+                      self.index.path_of(nid), chunk["message_id"])
+        except IntegrityError:
+            log.error("Downloaded data for %s (message %s) failed its checksum.", self.index.path_of(nid),
+                      chunk["message_id"])
+        except Exception as e:
+            log.error("Could not download part of %s (message %s): %s", self.index.path_of(nid),
+                      chunk["message_id"], e)
+        raise FuseOSError(errno.EIO)
 
     def _read_remote(self, nid, offset, size):
         offsets, chunks, total = self._chunk_map(nid)
@@ -216,7 +234,7 @@ class DiscordDriveFS(Operations):
             c = chunks[i]
             s = max(offset, offsets[i]) - offsets[i]
             e = min(end, offsets[i] + c["size"]) - offsets[i]
-            parts.append(self.cache.read(c, s, e - s))
+            parts.append(self._read_chunk(nid, c, s, e - s))
             i += 1
         for j in range(i, min(i + self.cfg.prefetch_chunks, len(chunks))):
             self.cache.prefetch(chunks[j])

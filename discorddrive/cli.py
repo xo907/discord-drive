@@ -302,6 +302,95 @@ def cmd_config(args):
     return 0
 
 
+def cmd_verify(args):
+    """Download and decrypt every chunk of the files under a path, without caching, and report failures."""
+    import hashlib
+    from concurrent.futures import ThreadPoolExecutor
+    setup_logging(args.verbose, log_to_file=False)
+    cfg = Config.load()
+    if not cfg.is_configured():
+        print("[ERROR] DiscordDrive is not configured.")
+        return 1
+    idx, j, crypto = _open_journal(cfg)
+    try:
+        vpath = normalize_virtual_path(args.path or "/", cfg.mount_point)
+        node = idx.resolve(vpath)
+        if node is None:
+            print(f"[ERROR] Not found in DiscordDrive: {args.path}")
+            return 1
+        files, todo = [], [node]
+        while todo:
+            n = todo.pop()
+            if n["is_dir"]:
+                todo.extend(idx.children(n["id"]))
+            elif n["state"] == "synced":
+                files.append((idx.path_of(n["id"]), idx.get_chunks(n["id"])))
+        files.sort()
+        total = sum(c["size"] for _, chunks in files for c in chunks)
+        print(f"Checking {len(files)} file(s), {total / 2**20:.1f} MiB under {vpath} (downloads everything once)...")
+
+        def check(chunk):
+            try:
+                data, _ = j.backend.download(chunk["message_id"], chunk.get("url"))
+                if data.startswith(b"DENC"):
+                    if not crypto:
+                        return "encrypted, but encryption is off on this device"
+                    data = crypto.decrypt(data)
+                if chunk.get("sha256") and hashlib.sha256(data).hexdigest() != chunk["sha256"]:
+                    return "checksum mismatch (damaged)"
+                return None
+            except AuthenticationError:
+                return "cannot decrypt: encrypted with a different key, or damaged"
+            except DiscordError as e:
+                return "missing from Discord" if e.status == 404 else f"download failed ({e})"
+            except Exception as e:
+                return f"download failed ({e})"
+
+        bad = 0
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for i, (path, chunks) in enumerate(files, 1):
+                problems = [p for p in pool.map(check, chunks) if p]
+                if problems:
+                    bad += 1
+                    print(f"  [BAD] {path}: {problems[0]}")
+                elif args.verbose:
+                    print(f"  [OK]  {path}")
+                if i % 25 == 0:
+                    print(f"  ... {i}/{len(files)} checked")
+        if bad:
+            print(f"\n{bad} of {len(files)} file(s) cannot be read. Older versions may still work: "
+                  f"{launcher()} versions <path>")
+            return 1
+        print(f"\n[OK] All {len(files)} file(s) downloaded and decrypted correctly.")
+        return 0
+    finally:
+        _close(idx, crypto)
+
+
+def _log_message(line):
+    """'12:00:00 [ERROR] discorddrive.cli: text' -> 'text'."""
+    msg = line.split("] ", 1)[-1]
+    name, sep, rest = msg.partition(": ")
+    return rest if sep and name.startswith("discorddrive") else msg
+
+
+def cmd_log(args):
+    """Show the end of the log file (optionally only warnings and errors)."""
+    path = os.path.join(default_data_dir(), "discorddrive.log")
+    if not os.path.exists(path):
+        print(f"No log yet ({path}).")
+        return 0
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines()
+    if args.errors:
+        lines = [l for l in lines if "[ERROR]" in l or "[WARNING]" in l]
+    for line in lines[-args.lines:]:
+        print(line)
+    if not args.errors:
+        print(f"\n({path})")
+    return 0
+
+
 def cmd_export_key(args):
     """Print the encryption key so it can be copied to another device (setup -k <key>)."""
     cfg = Config.load()
@@ -430,17 +519,20 @@ def cmd_mount(args):
             sub_args.append("--allow-other")
         if getattr(args, "cache", None):
             sub_args += ["--cache", args.cache]
+        # Remember where the logs end, to show only what the new process writes.
+        main_log = os.path.join(default_data_dir(), "discorddrive.log")
+        mount_log = os.path.join(cfg.resolved_data_dir, "mount.log")
+        log_starts = {p: (os.path.getsize(p) if os.path.exists(p) else 0) for p in (main_log, mount_log)}
         if sys.platform == "win32":
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 sub_args,
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
                 close_fds=True,
             )
         else:
-            log_dir = cfg.resolved_data_dir
-            os.makedirs(log_dir, exist_ok=True)
-            with open(os.path.join(log_dir, "mount.log"), "a") as log_f:
-                subprocess.Popen(
+            os.makedirs(cfg.resolved_data_dir, exist_ok=True)
+            with open(mount_log, "a") as log_f:
+                proc = subprocess.Popen(
                     sub_args,
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
@@ -448,15 +540,35 @@ def cmd_mount(args):
                     start_new_session=True,
                     close_fds=True,
                 )
-        for _ in range(20):
-            if is_mounted(mount_point):
-                break
+        # The first start on a device can take a while (it downloads the index).
+        deadline = time.time() + 60
+        while time.time() < deadline and not is_mounted(mount_point) and proc.poll() is None:
             time.sleep(0.5)
         if is_mounted(mount_point):
             print(f"[SUCCESS] Drive {mount_point} mounted in background.")
-        else:
-            print("DiscordDrive background process launched (still starting up). "
-                  "Check progress with the 'status' command or the log file.")
+            return 0
+        if proc.poll() is not None:
+            print("[ERROR] DiscordDrive stopped while starting:")
+            shown = set()
+            for path, start in log_starts.items():
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(start)
+                        new = f.read()
+                except OSError:
+                    continue
+                for line in new.splitlines():
+                    msg = _log_message(line) if "[ERROR]" in line or "[WARNING]" in line else None
+                    if msg is None and line.startswith("[ERROR]"):
+                        msg = line
+                    if msg and msg not in shown:
+                        shown.add(msg)
+                        print("  " + msg)
+            if not shown:
+                print(f"  (no details; see {main_log})")
+            return 1
+        print("DiscordDrive is still starting up. Check progress with the 'status' command or the log file:")
+        print(f"  {main_log}")
         return 0
 
     if getattr(args, "allow_other", False):
@@ -947,6 +1059,11 @@ def main():
     subparsers.add_parser("status", help="Show current status and sync statistics")
     subparsers.add_parser("mountpoint", help="Print the configured mount point (for scripts)")
     subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
+    p_verify = subparsers.add_parser("verify", help="Check that files can be downloaded and decrypted")
+    p_verify.add_argument("path", nargs="?", default="/", help="File or folder to check (default: everything)")
+    p_log = subparsers.add_parser("log", help="Show the end of the log file")
+    p_log.add_argument("-n", "--lines", type=int, default=30, help="Number of lines (default 30)")
+    p_log.add_argument("--errors", action="store_true", help="Only warnings and errors")
     p_config = subparsers.add_parser("config", help="Show or change a setting (e.g. config cache_mode memory)")
     p_config.add_argument("key", nargs="?", help="Setting name")
     p_config.add_argument("value", nargs="?", help="New value")
@@ -1000,6 +1117,10 @@ def main():
         return cmd_setup(args)
     elif args.command == "config":
         return cmd_config(args)
+    elif args.command == "verify":
+        return cmd_verify(args)
+    elif args.command == "log":
+        return cmd_log(args)
     elif args.command == "export-key":
         return cmd_export_key(args)
     elif args.command == "mountpoint":
