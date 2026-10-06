@@ -217,11 +217,14 @@ class Uploader:
                 else:
                     log.info("Starting upload of %s (%d bytes, version %d)", path, file_size, version)
                 f.seek(chunk_idx * chunk_size)
+                last_report = time.time()
                 while True:
                     if not self._running:
                         raise _Interrupted("shutting down")
                     if self.fs.is_busy(nid):
                         raise _Interrupted("file is being written to")
+                    if self.index.get(nid) is None:
+                        raise _Interrupted("file was deleted")
 
                     chunk_data = f.read(chunk_size)
                     if not chunk_data:
@@ -253,6 +256,10 @@ class Uploader:
                         "sha256": sha256,
                     })
                     self._save_progress(nid, version, file_size, chunk_size, uploaded_chunks)
+                    done = len(uploaded_chunks)
+                    if total > 1 and done < total and (done % 25 == 0 or time.time() - last_report >= 30):
+                        last_report = time.time()
+                        log.info("Uploading %s: %d of %d pieces (%d%%)", path, done, total, done * 100 // total)
                     if pinned:
                         # Offline-pinned: keep a local copy so it never has to be downloaded again
                         try:
@@ -264,6 +271,11 @@ class Uploader:
         except _Interrupted as why:
             # The pieces uploaded so far are recorded; the next attempt continues from there
             # (if the file is changed meanwhile, the record no longer matches and is discarded).
+            if self.index.get(nid) is None:
+                log.info("Stopped uploading %s: the file was deleted", path)
+                self._drop_progress(nid)   # its uploaded pieces go to the trash
+                self.fs._remove_staging(nid)  # Windows can't delete it while we had it open
+                return
             if self._running:
                 log.info("Upload of %s interrupted (%s); will continue later", path, why)
                 self.enqueue(nid, delay=self.cfg.upload_delay)

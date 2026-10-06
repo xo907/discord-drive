@@ -1,6 +1,7 @@
 """Command-line interface for DiscordDrive."""
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -510,6 +511,15 @@ def cmd_status(args):
             print(f"Offline Pinned:  {stats.get('pinned_files', 0)} files ({stats.get('pinned_bytes', 0) / (1024 * 1024):.2f} MiB)")
             print(f"Total Chunks:    {stats['chunks']}")
             print(f"Pending Upload:  {stats['unsynced']} file(s)")
+            for key in idx.kv_keys("upload:"):
+                try:
+                    rec = json.loads(idx.kv_get(key) or "null") or {}
+                    nid, size, cs = int(key.split(":", 1)[1]), int(rec["size"]), int(rec["chunk_size"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                total = max(1, (size + cs - 1) // cs)
+                done = len(rec.get("chunks") or [])
+                print(f"  Uploading:     {idx.path_of(nid)}  {done * 100 // total}% ({done}/{total} pieces)")
             print(f"Pending Publish: {stats['outbox']} change(s)")
             print(f"Old Versions:    {stats['versions']} ({stats['version_bytes'] / (1024 * 1024):.2f} MiB, "
                   f"kept {cfg.version_retention_days:g} days)" if cfg.keep_versions else "Old Versions:    disabled")
