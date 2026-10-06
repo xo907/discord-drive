@@ -10,6 +10,7 @@ Two places to keep downloaded chunks:
 import hashlib
 import logging
 import os
+import shutil
 import threading
 import time
 from collections import OrderedDict
@@ -23,13 +24,15 @@ class IntegrityError(Exception):
 
 
 class ChunkCache:
-    def __init__(self, directory, max_bytes, backend, index, threads=4, crypto=None, memory_bytes=0):
+    def __init__(self, directory, max_bytes, backend, index, threads=4, crypto=None, memory_bytes=0, min_free=0):
         self.dir = directory
         self.max_bytes = max_bytes
         self.backend = backend
         self.index = index
         self.crypto = crypto
         self.memory_bytes = int(memory_bytes or 0)  # > 0: keep non-pinned chunks in RAM only
+        self.min_free = int(min_free or 0)          # never fill the disk below this; use RAM instead
+        self._low_disk_warned = 0.0
 
         os.makedirs(directory, exist_ok=True)
         self._lock = threading.Lock()
@@ -81,12 +84,25 @@ class ChunkCache:
         go to disk unless the cache is in memory mode and the chunk is not pinned."""
         if persist is None:
             persist = not self.memory_mode or mid in self._pinned_mids()
+        if persist and self.min_free:
+            try:
+                free = shutil.disk_usage(self.dir).free
+            except OSError:
+                free = None
+            if free is not None and free - len(data) < self.min_free:
+                if time.time() - self._low_disk_warned > 300:
+                    self._low_disk_warned = time.time()
+                    log.warning("Disk nearly full (%.2f GiB free): caching downloaded data in memory instead.",
+                                free / 2**30)
+                persist = False
         if not persist:
             with self._lock:
                 old = self._mem.pop(mid, None)
                 self._mem[mid] = data
                 self._mem_total += len(data) - (len(old) if old is not None else 0)
-                while self._mem_total > self.memory_bytes and len(self._mem) > 1:
+                # memory mode: the configured budget; disk mode falling back on a full disk: 64 MiB
+                limit = self.memory_bytes if self.memory_mode else 64 * 2**20
+                while self._mem_total > limit and len(self._mem) > 1:
                     _, victim = self._mem.popitem(last=False)
                     self._mem_total -= len(victim)
             return data

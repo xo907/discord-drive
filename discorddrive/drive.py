@@ -93,6 +93,7 @@ class DiscordDrive:
             threads=self.cfg.download_threads,
             crypto=self.crypto,
             memory_bytes=self._memory_cache_bytes(),
+            min_free=self.cfg.min_free_disk_bytes,
         )
         if self.cache.memory_mode:
             freed = self.cache.free_space()

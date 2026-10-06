@@ -276,7 +276,7 @@ File contents live in Discord. Locally, DiscordDrive only uses:
 | What | Location (data dir) | How long |
 |---|---|---|
 | Index (file list, versions) | `index.db` | Always; usually a few MB |
-| Files being written | `staging/` | Until the upload finishes, then deleted. Writing pauses when more than `staging_max_bytes` (10 GiB) is waiting to upload or the disk has less than `min_free_disk_bytes` (2 GiB) free, and resumes as uploads finish. A file must be complete before it can be split and encrypted, so this cannot be avoided. |
+| Files being written | `staging/` | Until the upload finishes, then deleted. Writing pauses when more than `staging_max_bytes` (10 GiB) is waiting to upload, and resumes as uploads finish. DiscordDrive **never takes the disk below `min_free_disk_bytes`** (2 GiB): if its own uploads can't free space, it refuses the write instead, so other programs on the machine keep running. A file must be complete before it can be split and encrypted, so this cannot be avoided. |
 | Files being edited | `staging/` | An existing file is downloaded completely while it is open for writing, then removed after it is re-uploaded |
 | Viewed files (read cache) | `cache/` | **Disk mode (default):** kept up to `cache_max_bytes` (5 GiB) so re-opening is instant. **Memory mode:** never written to disk |
 | Offline-pinned files | `cache/` | Until you unpin them (`free-space`) |
@@ -421,14 +421,16 @@ on Linux (background starts also write `mount.log` next to it).
   KVM-based server.
 - **"No space left on device" while copying a lot of files.** Files you copy *in* are kept on the
   local disk until they are uploaded (the memory-only setting only affects files you *read*). Current
-  versions pause the copy instead of filling the disk; update, then re-run the copy (rsync skips what
-  is already there). On a small disk you can also lower the backlog: `config staging_max_bytes 2147483648`.
+  versions never take the disk below `min_free_disk_bytes` (2 GiB, raise it with
+  `config min_free_disk_bytes 5368709120` for 5 GiB): they pause the copy while uploads free space,
+  and refuse writes (instead of filling the disk) when something else used the space. Update, then
+  re-run the copy (rsync skips what is already there). On a small disk you can also lower the backlog: `config staging_max_bytes 2147483648`.
   If it still happens, check what is using the disk (`df -h /`, `du -sh ~/.cache`): when copying
   *from* another cloud mount such as rclone, that mount's own cache can fill the disk. DiscordDrive's
   log says so. Limit it, e.g. remount with `rclone mount ... --vfs-cache-mode minimal --vfs-cache-max-size 1G`.
   To make a long copy resume by itself after any error:
   ```bash
-  until rsync -rt --inplace --info=progress2 /source/ /mnt/discord/target/; do sleep 60; done
+  until rsync -rt --info=progress2 /source/ /mnt/discord/target/; do sleep 60; done
   ```
 - **`/mnt/discord` looks empty although the drive is running.** If your terminal was already
   *inside* that folder when the drive started, it keeps showing the plain folder underneath. Leave

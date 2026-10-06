@@ -52,7 +52,6 @@ class OpenNode:
         self.dirty = False       # written since the last time it was queued for upload
         self.deleted = False
         self.mtime = None        # mtime to record when the file is finalized
-        self.unchecked = 0       # bytes written since free disk space was last checked
 
 
 class DiscordDriveFS(Operations):
@@ -107,6 +106,38 @@ class DiscordDriveFS(Operations):
             return shutil.disk_usage(self.staging_dir).free
         except OSError:
             return None
+
+    def _ensure_room(self, nbytes, what, max_wait=1800.0):
+        """Hard rule: DiscordDrive never takes the local disk below `min_free_disk_bytes`, so
+        other programs on the machine keep working. If our own uploads will free space, wait for
+        them; otherwise refuse the write (ENOSPC) while the reserve is still intact."""
+        reserve = int(getattr(self.cfg, "min_free_disk_bytes", 0) or 0)
+        if reserve <= 0:
+            return
+        free = self._free_disk()
+        if free is None or free - nbytes >= reserve:
+            return
+        start = time.time()
+        waiting_logged = False
+        while True:
+            uploads_pending = self.uploader is not None and (
+                not self.uploader.is_idle() or self._pending_staging_bytes() > 0)
+            if not uploads_pending or time.time() - start > max_wait:
+                if time.time() - self._space_warned > 60:
+                    self._space_warned = time.time()
+                    log.warning("Refused to write %s: only %.2f GiB free, and DiscordDrive always leaves "
+                                "%.2f GiB free for other programs (min_free_disk_bytes). Free up space or wait "
+                                "for uploads, then try again.", what, free / 2**30, reserve / 2**30)
+                raise FuseOSError(errno.ENOSPC)
+            if not waiting_logged:
+                log.info("Disk nearly full (%.2f GiB free); waiting for uploads to free space before writing %s",
+                         free / 2**30, what)
+                waiting_logged = True
+            time.sleep(1.0)
+            self._staging_usage = (0.0, 0)
+            free = self._free_disk()
+            if free is None or free - nbytes >= reserve:
+                return
 
     def _wait_for_staging_space(self, max_wait=1800.0, min_free=None):
         """Back-pressure for big copies: block while the upload backlog is too large or the
@@ -232,6 +263,7 @@ class DiscordDriveFS(Operations):
                 if truncate_to == 0 or total == 0:
                     on.f = open(p, "w+b")
                 else:
+                    self._ensure_room(total, self.index.path_of(on.nid))
                     log.info("Downloading %s for editing (%d bytes)", self.index.path_of(on.nid), total)
                     tmp = p + ".part"
                     with open(tmp, "wb") as out:
@@ -431,15 +463,7 @@ class DiscordDriveFS(Operations):
 
     def write(self, path, data, offset, fh):
         nid, _, on = self._handle(fh)
-        # A single huge file can fill the disk on its own: check free space every 64 MiB
-        # and pause (keeping a small reserve) while other files are still uploading.
-        on.unchecked += len(data)
-        if on.unchecked >= 64 * 2**20:
-            on.unchecked = 0
-            reserve = min(512 * 2**20, int(getattr(self.cfg, "min_free_disk_bytes", 0) or 0))
-            free = self._free_disk()
-            if reserve and free is not None and free < reserve:
-                self._wait_for_staging_space(min_free=reserve)
+        self._ensure_room(len(data), path)
         with on.lock:
             self._materialize(on)
             on.f.seek(offset)
