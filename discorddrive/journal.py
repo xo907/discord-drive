@@ -139,6 +139,7 @@ class Journal:
         counter = self.index.change_counter
         if not force and counter == self._last_checkpoint_counter:
             return False
+        self._store_keyring()
         data = self.index.snapshot_bytes()
         prev = self.index.kv_get("last_backup_mid")
         mid = self.backend.save_index(data, previous_message_id=prev, cursor=cursor)
@@ -284,6 +285,7 @@ class Journal:
             self.index.kv_set("journal_cursor", msg["cursor"])
         self._reattach(pending)
         self._merge_local(*local)
+        self._learn_keys()
         s = self.index.stats(max_age=0)
         log.info("Restored index checkpoint %s: %d files, %d folders.", msg["id"], s["files"], s["dirs"])
 
@@ -336,6 +338,48 @@ class Journal:
         if added or kept:
             log.info("Merged this device's previous index: %d item(s) re-published, %d older edit(s) kept as versions.",
                      added, kept)
+
+    def _store_keyring(self):
+        """Record every key this device knows inside the (encrypted) index, so devices that
+        restore a checkpoint can read data written with keys they never had."""
+        if not self.crypto or not hasattr(self.crypto, "keys"):
+            return
+        try:
+            known = set(json.loads(self.index.kv_get("keyring") or "[]"))
+        except ValueError:
+            known = set()
+        mine = {k.hex() for k in self.crypto.keys()}
+        if not mine <= known:
+            self.index.kv_set("keyring", json.dumps(sorted(known | mine)))
+
+    def _learn_keys(self):
+        """Pick up older keys stored in a restored checkpoint (see _store_keyring)."""
+        if not self.crypto or not hasattr(self.crypto, "add"):
+            return
+        try:
+            stored = json.loads(self.index.kv_get("keyring") or "[]")
+        except ValueError:
+            return
+        new = []
+        for h in stored:
+            try:
+                if self.crypto.add(bytes.fromhex(h)):
+                    new.append(h)
+            except ValueError:
+                continue
+        if not new:
+            return
+        log.info("Learned %d older encryption key(s) from the drive's index.", len(new))
+        try:
+            from .config import Config
+            saved = Config.load()
+            for h in new:
+                if h != saved.encryption_key and h not in saved.old_encryption_keys:
+                    saved.old_encryption_keys.append(h)
+            saved.save()
+            self.cfg.old_encryption_keys = list(saved.old_encryption_keys)
+        except Exception as e:
+            log.warning("Could not save the older keys to the config: %s", e)
 
     def _stash_pending(self):
         if not self.staging_dir or not os.path.isdir(self.staging_dir):

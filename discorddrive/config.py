@@ -12,7 +12,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 APP_NAME = "DiscordDrive"
 
@@ -75,6 +75,7 @@ class Config:
     encryption_enabled: bool = True    # Zero-knowledge AES-256-GCM encryption
     encryption_key: str = ""           # 64-char hex string (256-bit key)
     encryption_salt: str = ""          # 32-char hex string
+    old_encryption_keys: list = field(default_factory=list)  # earlier keys, kept to read older data
     allow_other: bool = False          # Allow other users/services to access mount on Linux
 
     @property

@@ -246,3 +246,55 @@ class CryptoEngine:
             )
 
         return plaintext.raw[:cb_result.value]
+
+
+class KeyRing:
+    """Encrypts with the current key; decrypts with whichever known key works.
+
+    Keeping older keys means data written before a key change stays readable.
+    """
+
+    def __init__(self, primary: bytes, older=()):
+        self._engines = [CryptoEngine(primary)]
+        for k in older:
+            self.add(k)
+
+    @classmethod
+    def from_hex(cls, primary_hex: str, older_hex=()):
+        older = []
+        for h in older_hex or ():
+            try:
+                older.append(parse_key(h))
+            except ValueError as e:
+                log.warning("Ignoring an invalid older encryption key: %s", e)
+        return cls(parse_key(primary_hex), older)
+
+    @property
+    def key(self) -> bytes:
+        return self._engines[0].key
+
+    def keys(self):
+        return [e.key for e in self._engines]
+
+    def add(self, key: bytes) -> bool:
+        """Add an older key for decryption. Returns False if it was already known."""
+        if any(e.key == key for e in self._engines):
+            return False
+        self._engines.append(CryptoEngine(key))
+        return True
+
+    def encrypt(self, data: bytes, aad: bytes = b"") -> bytes:
+        return self._engines[0].encrypt(data, aad)
+
+    def decrypt(self, payload: bytes, aad: bytes = b"") -> bytes:
+        err = None
+        for e in list(self._engines):
+            try:
+                return e.decrypt(payload, aad)
+            except AuthenticationError as x:
+                err = x
+        raise err
+
+    def close(self):
+        for e in self._engines:
+            e.close()

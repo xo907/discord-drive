@@ -788,7 +788,7 @@ class Index:
             dst.execute("UPDATE nodes SET is_pinned=0")
             dst.execute("DELETE FROM outbox")
             dst.execute("DELETE FROM trash")
-            dst.execute("DELETE FROM kv WHERE key != 'journal_cursor'")
+            dst.execute("DELETE FROM kv WHERE key NOT IN ('journal_cursor', 'keyring')")
             dst.commit()
             dst.execute("PRAGMA journal_mode=DELETE")
             dst.execute("VACUUM")

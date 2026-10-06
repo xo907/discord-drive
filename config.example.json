@@ -24,5 +24,6 @@
   "encryption_enabled": true,
   "encryption_key": "",
   "encryption_salt": "",
+  "old_encryption_keys": [],
   "allow_other": false
 }

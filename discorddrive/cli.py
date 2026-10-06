@@ -10,7 +10,7 @@ import time
 from .backend import DiscordBackend, is_encrypted_index
 from .cache import ChunkCache
 from .config import Config, config_path, default_data_dir, launcher, normalize_mount_point
-from .crypto import AuthenticationError, CryptoEngine, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
+from .crypto import AuthenticationError, CryptoEngine, KeyRing, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
 from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, unmount, FUSE_ERROR
@@ -63,7 +63,7 @@ def normalize_virtual_path(p: str, mount_point: str = "Z:") -> str:
 
 
 def get_crypto_from_cfg(cfg: Config):
-    """CryptoEngine for the configured key, or None if encryption is off.
+    """KeyRing for the configured key(s), or None if encryption is off.
 
     Exits on a broken key: silently continuing would upload plaintext.
     """
@@ -72,7 +72,7 @@ def get_crypto_from_cfg(cfg: Config):
     if not cfg.encryption_key:
         raise SystemExit(f"[ERROR] Encryption is enabled but no key is configured. Run '{launcher()} setup'.")
     try:
-        return CryptoEngine(parse_key(cfg.encryption_key))
+        return KeyRing.from_hex(cfg.encryption_key, cfg.old_encryption_keys)
     except Exception as e:
         raise SystemExit(f"[ERROR] Failed to load encryption key: {e}")
 
@@ -217,10 +217,16 @@ def cmd_setup(args):
     else:
         print(f"  [OK] Existing encryption key retained (fingerprint {key_fingerprint(enc_key_hex)}).")
 
+    # Never throw a key away: data written with it would become unreadable.
+    old_keys = [k for k in cfg.old_encryption_keys if k != enc_key_hex]
+    if cfg.encryption_key and cfg.encryption_key != enc_key_hex and cfg.encryption_key not in old_keys:
+        old_keys.append(cfg.encryption_key)
+        print(f"  [OK] Previous key (fingerprint {key_fingerprint(cfg.encryption_key)}) kept for reading older files.")
+
     # A key that cannot read the drive already in this channel would only fail later, at mount.
     if existing_encrypted and enc_enabled and enc_key_hex:
         print("Checking the key against the drive already stored in this channel...")
-        crypto = CryptoEngine(parse_key(enc_key_hex))
+        crypto = KeyRing.from_hex(enc_key_hex, old_keys)
         try:
             DiscordBackend(api, channel_id, crypto=crypto).load_index_message(latest)
             print("  [OK] The key matches the existing drive.")
@@ -243,6 +249,7 @@ def cmd_setup(args):
     cfg.encryption_enabled = enc_enabled
     cfg.encryption_key = enc_key_hex
     cfg.encryption_salt = enc_salt_hex
+    cfg.old_encryption_keys = old_keys
     cfg.save()
 
     print(f"\n[SUCCESS] Configuration saved to: {config_path()}")
@@ -251,7 +258,7 @@ def cmd_setup(args):
     return 0
 
 
-_SECRET_FIELDS = {"bot_token", "encryption_key", "encryption_salt"}
+_SECRET_FIELDS = {"bot_token", "encryption_key", "encryption_salt", "old_encryption_keys"}
 
 
 def cmd_config(args):
@@ -262,7 +269,8 @@ def cmd_config(args):
     if not args.key:
         for name in types:
             value = getattr(cfg, name)
-            shown = "(set)" if name in _SECRET_FIELDS and value else value
+            shown = (f"({len(value)} key(s))" if isinstance(value, list) else "(set)") \
+                if name in _SECRET_FIELDS and value else value
             print(f"{name:24} {shown}")
         print(f"\nConfig file: {config_path()}  (restart the drive after changing settings)")
         return 0
@@ -273,7 +281,8 @@ def cmd_config(args):
         value = getattr(cfg, args.key)
         print("(set)" if args.key in _SECRET_FIELDS and value else value)
         return 0
-    if args.key in ("bot_token", "channel_id", "encryption_key", "encryption_salt", "encryption_enabled"):
+    if args.key in ("bot_token", "channel_id", "encryption_key", "encryption_salt", "encryption_enabled",
+                    "old_encryption_keys"):
         print("[ERROR] Use 'setup' to change the bot token, channel or encryption.")
         return 1
     kind, raw = types[args.key], args.value.strip()
@@ -391,6 +400,44 @@ def cmd_log(args):
     return 0
 
 
+def cmd_add_old_key(args):
+    """Add an earlier encryption key so data encrypted with it can still be read."""
+    cfg = Config.load()
+    candidates = []
+    if args.from_config:
+        import json
+        try:
+            with open(args.from_config, "r", encoding="utf-8") as f:
+                other = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"[ERROR] Could not read {args.from_config}: {e}")
+            return 1
+        candidates = [other.get("encryption_key", "")] + list(other.get("old_encryption_keys") or [])
+    else:
+        raw = args.key if args.key and args.key != "-" else sys.stdin.readline()
+        candidates = [raw]
+    added = 0
+    for raw in candidates:
+        if not (raw or "").strip():
+            continue
+        try:
+            hex_key = parse_key(raw).hex()
+        except ValueError as e:
+            print(f"[ERROR] Not a valid key: {e}")
+            return 1
+        fp = key_fingerprint(hex_key)
+        if hex_key == cfg.encryption_key or hex_key in cfg.old_encryption_keys:
+            print(f"[OK] Key {fp} is already known.")
+            continue
+        cfg.old_encryption_keys.append(hex_key)
+        added += 1
+        print(f"[OK] Added older key {fp}; data encrypted with it can be read again.")
+    if added:
+        cfg.save()
+        print("Restart the drive for this to take effect.")
+    return 0
+
+
 def cmd_export_key(args):
     """Print the encryption key so it can be copied to another device (setup -k <key>)."""
     cfg = Config.load()
@@ -427,6 +474,9 @@ def cmd_status(args):
     if cfg.encryption_enabled and cfg.encryption_key:
         try:
             enc_info = f"ENABLED (AES-256-GCM | key fingerprint {key_fingerprint(cfg.encryption_key)})"
+            if cfg.old_encryption_keys:
+                enc_info += f" + {len(cfg.old_encryption_keys)} older key(s): " + ", ".join(
+                    key_fingerprint(k) for k in cfg.old_encryption_keys)
         except ValueError:
             enc_info = "ENABLED but the configured key is INVALID (run setup again)"
     elif cfg.encryption_enabled and not cfg.encryption_key:
@@ -1059,6 +1109,9 @@ def main():
     subparsers.add_parser("status", help="Show current status and sync statistics")
     subparsers.add_parser("mountpoint", help="Print the configured mount point (for scripts)")
     subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
+    p_old = subparsers.add_parser("add-old-key", help="Add an earlier encryption key, to read data encrypted with it")
+    p_old.add_argument("key", nargs="?", default="-", help="The key in hex, or - to read it from input (default)")
+    p_old.add_argument("--from-config", help="Take the key(s) from another device's config.json")
     p_verify = subparsers.add_parser("verify", help="Check that files can be downloaded and decrypted")
     p_verify.add_argument("path", nargs="?", default="/", help="File or folder to check (default: everything)")
     p_log = subparsers.add_parser("log", help="Show the end of the log file")
@@ -1121,6 +1174,8 @@ def main():
         return cmd_verify(args)
     elif args.command == "log":
         return cmd_log(args)
+    elif args.command == "add-old-key":
+        return cmd_add_old_key(args)
     elif args.command == "export-key":
         return cmd_export_key(args)
     elif args.command == "mountpoint":

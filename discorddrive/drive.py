@@ -11,7 +11,7 @@ import threading
 from .backend import DiscordBackend, LocalBackend, is_encrypted_index
 from .cache import ChunkCache
 from .config import Config, launcher
-from .crypto import CryptoEngine, generate_key, parse_key
+from .crypto import KeyRing, generate_key
 from .discord_api import DiscordAPI
 from .fs import DiscordDriveFS
 from .fuse_loader import find_winfsp_dll, fuse, unmount, FUSE_ERROR
@@ -64,11 +64,13 @@ class DiscordDrive:
                 self._generate_key_if_safe()
             # Never fall back to uploading plaintext because of a bad key.
             try:
-                self.crypto = CryptoEngine(parse_key(self.cfg.encryption_key))
+                self.crypto = KeyRing.from_hex(self.cfg.encryption_key, self.cfg.old_encryption_keys)
             except Exception as e:
                 raise RuntimeError(f"Encryption is enabled but the key could not be loaded: {e}") from e
             self.backend.crypto = self.crypto
-            log.info("Zero-knowledge AES-256-GCM encryption ACTIVE.")
+            older = len(self.crypto.keys()) - 1
+            log.info("Zero-knowledge AES-256-GCM encryption ACTIVE%s.",
+                     f" (plus {older} older key(s) for reading earlier data)" if older else "")
 
         if not self.cfg.device_id:
             self.cfg.device_id = secrets.token_hex(4)

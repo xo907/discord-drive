@@ -207,6 +207,7 @@ deleted [<folder>]                   List deleted files that can still be recove
 undelete <path>                      Recover a deleted file
 config [<name> [<value>]]            Show or change a setting
 export-key                           Show the encryption key, to copy it to another device
+add-old-key [--from-config <file>]   Add an earlier key so files encrypted with it stay readable
 verify [<path>]                      Check that files can be downloaded and decrypted
 log [-n 30] [--errors]               Show the end of the log file
 backup                Save an index checkpoint now (normally automatic)
@@ -440,6 +441,14 @@ on Linux (background starts also write `mount.log` next to it).
   - **Journal** must show a message number (not "not started"). If it says "not started", that
     device is still running an old version; see [Updating](#updating).
   - **Pending Publish** on the device that made the change should be 0.
+- **Some files can't be decrypted on one device but work on another, or a device stopped seeing new
+  files.** The devices are using different keys, usually because `setup` was run again with a
+  password and replaced the original key. Compare the fingerprints in `status`. Nothing is lost:
+  give each device the key the others are missing with `add-old-key`; it keeps reading with every
+  key it knows while new data uses its current key. Easiest: copy a working device's config file
+  over and run `add-old-key --from-config <that file>`, then stop and start the drive. Current
+  versions of `setup` always keep the previous key, and older keys travel inside the encrypted
+  index, so a new device set up with the password can read everything.
 - **"Found index checkpoint ... could not restore it" / "Decryption / authentication failed".** This
   device has a different encryption key from the one that wrote the drive, so it refuses to start
   rather than show (and later save) an empty drive. This happens when the drive was created with an
