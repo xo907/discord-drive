@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from .config import Config, config_path, default_data_dir, format_size
@@ -84,8 +85,9 @@ def pause():
         raise SystemExit(0)
 
 
-def choose(title, options):
-    """options: list of (key, label). Returns the chosen key, or None for 'back'."""
+def choose(title, options, live=None):
+    """options: list of (key, label). Returns the chosen key, or None for 'back'.
+    live: (render_function, lines_between_it_and_the_title) to keep a status line up to date."""
     print(f"  {BOLD}{title}{RESET}")
     for key, label in options:
         if key is None:
@@ -94,7 +96,17 @@ def choose(title, options):
         print(f"   {RED}{key:>2}{RESET}  {label}")
     print(f"   {RED} 0{RESET}  {'Exit' if title == 'Main menu' else 'Back'}")
     print()
-    pick = ask("Choose an option")
+    updater = None
+    if live:
+        render, offset = live
+        # from the prompt line up to the live line: blank, exit, options, title, the lines
+        # between title and live line (offset), and one more to land on the live line itself
+        updater = LiveLine(render, 1 + 1 + len(options) + 1 + offset + 1).start()
+    try:
+        pick = ask("Choose an option")
+    finally:
+        if updater:
+            updater.stop()
     if pick in ("0", "q", "exit", "back"):
         return None
     return pick if any(pick == k for k, _ in options if k) else "?"
@@ -114,10 +126,8 @@ def is_mounted(cfg):
     return _m(cfg.mount_point)
 
 
-def quick_status(cfg):
-    lines = []
-    if not cfg.is_configured():
-        lines.append(f"{YELLOW}Not set up yet: choose {BOLD}5{RESET}{YELLOW} (Setup) first.{RESET}")
+def drive_line(cfg):
+    """'Drive Z: RUNNING  |  4,372 files, 141.4 GB in Discord  |  3 uploading'"""
     running = is_mounted(cfg)
     state = f"{GREEN}RUNNING{RESET}" if running else f"{GRAY}not running{RESET}"
     parts = [f"Drive {BOLD}{cfg.mount_point}{RESET} {state}"]
@@ -125,28 +135,83 @@ def quick_status(cfg):
     if os.path.exists(db):
         try:
             from .index import Index
-            idx = Index(db)
-            s = idx.stats(max_age=0)
-            idx.close()
             from .cli import _human
-            parts.append(f"{s['files']:,} files, {_human(s['bytes'])} in Discord")
-            if s["unsynced"]:
-                parts.append(f"{YELLOW}{s['unsynced']:,} uploading{RESET}")
+            idx = Index(db)
+            try:
+                st = idx.stats(max_age=0)
+            finally:
+                idx.close()
+            parts.append(f"{st['files']:,} files, {_human(st['bytes'])} in Discord")
+            if st["unsynced"]:
+                parts.append(f"{YELLOW}{st['unsynced']:,} uploading{RESET}")
         except Exception:
             pass
-    lines.append("  |  ".join(parts))
+    return "  |  ".join(parts)
+
+
+def quick_status(cfg):
+    """Print the status lines at the top of the main menu. Returns how many lines were printed
+    after the drive line (so the live updater can find it again)."""
+    if not cfg.is_configured():
+        print(f"  {YELLOW}Not set up yet: choose {BOLD}5{RESET}{YELLOW} (Setup) first.{RESET}")
+    print(f"  {drive_line(cfg)}")
+    after = []
     if not WINDOWS:
         from .fuse_loader import find_linux_fuse_lib
         if not find_linux_fuse_lib():
-            lines.append(f"{YELLOW}FUSE is not installed: choose 9 (Tools), then 'Install requirements'.{RESET}")
+            after.append(f"{YELLOW}FUSE is not installed: choose 9 (Tools), then 'Install requirements'.{RESET}")
     elif not _winfsp():
-        lines.append(f"{YELLOW}WinFsp is not installed: get it from https://winfsp.dev/rel/ "
+        after.append(f"{YELLOW}WinFsp is not installed: get it from https://winfsp.dev/rel/ "
                      f"(or: winget install -e --id WinFsp.WinFsp --source winget){RESET}")
-    for line in lines:
+    for line in after:
         print(f"  {line}")
     print()
+    return len(after) + 1
 
 
+class LiveLine:
+    """Rewrites one line further up the screen every few seconds while the menu waits for input.
+
+    Uses ANSI 'save cursor / move up / clear line / restore cursor', so whatever the user is
+    typing at the prompt stays where it is. Only active in a real terminal with ANSI support.
+    """
+
+    def __init__(self, render, lines_up, interval=2.0):
+        self.render = render
+        self.lines_up = lines_up
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+        self._last = None
+
+    def start(self):
+        if not _ANSI or self.lines_up <= 0:
+            return self
+        size = shutil.get_terminal_size((0, 0))
+        # Wrapped lines (narrow window) or a scrolled-off status line (short window) would make
+        # the cursor land on the wrong line, so only update when everything fits.
+        if size.columns < 90 or size.lines <= self.lines_up + 1:
+            return self
+        self._thread = threading.Thread(target=self._run, name="LiveStatus", daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            try:
+                text = self.render()
+            except Exception:
+                continue
+            if self._stop.is_set() or text == self._last:
+                continue
+            self._last = text
+            sys.stdout.write(f"\0337\033[{self.lines_up}A\r\033[2K  {text}\0338")
+            sys.stdout.flush()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
 def _winfsp():
     from .fuse_loader import find_winfsp_dll
     return find_winfsp_dll()
@@ -400,7 +465,7 @@ def main():
     while True:
         clear(); banner()
         cfg = Config.load()
-        quick_status(cfg)
+        offset = quick_status(cfg)
         pick = choose("Main menu", [
             ("1", "Start the drive"),
             ("2", "Stop the drive"),
@@ -412,7 +477,7 @@ def main():
             ("7", "Files: old versions, deleted files, offline"),
             ("8", "Copy files onto the drive (help)"),
             ("9", "Tools and troubleshooting"),
-        ])
+        ], live=(lambda: drive_line(cfg), offset))
         if pick is None:
             clear()
             return 0
