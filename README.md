@@ -100,7 +100,7 @@ Your files are in **`/mnt/discord`**.
 | Start | `.\start_drive.cmd` | `./start_drive.sh` |
 | Stop | `.\stop_drive.cmd` | `./stop_drive.sh` |
 | Status | `.\DiscordDrive.cmd status` | `./discorddrive.sh status` |
-| Update to the latest version | see [Updating](#updating) | see [Updating](#updating) |
+| Update to the latest version | `.\update_drive.cmd` | `./update_drive.sh` |
 
 On Windows you can also just double-click `start_drive.cmd` / `stop_drive.cmd` in File Explorer.
 
@@ -356,29 +356,25 @@ as files in `<folder>`.
 
 ## Updating
 
-Stop the drive **before** updating and start it again afterwards. If you only run "start", it sees
-the old version still running, prints `already mounted`, and keeps using the old code.
+One step: it stops the drive, downloads the latest version, and starts the drive again. Your
+settings, key and data are stored outside the program folder, so updating never touches them.
 
-Windows (in the `DiscordDrive` folder):
+| Windows | Linux |
+|---|---|
+| Double-click `update_drive.cmd`, or run `.\update_drive.cmd` in the `DiscordDrive` folder (works in Command Prompt and PowerShell) | `~/DiscordDrive/update_drive.sh` |
 
-```powershell
-.\stop_drive.cmd; git pull; .\start_drive.cmd
-```
+Why not just `git pull`? A running drive keeps using the old version until it is restarted, and
+"start" on its own only reports `already mounted`. The update scripts take care of the restart.
 
-Linux (in `~/DiscordDrive`):
-
-```bash
-./stop_drive.sh && git pull && ./start_drive.sh
-```
+> On Windows, chaining commands with `;` (`a; b; c`) only works in PowerShell. In Command Prompt it
+> silently runs just the first command, which is another reason to use `update_drive.cmd`.
 
 Copying the files over yourself instead of using `git` (e.g. from Windows with `scp`)? Copying from
-Windows drops Linux's "executable" permission, so restore it before starting:
+Windows drops Linux's "executable" permission, so restore it, then restart the drive:
 
 ```bash
 chmod +x ~/DiscordDrive/*.sh
 ```
-
-Your settings, key and data are stored outside the program folder, so updating never touches them.
 
 ---
 
@@ -448,8 +444,8 @@ on Linux (background starts also write `mount.log` next to it).
 - **`/mnt/discord` looks empty although the drive is running.** If your terminal was already
   *inside* that folder when the drive started, it keeps showing the plain folder underneath. Leave
   and come back: `cd ~ && ls /mnt/discord`.
-- **`start_drive.sh` says "already mounted" after an update.** The old version is still running;
-  see [Updating](#updating).
+- **`start_drive.sh` says "already mounted" after an update.** The old version is still running.
+  Use `./update_drive.sh`, which restarts it; see [Updating](#updating).
 - **"Mount directory is not empty".** DiscordDrive refuses to mount on top of existing files,
   because they would be hidden. Move them away or pick another directory (`./discorddrive.sh setup -m <dir>`).
 - **"Transport endpoint is not connected".** An earlier instance crashed. Starting again cleans
