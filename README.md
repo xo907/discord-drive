@@ -1,7 +1,14 @@
-# DiscordDrive
+<h1 align="center">
+    <img src="docs/images/logo-128.png" height="64" width="64" alt=""><br>
+    DiscordDrive
+</h1>
+<p align="center"><b>An encrypted virtual drive backed by a private Discord channel.</b><br>Made by <b>XO.ST</b> · <a href="https://github.com/xo907/discord-drive">github.com/xo907/discord-drive</a></p>
 
-**DiscordDrive** turns a private Discord channel into an encrypted virtual drive: a drive letter
-on Windows (e.g. `Z:\`) or a mount directory on Linux (e.g. `/mnt/discord`).
+---
+
+DiscordDrive turns a private Discord channel into an encrypted drive: a drive letter on Windows
+(e.g. `Z:\`) or a folder on Linux (e.g. `/mnt/discord`). It works on Windows, Linux servers and
+Raspberry Pi, and keeps all your devices in sync.
 
 Files you save to the drive are staged locally, split into chunks, encrypted, and uploaded as
 attachments to your channel. Reading only downloads the chunks that cover the requested byte range,
