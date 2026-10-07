@@ -123,7 +123,7 @@ FUSE_ERROR = None
 _LIBFUSE_MISSING = (
     "libfuse2 was not found on this Linux system.\n"
     "FUSE is required to mount the virtual DiscordDrive filesystem.\n\n"
-    "To install it on Debian / Ubuntu / Raspberry Pi OS, run ./install_debian.sh\n"
+    "To install it on Debian / Ubuntu / Raspberry Pi OS: ./run.sh -> Tools -> Install requirements\n"
     "or: apt install libfuse2   (libfuse2t64 on Debian 13+ / Ubuntu 24.04+)"
 )
 

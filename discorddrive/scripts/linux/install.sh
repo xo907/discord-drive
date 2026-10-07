@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # DiscordDrive installer for Debian / Ubuntu / Raspberry Pi OS.
-# Usage: ./install_debian.sh [mount-dir]      (default mount dir: /mnt/discord)
+# Usage: discorddrive/scripts/linux/install.sh [mount-dir]   (default: /mnt/discord)
+# Normally started from ./run.sh -> Tools -> "Install / repair requirements".
 set -e
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+ROOT="$(cd "$DIR/../../.." >/dev/null 2>&1 && pwd)"   # the DiscordDrive folder
 MOUNT_DIR="${1:-/mnt/discord}"
 
 # Privileged steps run directly when already root (e.g. on a VPS), otherwise through sudo.
@@ -80,25 +82,15 @@ $SUDO mkdir -p "$MOUNT_DIR"
 $SUDO chown "$ME:$MYGROUP" "$MOUNT_DIR"
 
 echo "[4/4] Making scripts executable..."
-chmod +x "$DIR"/*.sh
+chmod +x "$ROOT/run.sh" "$DIR"/*.sh
 
 echo ""
 echo "============================================================"
 echo "Installation complete. Next steps:"
 echo ""
-echo "  1. Configure your bot, channel and encryption key:"
-echo "       $DIR/discorddrive.sh setup -m $MOUNT_DIR"
-echo "     (Using the drive from another machine too? Use the same passphrase,"
-echo "      or copy 'encryption_key' from that machine's config.)"
+echo "  Open the menu and choose Setup, then Start:"
+echo "       $ROOT/run.sh"
 echo ""
-echo "  2. Start / check / stop the drive:"
-echo "       $DIR/start_drive.sh"
-echo "       $DIR/discorddrive.sh status"
-echo "       $DIR/stop_drive.sh"
-echo ""
-echo "  3. Optional - start automatically at boot (systemd user service):"
-echo "       mkdir -p ~/.config/systemd/user"
-echo "       sed \"s|%h/DiscordDrive|$DIR|g\" $DIR/discorddrive.service > ~/.config/systemd/user/discorddrive.service"
-echo "       systemctl --user daemon-reload && systemctl --user enable --now discorddrive"
-echo "       ${SUDO:+sudo }loginctl enable-linger $ME"
+echo "  (Using the drive on another computer too? Use the same bot token,"
+echo "   channel and encryption password there.)"
 echo "============================================================"

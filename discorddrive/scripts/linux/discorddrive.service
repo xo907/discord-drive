@@ -1,5 +1,5 @@
 # systemd *user* unit. Assumes the repository is at ~/DiscordDrive;
-# install_debian.sh prints a command that rewrites the path for you.
+# ./run.sh -> Tools -> "start at boot" prints a command that rewrites the path for you.
 #   systemctl --user enable --now discorddrive
 #   sudo loginctl enable-linger $USER     # keep it running without a login session
 [Unit]

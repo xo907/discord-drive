@@ -147,7 +147,7 @@ def cmd_setup(args):
         if lib:
             print(f"  [OK] Linux FUSE library found: {lib}")
         else:
-            print("  [WARNING] libfuse2 was not found! Run ./install_debian.sh (or: apt install libfuse2)")
+            print("  [WARNING] libfuse2 was not found! Open ./run.sh -> Tools -> Install requirements (or: apt install libfuse2)")
 
     # Configure End-to-End Encryption
     print("\nConfiguring Zero-Knowledge Encryption (AES-256-GCM)...")
@@ -254,8 +254,7 @@ def cmd_setup(args):
     cfg.save()
 
     print(f"\n[SUCCESS] Configuration saved to: {config_path()}")
-    start = "start_drive.cmd" if sys.platform == "win32" else "./start_drive.sh"
-    print(f"Start the drive with: {start}   (or in the foreground: {launcher()} mount)")
+    print(f"Start the drive from the menu ({launcher()}, option 1), or run: {launcher()} start")
     return 0
 
 
@@ -591,7 +590,7 @@ def cmd_status(args):
         row("Drive software", "WinFsp installed" if dll else "WinFsp NOT FOUND - install it from https://winfsp.dev/rel/")
     else:
         lib = find_linux_fuse_lib()
-        row("Drive software", f"libfuse ({lib})" if lib else "libfuse NOT FOUND - run ./install_debian.sh")
+        row("Drive software", f"libfuse ({lib})" if lib else "libfuse NOT FOUND - ./run.sh -> Tools -> Install requirements")
     row("Settings file", config_path())
     row("Data folder", data_dir)
     print("=" * 60)
@@ -1086,28 +1085,28 @@ def cmd_context_menu(args):
         return 1
     import winreg
 
-    python_exe = sys.executable
+    launch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "windows", "launch.cmd")
 
     reg_entries = [
         (
             r"Software\Classes\*\shell\DiscordDrive_Offline",
             "DiscordDrive: Make available offline",
-            f'"{python_exe}" -m discorddrive offline "%1"',
+            f'"{launch}" offline "%1"',
         ),
         (
             r"Software\Classes\*\shell\DiscordDrive_FreeSpace",
             "DiscordDrive: Free up space",
-            f'"{python_exe}" -m discorddrive free-space "%1"',
+            f'"{launch}" free-space "%1"',
         ),
         (
             r"Software\Classes\Directory\shell\DiscordDrive_Offline",
             "DiscordDrive: Make available offline",
-            f'"{python_exe}" -m discorddrive offline "%1"',
+            f'"{launch}" offline "%1"',
         ),
         (
             r"Software\Classes\Directory\shell\DiscordDrive_FreeSpace",
             "DiscordDrive: Free up space",
-            f'"{python_exe}" -m discorddrive free-space "%1"',
+            f'"{launch}" free-space "%1"',
         ),
     ]
 
@@ -1171,6 +1170,9 @@ def main():
     # status
     subparsers.add_parser("status", help="Show current status and sync statistics")
     subparsers.add_parser("mountpoint", help="Print the configured mount point (for scripts)")
+    subparsers.add_parser("menu", help="Open the interactive menu (what run.bat / run.sh show)")
+    subparsers.add_parser("start", help="Start the drive in the background")
+    subparsers.add_parser("menu-start", help=argparse.SUPPRESS)
     subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
     p_old = subparsers.add_parser("add-old-key", help="Add an earlier encryption key, to read data encrypted with it")
     p_old.add_argument("key", nargs="?", default="-", help="The key in hex, or - to read it from input (default)")
@@ -1241,6 +1243,16 @@ def main():
         return cmd_add_old_key(args)
     elif args.command == "export-key":
         return cmd_export_key(args)
+    elif args.command == "menu":
+        from .menu import main as menu_main
+        try:
+            return menu_main()
+        except KeyboardInterrupt:
+            print()
+            return 0
+    elif args.command in ("start", "menu-start"):
+        from .menu import menu_start
+        return menu_start()
     elif args.command == "mountpoint":
         print(Config.load().mount_point)
         return 0

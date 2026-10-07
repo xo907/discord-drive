@@ -59,7 +59,7 @@ def format_size(n: int) -> str:
 
 def launcher() -> str:
     """How users run DiscordDrive commands on this system (for messages)."""
-    return "DiscordDrive.cmd" if sys.platform == "win32" else "./discorddrive.sh"
+    return "run.bat" if sys.platform == "win32" else "./run.sh"
 
 
 def config_path() -> str:

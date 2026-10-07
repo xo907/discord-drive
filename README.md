@@ -49,10 +49,10 @@ you already have that program, which is fine. When it is done, **close PowerShel
 (so it finds the programs you just installed), then paste:
 
 ```powershell
-git clone https://github.com/xo907/discord-drive.git "$HOME\DiscordDrive"; cd "$HOME\DiscordDrive"; .\DiscordDrive.cmd setup
+git clone https://github.com/xo907/discord-drive.git "$HOME\DiscordDrive"; cd "$HOME\DiscordDrive"; .\run.bat
 ```
 
-Setup asks five questions:
+The DiscordDrive menu opens. Choose **5 (Setup)** and answer the questions:
 
 | Question | What to type |
 |---|---|
@@ -62,47 +62,46 @@ Setup asks five questions:
 | Enable Zero-Knowledge Encryption? `[Y/n]` | press **Enter** |
 | Encryption Password | a password you will remember. **Use the same one on all your computers.** |
 
-Start the drive:
+When setup asks "Start the drive now?", press **Enter**. Open **File Explorer**: your new drive is
+**Z:**. Anything you put there is stored in Discord.
 
-```powershell
-.\start_drive.cmd
-```
-
-Open **File Explorer**: your new drive is **Z:**. Anything you put there is stored in Discord.
+From now on, just double-click **`run.bat`** in the `DiscordDrive` folder (your user folder) to get the menu.
 
 ### Step 2b: Linux (Debian, Ubuntu, Raspberry Pi OS)
 
-Open a terminal and paste (works both as a normal user with `sudo` and as `root`):
+Open a terminal and paste. It works both as a normal user with `sudo` and as `root`, installs what
+DiscordDrive needs, and opens the menu:
 
 ```bash
-S=$(command -v sudo); $S apt update && $S apt install -y git && git clone https://github.com/xo907/discord-drive.git ~/DiscordDrive && cd ~/DiscordDrive && ./install_debian.sh
+S=$(command -v sudo); $S apt update && $S apt install -y git && git clone https://github.com/xo907/discord-drive.git ~/DiscordDrive && cd ~/DiscordDrive && bash discorddrive/scripts/linux/install.sh && ./run.sh
 ```
 
-Then run setup. Paste the bot token and channel ID, press **Enter** at "Enable encryption?", and type
-an encryption password (the **same one on all your computers**):
+In the menu choose **5 (Setup)**. Paste the bot token and channel ID, type **`/mnt/discord`** as the
+mount directory, press **Enter** at "Enable encryption?", and type an encryption password (the
+**same one on all your computers**). Answer **Enter** to "Start the drive now?".
 
-```bash
-./discorddrive.sh setup -m /mnt/discord
-```
-
-Start the drive:
-
-```bash
-./start_drive.sh
-```
-
-Your files are in **`/mnt/discord`**.
+Your files are in **`/mnt/discord`**. From now on, run **`~/DiscordDrive/run.sh`** to get the menu.
 
 ### Everyday use
 
-| | Windows (in the `DiscordDrive` folder) | Linux (in `~/DiscordDrive`) |
-|---|---|---|
-| Start | `.\start_drive.cmd` | `./start_drive.sh` |
-| Stop | `.\stop_drive.cmd` | `./stop_drive.sh` |
-| Status | `.\DiscordDrive.cmd status` | `./discorddrive.sh status` |
-| Update to the latest version | `.\update_drive.cmd` | `./update_drive.sh` |
+Everything is in the menu: **`run.bat`** on Windows (double-click it), **`./run.sh`** on Linux.
 
-On Windows you can also just double-click `start_drive.cmd` / `stop_drive.cmd` in File Explorer.
+<p align="center"><img src="docs/images/menu.svg" alt="The DiscordDrive menu" width="640"></p>
+
+| Menu option | What it does |
+|---|---|
+| 1 / 2 | Start or stop the drive |
+| 3 | Status: what is stored in Discord, what is uploading, cache and disk space |
+| 4 | Update DiscordDrive to the latest version (stops and restarts the drive for you) |
+| 5 | Setup: bot token, channel, encryption password |
+| 6 | Settings: memory-only cache, cache size, disk-space limits, max file size, drive letter |
+| 7 | Old versions, deleted files, offline files |
+| 8 | How to copy lots of files onto the drive |
+| 9 | Tools: check files, logs, encryption keys, rebuild the file list, Explorer menu, autostart |
+
+Every option is also a direct command, handy for scripts and remote servers:
+`run.bat status`, `./run.sh start`, `./run.sh stop`, `./run.sh config max_file_size 2G`, and so on
+(see [Usage](#usage)).
 
 <p align="center"><img src="docs/images/status.svg" alt="Example output of the status command" width="720"></p>
 
@@ -110,15 +109,8 @@ Stuck? See [Troubleshooting](#troubleshooting): it covers every problem we have 
 Windows and Linux.
 
 **Optional: keep nothing on this computer.** By default, files you open are cached on disk so they
-open faster next time. To stream them from Discord every time instead (cached in RAM only), run this
-once, then stop and start the drive:
-
-```powershell
-.\DiscordDrive.cmd config cache_mode memory
-```
-```bash
-./discorddrive.sh config cache_mode memory
-```
+open faster next time. To stream them from Discord every time instead (cached in RAM only), choose
+**6 (Settings) → Read cache → `memory`** in the menu.
 
 **Using a second computer?** Do Step 2 on it with the **same bot token, channel ID, and encryption
 password**. Everything you stored appears there automatically, and changes sync both ways within seconds.
@@ -184,7 +176,8 @@ The config is stored outside the repository:
 | Windows | `%APPDATA%\DiscordDrive\config.json` | `%LOCALAPPDATA%\DiscordDrive\` |
 | Linux | `~/.config/DiscordDrive/config.json` (mode 600) | `~/.local/share/DiscordDrive/` |
 
-Change settings with `config <name> <value>` (run `config` alone to list them), or edit the file.
+Change settings in the menu (**6 Settings**), with `config <name> <value>` (run `config` alone to
+list them), or by editing the file.
 Sizes accept units, e.g. `config max_file_size 2G` or `config min_free_disk_bytes 4G`.
 
 Useful limits:
@@ -197,7 +190,7 @@ Useful limits:
 | `cache_mode` | `disk` | `memory` keeps files you open in RAM only |
 
 `DISCORDDRIVE_CONFIG`, `DISCORDDRIVE_TOKEN` and `DISCORDDRIVE_CHANNEL` environment variables
-override the config file location, token, and channel. See [`config.example.json`](config.example.json)
+override the config file location, token, and channel. See [`docs/config.example.json`](docs/config.example.json)
 for every option.
 
 
@@ -205,51 +198,61 @@ for every option.
 
 ## Usage
 
-| Task | Windows | Linux |
-|---|---|---|
-| Start in background | `start_drive.cmd` | `./start_drive.sh` |
-| Run in foreground (Ctrl+C to stop) | `DiscordDrive.cmd mount` | `./discorddrive.sh mount` |
-| Stop | `stop_drive.cmd` | `./stop_drive.sh` |
-| Status | `status_drive.cmd` | `./discorddrive.sh status` |
-| Clear local cache | `clear_cache.cmd` | `./clear_cache.sh` |
-
-Other commands (`DiscordDrive.cmd <cmd>` / `./discorddrive.sh <cmd>`):
+The menu (`run.bat` / `./run.sh` with nothing after it) covers everything. The same actions are
+available as commands: put them after `run.bat` on Windows or `./run.sh` on Linux, e.g.
+`run.bat status` or `./run.sh stop`.
 
 ```text
-offline <path>        Pin a file/folder and download it for offline use   (alias: pin)
-free-space [<path>]   Evict cached data (one path, or --all)               (alias: unpin)
+start                                Start the drive in the background
+stop                                 Stop the drive (uploads continue on the next start)
+status                               What is stored, what is uploading, cache and disk space
+mount                                Run the drive in this window (Ctrl+C to stop)
+setup                                Bot token, channel, encryption password
+config [<name> [<value>]]            Show or change a setting (sizes like 500M, 2G)
+offline <path>                       Keep a file/folder on this computer for offline use
+free-space [<path>] [--all]          Remove cached data (one path, or everything)
+clear-cache                          Remove all cached data that isn't kept offline
 versions <file>                      List the older versions kept for a file
 restore-version <file> <n> [--as p]  Bring back version n (or save it as a new file p)
 deleted [<folder>]                   List deleted files that can still be recovered
 undelete <path>                      Recover a deleted file
-config [<name> [<value>]]            Show or change a setting
-export-key                           Show the encryption key, to copy it to another device
-add-old-key [--from-config <file>]   Add an earlier key so files encrypted with it stay readable
 verify [<path>]                      Check that files can be downloaded and decrypted
 log [-n 30] [--errors]               Show the end of the log file
-backup                Save an index checkpoint now (normally automatic)
-restore               Rebuild the local index from the channel (drive must be stopped)
-context-menu install  Add "Make available offline" / "Free up space" to Explorer (Windows)
+export-key                           Show the encryption key, to copy it to another device
+add-old-key [--from-config <file>]   Add an earlier key so files encrypted with it stay readable
+restore                              Rebuild this device's file list from Discord (drive stopped)
+backup                               Save an index checkpoint now (normally automatic)
+context-menu install|uninstall       "Make available offline" / "Free up space" in Explorer (Windows)
 ```
 
 Paths can be given as `Z:\Folder\file.mp4`, `/mnt/discord/Folder/file.mp4`, or `/Folder/file.mp4`.
 
+### Project layout
+
+```text
+run.bat / run.sh       start here: the menu, or a command
+discorddrive/          the program (Python)
+  scripts/windows/     helpers used by run.bat (hidden start, Explorer menu)
+  scripts/linux/       install.sh (requirements) and the systemd service
+docs/                  images and config.example.json
+```
+
 ### Start automatically on Linux (systemd)
 
-`install_debian.sh` prints the exact commands. In short:
+The menu shows the exact commands under **9 (Tools) → "How to start the drive automatically at
+boot"**. In short:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp discorddrive.service ~/.config/systemd/user/    # edit the paths if the repo is not ~/DiscordDrive
-systemctl --user daemon-reload
-systemctl --user enable --now discorddrive
+sed "s|%h/DiscordDrive|$HOME/DiscordDrive|g" ~/DiscordDrive/discorddrive/scripts/linux/discorddrive.service > ~/.config/systemd/user/discorddrive.service
+systemctl --user daemon-reload && systemctl --user enable --now discorddrive
 sudo loginctl enable-linger "$USER"                 # keep running when you are logged out
 ```
 
 ### Sharing over Samba / with other users (Linux)
 
 Set `"allow_other": true` in the config, or pass `mount --allow-other`. This requires
-`user_allow_other` in `/etc/fuse.conf`, which `install_debian.sh` enables.
+`user_allow_other` in `/etc/fuse.conf`, which the Linux installer (`install.sh`) enables.
 
 ---
 
@@ -356,24 +359,16 @@ as files in `<folder>`.
 
 ## Updating
 
-One step: it stops the drive, downloads the latest version, and starts the drive again. Your
-settings, key and data are stored outside the program folder, so updating never touches them.
-
-| Windows | Linux |
-|---|---|
-| Double-click `update_drive.cmd`, or run `.\update_drive.cmd` in the `DiscordDrive` folder (works in Command Prompt and PowerShell) | `~/DiscordDrive/update_drive.sh` |
-
-Why not just `git pull`? A running drive keeps using the old version until it is restarted, and
-"start" on its own only reports `already mounted`. The update scripts take care of the restart.
-
-> On Windows, chaining commands with `;` (`a; b; c`) only works in PowerShell. In Command Prompt it
-> silently runs just the first command, which is another reason to use `update_drive.cmd`.
+In the menu choose **4 (Update DiscordDrive)**. It stops the drive, downloads the latest version,
+starts the drive again and reopens the menu. Your settings, key and data are stored outside the
+program folder, so updating never touches them. (`git pull` alone isn't enough: a running drive
+keeps using the old version until it is restarted.)
 
 Copying the files over yourself instead of using `git` (e.g. from Windows with `scp`)? Copying from
 Windows drops Linux's "executable" permission, so restore it, then restart the drive:
 
 ```bash
-chmod +x ~/DiscordDrive/*.sh
+chmod +x ~/DiscordDrive/run.sh ~/DiscordDrive/discorddrive/scripts/linux/*.sh
 ```
 
 ---
@@ -396,30 +391,30 @@ on Linux (background starts also write `mount.log` next to it).
   a new one; already-open windows don't see newly installed programs.
 - **The drive started, but Z: is not in File Explorer.** You probably started it from an
   **Administrator** PowerShell (the prompt shows `C:\WINDOWS\system32>`). Drives started as
-  administrator are invisible to your normal Explorer. Run `.\stop_drive.cmd` there, then start it
-  again from a normal PowerShell, or by double-clicking `start_drive.cmd`.
+  administrator are invisible to your normal Explorer. Stop it there (`run.bat stop`), then start it
+  again by double-clicking `run.bat` and choosing 1 (Start).
 - **The drive letter does not appear at all.** A leftover process from an earlier run can block
-  the mount: run `.\stop_drive.cmd`, then `.\start_drive.cmd`. `start_drive.cmd` is more reliable
-  than `mount -b`. Also check that WinFsp is installed (`.\DiscordDrive.cmd status` shows it).
+  the mount: in the menu choose 2 (Stop), then 1 (Start). Also check that WinFsp is installed (the
+  menu warns you if it isn't).
 - **New files from another device don't show in an open Explorer window.** Press **F5**. Explorer
   does not refresh network-style drives by itself.
 
 ### Linux
 
 - **`sudo: command not found`.** You're logged in as `root` on a system without `sudo` (typical for
-  a VPS). The Quick Start command and `install_debian.sh` handle this automatically; just leave
+  a VPS). The Quick Start command and the installer handle this automatically; just leave
   `sudo` out of any command you type yourself.
-- **`python: command not found`.** Linux calls it `python3`. Use the scripts (`./start_drive.sh`,
-  `./discorddrive.sh <command>`), which call the right one.
+- **`python: command not found`.** Linux calls it `python3`. Use `./run.sh`, which calls the
+  right one.
 - **`apt` fails with "404 Not Found" for `python3-cryptography` (or another package).** Seen on
   Debian 11, which has reached end of life: its security mirror lists updates whose files were
-  removed. `install_debian.sh` retries automatically with the release's own version. By hand:
+  removed. The installer retries automatically with the release's own version. By hand:
   ```bash
   apt-get install -y -t "$(. /etc/os-release; echo $VERSION_CODENAME)" python3-cryptography
   ```
 - **`apt` wants to remove `fuse3`.** Don't let it: other software (Docker volumes, rclone, sshfs…)
   may need it. DiscordDrive only needs the FUSE 2 *library* (`libfuse2`) and works with either
-  `fuse` or `fuse3` tools. `install_debian.sh` keeps whichever one is installed.
+  `fuse` or `fuse3` tools. The installer keeps whichever one is installed.
 - **`E: Unable to locate package libfuse2t64`** (or `libfuse2`). The library was renamed:
   `libfuse2` on Debian 11/12 and Ubuntu up to 22.04, `libfuse2t64` on Debian 13+ and Ubuntu 24.04+.
   The installer picks the right name.
@@ -444,10 +439,10 @@ on Linux (background starts also write `mount.log` next to it).
 - **`/mnt/discord` looks empty although the drive is running.** If your terminal was already
   *inside* that folder when the drive started, it keeps showing the plain folder underneath. Leave
   and come back: `cd ~ && ls /mnt/discord`.
-- **`start_drive.sh` says "already mounted" after an update.** The old version is still running.
-  Use `./update_drive.sh`, which restarts it; see [Updating](#updating).
+- **"already mounted" after an update.** The old version is still running. Update from the menu
+  (option 4), which restarts it; see [Updating](#updating).
 - **"Mount directory is not empty".** DiscordDrive refuses to mount on top of existing files,
-  because they would be hidden. Move them away or pick another directory (`./discorddrive.sh setup -m <dir>`).
+  because they would be hidden. Move them away or pick another directory (`./run.sh setup -m <dir>`).
 - **"Transport endpoint is not connected".** An earlier instance crashed. Starting again cleans
   this up automatically, or run `fusermount -uz /mnt/discord` (`fusermount3 -uz` on FUSE 3 systems).
 
@@ -481,12 +476,12 @@ on Linux (background starts also write `mount.log` next to it).
   rather than show (and later save) an empty drive. This happens when the drive was created with an
   older version, which turned the same password into a different key on each computer, or with a
   random key. Copy the real key over:
-  1. On a device where the drive works: `export-key` (`DiscordDrive.cmd export-key` or `./discorddrive.sh export-key`).
+  1. On a device where the drive works: `export-key` (menu 9 → "Show my encryption key", or `run.bat export-key` / `./run.sh export-key`).
   2. On this device: `setup -k <that key>`, then start the drive. Setup confirms the key matches.
 
   From Windows to a Linux machine in one step, without the key appearing on screen:
   ```powershell
-  (Get-Content "$env:APPDATA\DiscordDrive\config.json" | ConvertFrom-Json).encryption_key | ssh user@host 'read k; cd ~/DiscordDrive && ./discorddrive.sh setup -m /mnt/discord -k "$k"'
+  (Get-Content "$env:APPDATA\DiscordDrive\config.json" | ConvertFrom-Json).encryption_key | ssh user@host 'read k; ~/DiscordDrive/run.sh setup -m /mnt/discord -k "$k"'
   ```
 - **A file won't open ("I/O error", "invalid argument", or the player just stops).** Run
   `verify <path>` (or `verify` for the whole drive; it downloads everything once). It lists every

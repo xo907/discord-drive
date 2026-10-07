@@ -1,31 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="780" height="512" viewBox="0 0 780 512" role="img" aria-label="Example output of the DiscordDrive status command">
-  <rect width="780" height="512" rx="12" fill="#0d1117" stroke="#30363d"/>
-  <path d="M12 0 h756 a12 12 0 0 1 12 12 v24 h-780 v-24 a12 12 0 0 1 12 -12 z" fill="#161b22"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="528" viewBox="0 0 800 528" role="img" aria-label="Example output of the DiscordDrive status command">
+  <rect width="800" height="528" rx="12" fill="#0d1117" stroke="#30363d"/>
+  <path d="M12 0 h776 a12 12 0 0 1 12 12 v24 h-800 v-24 a12 12 0 0 1 12 -12 z" fill="#161b22"/>
   <circle cx="22" cy="18" r="6" fill="#ff5f57"/><circle cx="42" cy="18" r="6" fill="#febc2e"/><circle cx="62" cy="18" r="6" fill="#28c840"/>
-  <text x="390" y="23" fill="#8b949e" font-size="13" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">user@server: ~/DiscordDrive</text>
+  <text x="400" y="23" fill="#8b949e" font-size="13" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">user@server: ~/DiscordDrive</text>
   <g font-family="Consolas, 'SFMono-Regular', 'Liberation Mono', Menlo, monospace" font-size="13.5" fill="#c9d1d9">
     <text x="20" y="62"><tspan fill="#3fb950">user@server</tspan><tspan fill="#8b949e">:</tspan><tspan fill="#79c0ff">~/DiscordDrive</tspan><tspan fill="#8b949e">$ </tspan><tspan>./discorddrive.sh status</tspan></text>
     <text x="20" y="84" fill="#8b949e">============================================================</text>
     <text x="242" y="102" fill="#e6edf3" font-weight="700" text-anchor="middle">DiscordDrive Status</text>
     <text x="20" y="120" fill="#8b949e">============================================================</text>
-    <text x="20" y="140" fill="#8b949e">Configured:</text><text x="152" y="140">Yes</text>
-    <text x="20" y="158" fill="#8b949e">Mount Point:</text><text x="152" y="158">/mnt/discord</text>
-    <text x="20" y="176" fill="#8b949e">Read Cache:</text><text x="152" y="176">memory only (256 MiB RAM, nothing on disk)</text>
-    <text x="20" y="194" fill="#8b949e">Encryption:</text><text x="152" y="194"><tspan fill="#3fb950">ENABLED</tspan> (AES-256-GCM | key fingerprint 4e1a9c07d2b3)</text>
-    <text x="20" y="212" fill="#8b949e">FUSE Driver:</text><text x="152" y="212">libfuse (libfuse.so.2)</text>
-    <text x="20" y="230" fill="#8b949e">Mount /mnt/discord Status:</text><text x="232" y="230"><tspan fill="#3fb950">MOUNTED (Active)</tspan></text>
-    <text x="20" y="256" fill="#79c0ff">--- Local Metadata Index ---</text>
-    <text x="20" y="274" fill="#8b949e">Total Files:</text><text x="152" y="274">1284</text>
-    <text x="20" y="292" fill="#8b949e">Total Folders:</text><text x="152" y="292">96</text>
-    <text x="20" y="310" fill="#8b949e">Total Storage:</text><text x="152" y="310">39342.10 MiB (41252683212 bytes)</text>
-    <text x="20" y="328" fill="#8b949e">Pending Upload:</text><text x="152" y="328">0 file(s)</text>
-    <text x="20" y="346" fill="#8b949e">Pending Publish:</text><text x="152" y="346">0 change(s)</text>
-    <text x="20" y="364" fill="#8b949e">Old Versions:</text><text x="152" y="364">12 (148.30 MiB, kept 30 days)</text>
-    <text x="20" y="382" fill="#8b949e">Device ID:</text><text x="152" y="382">7f3c9a21</text>
-    <text x="20" y="400" fill="#8b949e">Journal:</text><text x="152" y="400">message 1300000000000000042</text>
-    <text x="20" y="426" fill="#79c0ff">--- Discord Connection ---</text>
-    <text x="20" y="444" fill="#8b949e">Bot Name:</text><text x="152" y="444">MyDriveBot</text>
-    <text x="20" y="462" fill="#8b949e">Channel Name:</text><text x="152" y="462">#drive</text>
-    <text x="20" y="482" fill="#8b949e">============================================================</text>
+    <text x="20" y="140" fill="#8b949e" xml:space="preserve">Drive:</text><text x="168" y="140">/mnt/discord  <tspan fill="#3fb950">RUNNING (mounted)</tspan></text>
+    <text x="20" y="158" fill="#8b949e" xml:space="preserve">Encryption:</text><text x="168" y="158"><tspan fill="#3fb950">ON</tspan> (AES-256-GCM) | key fingerprint 4e1a9c07d2b3</text>
+    <text x="20" y="176" fill="#8b949e" xml:space="preserve">Discord:</text><text x="168" y="176">connected as MyDriveBot, channel #drive</text>
+    <text x="20" y="202" fill="#79c0ff">--- Your files (stored in Discord) ---</text>
+    <text x="20" y="220" fill="#8b949e" xml:space="preserve">Files:</text><text x="168" y="220">1,284 in 96 folders</text>
+    <text x="20" y="238" fill="#8b949e" xml:space="preserve">Total size:</text><text x="168" y="238">38.4 GB</text>
+    <text x="20" y="256" fill="#8b949e" xml:space="preserve">Old versions:</text><text x="168" y="256">12 (148.3 MB), kept 30 days</text>
+    <text x="20" y="282" fill="#79c0ff">--- Syncing ---</text>
+    <text x="20" y="300" fill="#8b949e" xml:space="preserve">Waiting to upload:</text><text x="168" y="300">1 file(s)</text>
+    <text x="20" y="318" fill="#8b949e" xml:space="preserve">  Uploading now:</text><text x="168" y="318">/music/Artist - Album/01 - Opening.flac  42% (3 of 7 pieces)</text>
+    <text x="20" y="336" fill="#8b949e" xml:space="preserve">Changes to share:</text><text x="168" y="336">0 (new/changed/deleted items not yet sent to other devices)</text>
+    <text x="20" y="354" fill="#8b949e" xml:space="preserve">Sync position:</text><text x="168" y="354">message 1300000000000000042</text>
+    <text x="20" y="372" fill="#8b949e" xml:space="preserve">This device:</text><text x="168" y="372">7f3c9a21</text>
+    <text x="20" y="398" fill="#79c0ff">--- On this computer ---</text>
+    <text x="20" y="416" fill="#8b949e" xml:space="preserve">Read cache:</text><text x="168" y="416">memory only (up to 256.0 MB RAM), nothing stored on disk</text>
+    <text x="20" y="434" fill="#8b949e" xml:space="preserve">Offline files:</text><text x="168" y="434">none</text>
+    <text x="20" y="452" fill="#8b949e" xml:space="preserve">Upload queue:</text><text x="168" y="452">58.2 MB waiting to upload (limit 2.0 GB)</text>
+    <text x="20" y="470" fill="#8b949e" xml:space="preserve">Free disk space:</text><text x="168" y="470">6.1 GB (DiscordDrive always leaves 2.0 GB free)</text>
+    <text x="20" y="488" fill="#8b949e" xml:space="preserve">Drive software:</text><text x="168" y="488">libfuse (libfuse.so.2)</text>
+    <text x="20" y="508" fill="#8b949e">============================================================</text>
   </g>
 </svg>
