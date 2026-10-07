@@ -51,6 +51,7 @@ class Journal:
         self._last_checkpoint_time = time.time()
         self._last_gc = 0.0
         self._failures = 0
+        self._needs_rebuild = False
 
     # ------------------------------------------------------------ encoding
     def _encode(self, ops) -> bytes:
@@ -150,7 +151,32 @@ class Journal:
                  mid, len(data), cursor)
         return True
 
+    def _index_empty(self):
+        st = self.index.stats(max_age=0)
+        return st["files"] == 0 and st["dirs"] == 0
+
+    def _rebuild_empty_index(self):
+        """The local file list is empty although Discord holds the drive: restore it automatically."""
+        try:
+            latest = self.backend.find_latest_index()
+            if latest is None:
+                return
+            log.info("This device's file list is empty; rebuilding it from Discord...")
+            if self.fs is not None:
+                with self.fs.lock:
+                    self.restore(latest)
+                    self.fs._chunk_maps.clear()
+            else:
+                self.restore(latest)
+            with self._sync_lock:
+                self.poll()
+            self._needs_rebuild = False
+        except Exception as e:
+            log.warning("Could not rebuild the file list yet (%s); will retry.", e)
+
     def sync_once(self):
+        if self._needs_rebuild and self._index_empty():
+            self._rebuild_empty_index()
         with self._sync_lock:
             self.flush()
             changed = self.poll()
@@ -221,14 +247,28 @@ class Journal:
     def bootstrap(self):
         """Bring the local index up to date before mounting."""
         if self.index.kv_get("journal_cursor"):
-            try:
-                with self._sync_lock:
-                    self.flush()
-                    n = self.poll()
-                if n:
-                    log.info("Caught up with %d change(s) made on other devices.", n)
-            except Exception as e:
-                log.warning("Could not reach Discord to catch up (%s); starting with the local index.", e)
+            # Right after a reboot the network may not be up yet: keep trying for about a minute.
+            online = False
+            for attempt in range(12):
+                try:
+                    with self._sync_lock:
+                        self.flush()
+                        n = self.poll()
+                    if n:
+                        log.info("Caught up with %d change(s) made on other devices.", n)
+                    online = True
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        log.info("Waiting for the network to reach Discord (%s)...", e)
+                    time.sleep(5)
+            if not online:
+                log.warning("Could not reach Discord to catch up; starting with the local file list.")
+            if self._index_empty():
+                if online:
+                    self._rebuild_empty_index()
+                else:
+                    self._needs_rebuild = True   # done as soon as Discord is reachable
             return
 
         # First start with the journal: a fresh install, or an upgrade from an older version.
