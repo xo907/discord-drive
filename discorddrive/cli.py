@@ -156,6 +156,7 @@ def cmd_setup(args):
     enc_enabled = True
     enc_key_hex = cfg.encryption_key
     enc_salt_hex = cfg.encryption_salt
+    received_old_keys = []
 
     # Is there already an encrypted drive in this channel? Then a new random key would be useless.
     existing_encrypted = False
@@ -181,11 +182,43 @@ def cmd_setup(args):
         enc_salt_hex = salt.hex()
         enc_enabled = True
         print(f"  [OK] Key derived from provided passphrase (fingerprint {key_fingerprint(enc_key_hex)}).")
+    elif not enc_key_hex and existing_encrypted:
+        print("  [!] This channel already holds an encrypted DiscordDrive. How do you want to get its key?")
+        print("      1) Request it from one of your other devices (recommended)")
+        print("      2) Enter the encryption password")
+        print("      3) Paste the key (from 'export-key' on another device)")
+        try:
+            how = input("Choose 1, 2 or 3 [1]: ").strip() or "1"
+        except EOFError:
+            how = "1"
+        if how == "2":
+            try:
+                passphrase = input("Encryption password: ").strip()
+            except EOFError:
+                passphrase = ""
+            if not passphrase:
+                print("  [FAIL] No password entered.")
+                return 1
+            salt = channel_salt(channel_id)
+            enc_key_hex = derive_key(passphrase, salt)[0].hex()
+            enc_salt_hex = salt.hex()
+        elif how == "3":
+            try:
+                enc_key_hex = parse_key(input("Key: ")).hex()
+            except (ValueError, EOFError) as e:
+                print(f"  [FAIL] Not a valid key: {e}")
+                return 1
+            enc_salt_hex = ""
+        else:
+            payload = _request_key(DiscordBackend(api, channel_id))
+            if payload is None:
+                return 1
+            enc_key_hex = payload["key"]
+            received_old_keys = payload.get("old") or []
+            enc_salt_hex = ""
+        enc_enabled = True
+        print(f"  [OK] Key ready (fingerprint {key_fingerprint(enc_key_hex)}).")
     elif not enc_key_hex:
-        if existing_encrypted:
-            print("  [!] This channel already contains an ENCRYPTED DiscordDrive.")
-            print("      Enter the same passphrase used on the other machine, or re-run setup with")
-            print("      -k <encryption_key from the other machine's config>. A new random key cannot read it.")
         try:
             enc_ans = input("Enable Zero-Knowledge Encryption? (Discord will see only encrypted data) [Y/n]: ").strip().lower()
         except EOFError:
@@ -222,6 +255,9 @@ def cmd_setup(args):
 
     # Never throw a key away: data written with it would become unreadable.
     old_keys = [k for k in cfg.old_encryption_keys if k != enc_key_hex]
+    for k in received_old_keys:
+        if k != enc_key_hex and k not in old_keys:
+            old_keys.append(k)
     if cfg.encryption_key and cfg.encryption_key != enc_key_hex and cfg.encryption_key not in old_keys:
         old_keys.append(cfg.encryption_key)
         print(f"  [OK] Previous key (fingerprint {key_fingerprint(cfg.encryption_key)}) kept for reading older files.")
@@ -256,7 +292,143 @@ def cmd_setup(args):
     cfg.save()
 
     print(f"\n[SUCCESS] Configuration saved to: {config_path()}")
+    if existing_encrypted and not is_mounted(cfg.mount_point):
+        _catch_up(cfg)
     print(f"Start the drive from the menu ({launcher()}, option 1), or run: {launcher()} start")
+    return 0
+
+
+def _request_key(backend):
+    """New device: ask another device for the key. Returns {'key', 'old'} or None."""
+    from . import keyshare
+    req = keyshare.KeyRequest(backend)
+    req.post()
+    print()
+    print("--- Waiting for another device to approve ---")
+    print(f"Verification code:  {req.code}")
+    print(f"On a device that already has the key, open the menu ({launcher()}) and choose")
+    print("'Approve a new device'. Check it shows the same code, then accept.")
+    print("Waiting up to 10 minutes. Press Ctrl+C to cancel.")
+    try:
+        payload = req.wait(timeout=600)
+    except KeyboardInterrupt:
+        req._cleanup()
+        print("\n[!] Cancelled.")
+        return None
+    except keyshare.Rejected as e:
+        print(f"[FAIL] {e}")
+        return None
+    except TimeoutError:
+        print("[FAIL] Nobody approved the request within 10 minutes. Run it again when ready.")
+        return None
+    try:
+        payload["key"] = parse_key(payload.get("key", "")).hex()
+        payload["old"] = [parse_key(k).hex() for k in payload.get("old") or []]
+    except ValueError as e:
+        print(f"[FAIL] The received key is not valid: {e}")
+        return None
+    print(f"[OK] Key received from your other device (fingerprint {key_fingerprint(payload['key'])}).")
+    return payload
+
+
+def _catch_up(cfg):
+    """Bring this device's file list fully up to date: latest checkpoint + every change since."""
+    print()
+    print("--- Catching up with your drive ---")
+    idx, j, crypto = _open_journal(cfg)
+    try:
+        latest = j.backend.find_latest_index()
+        if latest is None:
+            print("[OK] The drive is still empty.")
+            return
+        j.restore(latest)
+        j.poll()
+        st = idx.stats(max_age=0)
+        print(f"[OK] Up to date: {st['files']:,} files in {st['dirs']:,} folders.")
+    except Exception as e:
+        print(f"[WARNING] Could not catch up right now ({e}); it happens automatically on the first start.")
+    finally:
+        _close(idx, crypto)
+
+
+def cmd_request_key(args):
+    """Ask one of your other devices for the encryption key (e.g. after a key mix-up)."""
+    setup_logging(args.verbose)
+    cfg = Config.load()
+    if not cfg.is_configured():
+        print(f"[ERROR] Run '{launcher()} setup' first.")
+        return 1
+    backend = DiscordBackend(DiscordAPI(cfg.bot_token, timeout=60, retries=3), cfg.channel_id)
+    payload = _request_key(backend)
+    if payload is None:
+        return 1
+    saved = Config.load()
+    keys = [payload["key"]] + payload["old"]
+    if saved.encryption_key and saved.encryption_key not in keys:
+        keys.append(saved.encryption_key)           # never lose a key
+    saved.encryption_enabled = True
+    saved.encryption_key = payload["key"]
+    saved.old_encryption_keys = [k for k in dict.fromkeys(keys[1:] + saved.old_encryption_keys)
+                                 if k != payload["key"]]
+    saved.save()
+    print("[OK] Saved.")
+    if is_mounted(saved.mount_point):
+        print(f"[!] Restart the drive (stop, then start) so it uses the new key.")
+    else:
+        _catch_up(saved)
+    return 0
+
+
+def cmd_approve_keys(args):
+    """Device with the key: approve (or reject) another device asking for it."""
+    from . import keyshare
+    setup_logging(args.verbose)
+    cfg = Config.load()
+    if not cfg.is_configured() or not cfg.encryption_key:
+        print("[ERROR] This device has no encryption key to share.")
+        return 1
+    backend = DiscordBackend(DiscordAPI(cfg.bot_token, timeout=60, retries=3), cfg.channel_id)
+    print("Looking for devices asking for the key (requests from the last 15 minutes)...")
+    try:
+        pending = keyshare.pending_requests(backend)
+        if not pending:
+            print("None yet. Start the request on the new device: setup, option 1.")
+            print("Waiting for one... (Ctrl+C to stop)")
+            end = time.time() + 600
+            while not pending and time.time() < end:
+                time.sleep(3)
+                pending = keyshare.pending_requests(backend)
+        if not pending:
+            print("[!] No request arrived.")
+            return 0
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 0
+    print()
+    for i, r in enumerate(pending, 1):
+        age = max(0, int(time.time() - r["time"]))
+        print(f"  {i}) {r['device']}, {age // 60} min {age % 60} s ago, code {r['code']}")
+    print()
+    try:
+        pick = input(f"Which request? [1]: ").strip() or "1"
+        req = pending[int(pick) - 1]
+    except (ValueError, IndexError, EOFError):
+        print("[!] Nothing chosen.")
+        return 0
+    print()
+    print(f"The new device must show this code:  {req['code']}")
+    try:
+        same = input("Does it show exactly the same code? [y/N]: ").strip().lower().startswith("y")
+    except EOFError:
+        same = False
+    if not same:
+        keyshare.answer(backend, req, False)
+        print("[OK] Rejected. If you didn't start this request yourself, someone else may have your bot")
+        print("     token: reset it in the Discord Developer Portal.")
+        return 0
+    keyshare.answer(backend, req, True, {"key": cfg.encryption_key, "old": cfg.old_encryption_keys})
+    print("[SUCCESS] Key sent (encrypted, only the new device can read it).")
+    print("          The new device now catches up with your files by itself.")
     return 0
 
 
@@ -1190,6 +1362,8 @@ def main():
     subparsers.add_parser("start", help="Start the drive in the background")
     subparsers.add_parser("menu-start", help=argparse.SUPPRESS)
     subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
+    subparsers.add_parser("approve-keys", help="Send the key to a new device that asked for it")
+    subparsers.add_parser("request-key", help="Ask one of your other devices for the key")
     p_old = subparsers.add_parser("add-old-key", help="Add an earlier encryption key, to read data encrypted with it")
     p_old.add_argument("key", nargs="?", default="-", help="The key in hex, or - to read it from input (default)")
     p_old.add_argument("--from-config", help="Take the key(s) from another device's config.json")
@@ -1257,6 +1431,10 @@ def main():
         return cmd_log(args)
     elif args.command == "add-old-key":
         return cmd_add_old_key(args)
+    elif args.command == "approve-keys":
+        return cmd_approve_keys(args)
+    elif args.command == "request-key":
+        return cmd_request_key(args)
     elif args.command == "export-key":
         return cmd_export_key(args)
     elif args.command == "menu":

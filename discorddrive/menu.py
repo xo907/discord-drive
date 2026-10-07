@@ -426,6 +426,7 @@ def tools_menu():
             ("5", "Add an older encryption key"),
             ("6", "Rebuild this device's file list from Discord"),
             ("7", "Save an index checkpoint now"),
+            ("10", "Request the key from another device"),
             (None, None),
         ]
         if WINDOWS:
@@ -486,6 +487,11 @@ def tools_menu():
                 start_drive()
         elif pick == "7":
             cli("backup")
+        elif pick == "10":
+            info("For a device that is missing the key, or has the wrong one. Another device approves it")
+            info("from its menu: 'Approve a new device'.")
+            print()
+            cli("request-key")
         elif pick == "8":
             if WINDOWS:
                 cli("context-menu", "install")
@@ -539,9 +545,10 @@ MAIN_OPTIONS = [
     ("7", "Files: old versions, deleted files, offline"),
     ("8", "Copy files onto the drive (help)"),
     ("9", "Tools and troubleshooting"),
+    ("10", "Approve a new device (send it the key)"),
 ]
 PAGE_TITLES = {"1": "Start the drive", "2": "Stop the drive", "3": "Status", "4": "Update DiscordDrive",
-               "5": "Setup", "8": "Copy files onto the drive"}
+               "5": "Setup", "8": "Copy files onto the drive", "10": "Approve a new device"}
 
 
 def main():
@@ -586,6 +593,10 @@ def main():
                     start_drive()
         elif pick == "8":
             copy_help(cfg)
+        elif pick == "10":
+            info("Use this when you set up DiscordDrive on another device and it asks for the key.")
+            print()
+            cli("approve-keys")
         back()
 
 

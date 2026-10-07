@@ -105,6 +105,7 @@ Everything is in the menu: **`run.bat`** on Windows (double-click it), **`./run.
 | 7 | Old versions, deleted files, offline files |
 | 8 | How to copy lots of files onto the drive |
 | 9 | Tools: check files, logs, encryption keys, rebuild the file list, Explorer menu, autostart |
+| 10 | Approve a new device: send it the key when it asks |
 
 Every option is also a direct command, handy for scripts and remote servers:
 `run.bat status`, `./run.sh start`, `./run.sh stop`, `./run.sh config max_file_size 2G`, and so on
@@ -119,11 +120,17 @@ Windows and Linux.
 open faster next time. To stream them from Discord every time instead (cached in RAM only), choose
 **6 (Settings) → Read cache → `memory`** in the menu.
 
-**Using a second computer?** Do Step 2 on it with the **same bot token, channel ID, and encryption
-password**. Everything you stored appears there automatically, and changes sync both ways within seconds.
-Setup checks the key against your existing drive. If it says the key doesn't match (for example
-because the drive was set up with an older version or a random key), copy the key over instead:
-run `export-key` on a computer where the drive works, then `setup -k <that key>` on the new one.
+**Using a second computer?** Do Step 2 on it with the **same bot token and channel ID**. Setup
+notices that the channel already holds your drive and offers to **request the key from one of your
+other devices**:
+
+1. On the new computer, setup shows a verification code (e.g. `4F7-2A1`) and waits.
+2. On a computer that already has the drive, open the menu and choose **10 (Approve a new device)**.
+   Check that it shows the same code, and accept.
+3. The key is sent across, encrypted, and the new computer catches up with all your files and
+   folders before it starts.
+
+(You can also type your encryption password, or paste the key from `export-key`, instead.)
 
 > **Back up your encryption password** (or the `encryption_key` from the config file). Without it,
 > the data in Discord cannot be decrypted. Nobody can recover it for you.
@@ -225,6 +232,8 @@ deleted [<folder>]                   List deleted files that can still be recove
 undelete <path>                      Recover a deleted file
 verify [<path>]                      Check that files can be downloaded and decrypted
 log [-n 30] [--errors]               Show the end of the log file
+approve-keys                         Send the key to a new device that asked for it
+request-key                          Ask one of your other devices for the key
 export-key                           Show the encryption key, to copy it to another device
 add-old-key [--from-config <file>]   Add an earlier key so files encrypted with it stay readable
 restore                              Rebuild this device's file list from Discord (drive stopped)
@@ -264,6 +273,17 @@ Set `"allow_other": true` in the config, or pass `mount --allow-other`. This req
 ---
 
 ## Using the same drive on several devices
+
+**Sharing the key with a new device.** The easiest way is the built-in key request (setup offers it
+automatically; menu **10** on the device that has the key approves it). How it stays private:
+
+- The new device posts a request with a one-time Diffie-Hellman public value (2048-bit, RFC 3526)
+  and shows a verification code derived from it.
+- After you confirm the code on the other device, that device answers with its own one-time public
+  value and your keys, encrypted with AES-256-GCM under a key that only those two devices can
+  compute. Discord, or anyone else who has your bot token, only ever sees public values and
+  ciphertext. Comparing the code stops anyone from slipping in a request of their own.
+- Requests expire after 15 minutes, and both messages are deleted once the key arrives.
 
 Every device needs the **same bot token, channel, and encryption key**. Either use the same
 passphrase during `setup` (the key is derived from the passphrase and the channel ID, so it comes

@@ -124,6 +124,11 @@ class DiscordBackend:
         page = self.api.get_messages(self.channel_id, limit=1) or []
         return page[0]["id"] if page else None
 
+    @staticmethod
+    def id_for_time(t: float) -> str:
+        """The Discord message id ("snowflake") for unix time t, for 'messages since then'."""
+        return str(max(0, int(t * 1000) - 1420070400000) << 22)
+
     def fetch_attachment(self, msg) -> bytes:
         atts = msg.get("attachments") or []
         if not atts:
@@ -264,6 +269,10 @@ class LocalBackend:
     def latest_message_id(self):
         ids = self._ids()
         return str(ids[-1]) if ids else None
+
+    @staticmethod
+    def id_for_time(t: float) -> str:
+        return str(int(t * 1e9))   # LocalBackend ids are nanosecond timestamps
 
     def fetch_attachment(self, msg):
         return self.download(msg["id"], None)[0]
