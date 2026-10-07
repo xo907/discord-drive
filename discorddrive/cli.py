@@ -626,6 +626,63 @@ def cmd_add_old_key(args):
     return 0
 
 
+_AUTOSTART_TAG = "# DiscordDrive autostart"
+
+
+def autostart_enabled() -> bool:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if sys.platform == "win32":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+                winreg.QueryValueEx(k, "DiscordDrive")
+                return True
+        except OSError:
+            return False
+    try:
+        out = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    except OSError:
+        return False
+    return _AUTOSTART_TAG in out
+
+
+def cmd_autostart(args):
+    """Start the drive in the background automatically when this computer starts (on/off)."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    action = args.action or "status"
+    if action == "status":
+        print(f"[OK] Autostart is {'ON' if autostart_enabled() else 'OFF'}.")
+        return 0
+    on = action == "on"
+    if sys.platform == "win32":
+        import winreg
+        vbs = os.path.join(root, "discorddrive", "scripts", "windows", "mount_hidden.vbs")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+            if on:
+                winreg.SetValueEx(k, "DiscordDrive", 0, winreg.REG_SZ, f'wscript.exe "{vbs}"')
+            else:
+                try:
+                    winreg.DeleteValue(k, "DiscordDrive")
+                except OSError:
+                    pass
+    else:
+        try:
+            current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+        except OSError:
+            print("[ERROR] crontab is not available. Install it: sudo apt install -y cron")
+            return 1
+        lines = [l for l in current.splitlines() if _AUTOSTART_TAG not in l]
+        if on:
+            lines.append(f'@reboot sleep 20 && "{root}/run.sh" start >/dev/null 2>&1 {_AUTOSTART_TAG}')
+        new = "\n".join(lines) + "\n" if lines else ""
+        r = subprocess.run(["crontab", "-"], input=new, text=True, capture_output=True)
+        if r.returncode != 0:
+            print(f"[ERROR] Could not update crontab: {r.stderr.strip()}")
+            return 1
+    print(f"[OK] Autostart is now {'ON: the drive starts in the background when this computer starts' if on else 'OFF'}.")
+    return 0
+
+
 def cmd_export_key(args):
     """Print the encryption key so it can be copied to another device (setup -k <key>)."""
     cfg = Config.load()
@@ -1363,6 +1420,8 @@ def main():
     subparsers.add_parser("menu-start", help=argparse.SUPPRESS)
     subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
     subparsers.add_parser("approve-keys", help="Send the key to a new device that asked for it")
+    p_auto = subparsers.add_parser("autostart", help="Start the drive automatically at startup: on, off or status")
+    p_auto.add_argument("action", nargs="?", choices=["on", "off", "status"])
     subparsers.add_parser("request-key", help="Ask one of your other devices for the key")
     p_old = subparsers.add_parser("add-old-key", help="Add an earlier encryption key, to read data encrypted with it")
     p_old.add_argument("key", nargs="?", default="-", help="The key in hex, or - to read it from input (default)")
@@ -1431,6 +1490,8 @@ def main():
         return cmd_log(args)
     elif args.command == "add-old-key":
         return cmd_add_old_key(args)
+    elif args.command == "autostart":
+        return cmd_autostart(args)
     elif args.command == "approve-keys":
         return cmd_approve_keys(args)
     elif args.command == "request-key":

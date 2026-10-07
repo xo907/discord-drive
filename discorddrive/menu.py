@@ -316,10 +316,19 @@ def settings_menu():
         cfg = Config.load()
         options = [(str(i), f"{label}: {BOLD}{_shown(k, getattr(cfg, k))}{RESET}")
                    for i, (k, label, _) in enumerate(SETTINGS, 1)]
-        options += [(None, None), ("8", "Show every setting")]
+        from .cli import autostart_enabled
+        auto = autostart_enabled()
+        options += [(None, None),
+                    ("9", f"Start automatically when this computer starts: {BOLD}{'ON' if auto else 'OFF'}{RESET}"),
+                    ("8", "Show every setting")]
         pick = choose("Choose a setting to change", options)
         if pick is None:
             return
+        if pick == "9":
+            page(MAIN, "Settings", "Start automatically")
+            cli("autostart", "off" if auto else "on")
+            back("Settings")
+            continue
         if pick == "8":
             page(MAIN, "Settings", "Every setting")
             cli("config")
