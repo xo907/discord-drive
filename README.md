@@ -465,10 +465,13 @@ on Linux (background starts also write `mount.log` next to it).
   - **key fingerprint** must be identical. If not, run `setup` again with the same encryption
     password. If setup says the key doesn't match the existing drive, copy the key instead: run
     `export-key` on a working device, then `setup -k <that key>` on this one.
-  - **Channel** must be the same.
-  - **Journal** must show a message number (not "not started"). If it says "not started", that
-    device is still running an old version; see [Updating](#updating).
-  - **Pending Publish** on the device that made the change should be 0.
+  - **Discord** must show the same channel.
+  - **Sync position** must show a message number (not "not started"). If it says "not started",
+    that device is still running an old version; see [Updating](#updating).
+  - **Changes to share** on the device that made the change should be 0.
+- **One device is missing files that the others have** (or shows a "Recovered files" folder),
+  although its key fingerprint matches. It missed some sync messages, for example while it had a
+  different key. Rebuild its file list from the drive: stop the drive, run `restore`, start it again.
 - **Some files can't be decrypted on one device but work on another, or a device stopped seeing new
   files.** The devices are using different keys, usually because `setup` was run again with a
   password and replaced the original key. Compare the fingerprints in `status`. Nothing is lost:
@@ -497,8 +500,8 @@ on Linux (background starts also write `mount.log` next to it).
 - **A "Recovered files" folder appeared.** A change arrived for a file whose folder had been
   deleted on another device at the same time. The file was put here instead of being lost.
 - **Bot invite says "successful" but the bot did not join.** The invite URL must include `scope=bot`.
-- **Want to confirm encryption is on?** `status` shows `Encryption: ENABLED (AES-256-GCM | key
-  fingerprint …)`, and the log says `Zero-knowledge AES-256-GCM encryption ACTIVE` at every start.
+- **Want to confirm encryption is on?** `status` shows `Encryption: ON (AES-256-GCM) | key
+  fingerprint …`, and the log says `Zero-knowledge AES-256-GCM encryption ACTIVE` at every start.
   In the Discord channel, attachments are named `chk_<random>.bin` with no message text.
 
 ## License

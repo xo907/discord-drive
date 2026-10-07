@@ -458,97 +458,145 @@ def cmd_export_key(args):
     return 0
 
 
+def _human(n):
+    """Readable size: 0 bytes, 512 KB, 94.3 MB, 129.9 GB (binary units)."""
+    n = float(n or 0)
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:,.0f} {unit}" if unit == "bytes" else f"{n:,.1f} {unit}"
+        n /= 1024
+
+
+def _dir_size(path, suffix=None):
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                if e.is_file() and (suffix is None or e.name.endswith(suffix)):
+                    try:
+                        total += e.stat().st_size
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return total
+
+
 def cmd_status(args):
+    import shutil
     setup_logging(args.verbose)
     cfg = Config.load()
-    print("=" * 60)
-    print("                   DiscordDrive Status")
-    print("=" * 60)
-    print(f"Config file:     {config_path()}")
-    print(f"Configured:      {'Yes' if cfg.is_configured() else 'No'}")
-    print(f"Mount Point:     {cfg.mount_point}")
-    print(f"Chunk Size:      {cfg.chunk_size // (1024 * 1024)} MiB")
-    print(f"Data Directory:  {cfg.resolved_data_dir}")
-    if cfg.max_file_size:
-        print(f"Max File Size:   {format_size(cfg.max_file_size)}")
-    if (cfg.cache_mode or "disk").lower() == "memory":
-        print(f"Read Cache:      memory only ({cfg.memory_cache_bytes // (1024 * 1024)} MiB RAM, nothing on disk)")
-    else:
-        print(f"Read Cache:      disk (up to {cfg.cache_max_bytes / 2**30:.1f} GiB)")
+    data_dir = cfg.resolved_data_dir
+    w = 20
 
-    # Encryption Status
+    def row(label, value):
+        print(f"{label + ':':{w}}{value}")
+
+    print("=" * 60)
+    print("DiscordDrive Status".center(60))
+    print("=" * 60)
+
+    # --- overview -------------------------------------------------------
+    if not cfg.is_configured():
+        row("Setup", f"NOT CONFIGURED - run '{launcher()} setup'")
+    mounted = is_mounted(cfg.mount_point)
+    row("Drive", f"{cfg.mount_point}  " + ("RUNNING (mounted)" if mounted else "not running"))
+
     if cfg.encryption_enabled and cfg.encryption_key:
         try:
-            enc_info = f"ENABLED (AES-256-GCM | key fingerprint {key_fingerprint(cfg.encryption_key)})"
+            enc = f"ON (AES-256-GCM) | key fingerprint {key_fingerprint(cfg.encryption_key)}"
             if cfg.old_encryption_keys:
-                enc_info += f" + {len(cfg.old_encryption_keys)} older key(s): " + ", ".join(
+                enc += f" + {len(cfg.old_encryption_keys)} older key(s): " + ", ".join(
                     key_fingerprint(k) for k in cfg.old_encryption_keys)
         except ValueError:
-            enc_info = "ENABLED but the configured key is INVALID (run setup again)"
-    elif cfg.encryption_enabled and not cfg.encryption_key:
-        enc_info = f"Enabled (no key yet: one is generated on first mount, or run '{launcher()} setup')"
+            enc = "ON, but the configured key is INVALID (run setup again)"
+    elif cfg.encryption_enabled:
+        enc = f"ON (no key yet: one is generated on first start, or run '{launcher()} setup')"
     else:
-        enc_info = "Disabled"
-    print(f"Encryption:      {enc_info}")
+        enc = "OFF - files are uploaded unencrypted"
+    row("Encryption", enc)
 
-    # Check FUSE driver
-    if sys.platform == "win32":
-        dll = find_winfsp_dll()
-        print(f"WinFsp Driver:   {'Installed (' + dll + ')' if dll else 'NOT FOUND'}")
-        display_mp = f"Drive {cfg.mount_point}"
-    else:
-        lib = find_linux_fuse_lib()
-        print(f"FUSE Driver:     {'libfuse (' + lib + ')' if lib else 'NOT FOUND (run ./install_debian.sh, or: apt install libfuse2)'}")
-        display_mp = f"Mount {cfg.mount_point}"
-    print(f"{display_mp} Status:  {'MOUNTED (Active)' if is_mounted(cfg.mount_point) else 'Not mounted'}")
-
-    # Check local index
-    db_path = os.path.join(cfg.resolved_data_dir, "index.db")
-    if os.path.exists(db_path):
-        try:
-            idx = Index(db_path)
-            stats = idx.stats()
-            print()
-            print("--- Local Metadata Index ---")
-            print(f"Total Files:     {stats['files']}")
-            print(f"Total Folders:   {stats['dirs']}")
-            print(f"Total Storage:   {stats['bytes'] / (1024 * 1024):.2f} MiB ({stats['bytes']} bytes)")
-            print(f"Offline Pinned:  {stats.get('pinned_files', 0)} files ({stats.get('pinned_bytes', 0) / (1024 * 1024):.2f} MiB)")
-            print(f"Total Chunks:    {stats['chunks']}")
-            print(f"Pending Upload:  {stats['unsynced']} file(s)")
-            for key in idx.kv_keys("upload:"):
-                try:
-                    rec = json.loads(idx.kv_get(key) or "null") or {}
-                    nid, size, cs = int(key.split(":", 1)[1]), int(rec["size"]), int(rec["chunk_size"])
-                except (ValueError, KeyError, TypeError):
-                    continue
-                total = max(1, (size + cs - 1) // cs)
-                done = len(rec.get("chunks") or [])
-                print(f"  Uploading:     {idx.path_of(nid)}  {done * 100 // total}% ({done}/{total} pieces)")
-            print(f"Pending Publish: {stats['outbox']} change(s)")
-            print(f"Old Versions:    {stats['versions']} ({stats['version_bytes'] / (1024 * 1024):.2f} MiB, "
-                  f"kept {cfg.version_retention_days:g} days)" if cfg.keep_versions else "Old Versions:    disabled")
-            print(f"Trash Chunks:    {stats['trash']}")
-            print(f"Device ID:       {cfg.device_id or '(assigned on first mount)'}")
-            print(f"Journal:         {'message ' + idx.kv_get('journal_cursor') if idx.kv_get('journal_cursor') else 'not started'}")
-            idx.close()
-        except Exception as e:
-            print(f"Error reading index: {e}")
-
-    # Check Discord connectivity
     if cfg.is_configured():
-        print()
-        print("--- Discord Connection ---")
         api = DiscordAPI(cfg.bot_token, timeout=20, retries=2)
         try:
             bot = api.get_me()
-            print(f"Bot Name:        {bot.get('username')}")
             ch = api.get_channel(cfg.channel_id)
-            print(f"Channel Name:    #{ch.get('name')}")
-            print(f"Server ID:       {ch.get('guild_id')}")
+            row("Discord", f"connected as {bot.get('username')}, channel #{ch.get('name')}")
         except Exception as e:
-            print(f"Connection test: Failed ({e})")
+            row("Discord", f"NOT REACHABLE ({e})")
+
+    # --- index ----------------------------------------------------------
+    db_path = os.path.join(data_dir, "index.db")
+    stats, idx = None, None
+    if os.path.exists(db_path):
+        try:
+            idx = Index(db_path)
+            stats = idx.stats(max_age=0)
+        except Exception as e:
+            print(f"\nCould not read the file list: {e}")
+
+    if stats:
+        print("\n--- Your files (stored in Discord) ---")
+        row("Files", f"{stats['files']:,} in {stats['dirs']:,} folders")
+        row("Total size", _human(stats["bytes"]))
+        if cfg.keep_versions:
+            row("Old versions", f"{stats['versions']:,} ({_human(stats['version_bytes'])}), "
+                                f"kept {cfg.version_retention_days:g} days" if cfg.version_retention_days
+                                else f"{stats['versions']:,} ({_human(stats['version_bytes'])}), kept forever")
+        else:
+            row("Old versions", "off")
+        if stats["trash"]:
+            row("Being deleted", f"{stats['trash']:,} old pieces, removed from Discord in the background")
+
+        print("\n--- Syncing ---")
+        row("Waiting to upload", f"{stats['unsynced']:,} file(s)")
+        for key in idx.kv_keys("upload:"):
+            try:
+                rec = json.loads(idx.kv_get(key) or "null") or {}
+                nid, size, cs = int(key.split(":", 1)[1]), int(rec["size"]), int(rec["chunk_size"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            total = max(1, (size + cs - 1) // cs)
+            done = len(rec.get("chunks") or [])
+            row("  Uploading now", f"{idx.path_of(nid)}  {done * 100 // total}% "
+                                   f"({done} of {total} pieces, {_human(size)})")
+        row("Changes to share", f"{stats['outbox']:,} (new/changed/deleted items not yet sent to other devices)")
+        cursor = idx.kv_get("journal_cursor")
+        row("Sync position", f"message {cursor}" if cursor else "not started (start the drive once)")
+        row("This device", cfg.device_id or "(gets an ID on first start)")
+
+    # --- local ----------------------------------------------------------
+    print("\n--- On this computer ---")
+    if (cfg.cache_mode or "disk").lower() == "memory":
+        row("Read cache", f"memory only (up to {_human(cfg.memory_cache_bytes)} RAM), nothing stored on disk")
+    else:
+        used = _dir_size(os.path.join(data_dir, "cache"), ".chunk")
+        row("Read cache", f"{_human(used)} used of {_human(cfg.cache_max_bytes)} (recently opened files)")
+    if stats:
+        row("Offline files", f"{stats.get('pinned_files', 0):,} ({_human(stats.get('pinned_bytes', 0))}) "
+                             f"kept for offline use" if stats.get("pinned_files") else "none")
+    queue = _dir_size(os.path.join(data_dir, "staging"), ".dat")
+    row("Upload queue", f"{_human(queue)} waiting to upload (limit {_human(cfg.staging_max_bytes)})"
+        if cfg.staging_max_bytes else f"{_human(queue)} waiting to upload")
+    try:
+        free = shutil.disk_usage(data_dir if os.path.isdir(data_dir) else os.path.expanduser("~")).free
+        reserve = f" (DiscordDrive always leaves {_human(cfg.min_free_disk_bytes)} free)" if cfg.min_free_disk_bytes else ""
+        row("Free disk space", _human(free) + reserve)
+    except OSError:
+        pass
+    if cfg.max_file_size:
+        row("Max file size", _human(cfg.max_file_size))
+    if sys.platform == "win32":
+        dll = find_winfsp_dll()
+        row("Drive software", "WinFsp installed" if dll else "WinFsp NOT FOUND - install it from https://winfsp.dev/rel/")
+    else:
+        lib = find_linux_fuse_lib()
+        row("Drive software", f"libfuse ({lib})" if lib else "libfuse NOT FOUND - run ./install_debian.sh")
+    row("Settings file", config_path())
+    row("Data folder", data_dir)
     print("=" * 60)
+    if idx is not None:
+        idx.close()
     return 0
 
 
