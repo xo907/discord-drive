@@ -1,4 +1,8 @@
-"""Interactive menu shown by run.bat / run.sh when they are started without arguments."""
+"""Interactive menu shown by run.bat / run.sh when they are started without arguments.
+
+Every choice opens its own page: the screen is cleared, the XO banner and a breadcrumb are
+shown, the action runs, and Enter goes back to the page it came from.
+"""
 
 import os
 import shutil
@@ -7,46 +11,34 @@ import sys
 import threading
 import time
 
-from .config import Config, config_path, default_data_dir, format_size
+from .config import Config, default_data_dir, format_size
+from .ui import ANSI, BOLD, GRAY, GREEN, RED, RESET, YELLOW, banner
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "discorddrive", "scripts")
 WINDOWS = sys.platform == "win32"
 RESTART = 75          # exit code asking run.bat / run.sh to reopen the menu (after an update)
+MAIN = "Main menu"
 
 
 # ------------------------------------------------------------------ output
-def _enable_ansi():
-    if not sys.stdout.isatty():
-        return False
-    if WINDOWS:
-        try:
-            import ctypes
-            k32 = ctypes.windll.kernel32
-            handle = k32.GetStdHandle(-11)
-            mode = ctypes.c_uint32()
-            if not k32.GetConsoleMode(handle, ctypes.byref(mode)):
-                return False
-            k32.SetConsoleMode(handle, mode.value | 0x0004)   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        except Exception:
-            return False
-    return True
+def clear():
+    sys.stdout.flush()
+    os.system("cls" if WINDOWS else "clear")
 
 
-_ANSI = _enable_ansi()
-RED, GREEN, YELLOW, GRAY, BOLD, RESET = (
-    ("\033[31m", "\033[32m", "\033[33m", "\033[90m", "\033[1m", "\033[0m") if _ANSI else ("",) * 6)
-
-
-def banner():
-    print()
-    print(f"  {BOLD}X {RED}O{RESET}   {BOLD}DiscordDrive{RESET}  {GRAY}encrypted drive in your Discord channel{RESET}")
-    print(f"       {GRAY}Made by XO.ST{RESET}")
+def page(*crumbs):
+    """Start a new page: clear the screen, banner, breadcrumb and title."""
+    clear()
+    banner()
+    if len(crumbs) > 1:
+        print(f"  {GRAY}{'  >  '.join(crumbs[:-1])}{RESET}")
+    print(f"  {RED}==>{RESET} {BOLD}{crumbs[-1]}{RESET}")
     print()
 
 
 def step(msg):
-    print(f"{RED}==>{RESET} {msg}")
+    print(f"  {RED}==>{RESET} {msg}")
 
 
 def info(msg):
@@ -61,10 +53,6 @@ def warn(msg):
     print(f"    {YELLOW}{msg}{RESET}")
 
 
-def clear():
-    os.system("cls" if WINDOWS else "clear")
-
-
 def ask(prompt, default=""):
     try:
         value = input(f"  {prompt}" + (f" {GRAY}[{default}]{RESET}" if default else "") + ": ").strip()
@@ -74,27 +62,28 @@ def ask(prompt, default=""):
 
 
 def confirm(prompt, default=True):
-    answer = ask(f"{prompt} {'[Y/n]' if default else '[y/N]'}").lower()
+    answer = ask(f"{prompt} {GRAY}{'[Y/n]' if default else '[y/N]'}{RESET}").lower()
     return default if not answer else answer.startswith("y")
 
 
-def pause():
+def back(to=MAIN):
     try:
-        input(f"\n  {GRAY}Press Enter to go back to the menu...{RESET}")
+        input(f"\n  {GRAY}Press Enter to go back to {to}...{RESET}")
     except EOFError:
         raise SystemExit(0)
 
 
 def choose(title, options, live=None):
-    """options: list of (key, label). Returns the chosen key, or None for 'back'.
-    live: (render_function, lines_between_it_and_the_title) to keep a status line up to date."""
+    """Print a list of (key, label) options (None = spacer) and ask for one.
+    Returns the chosen key, None for back/exit, or '?' for anything else.
+    live: (render_function, lines_between_it_and_the_title) keeps a status line up to date."""
     print(f"  {BOLD}{title}{RESET}")
     for key, label in options:
         if key is None:
             print()
             continue
         print(f"   {RED}{key:>2}{RESET}  {label}")
-    print(f"   {RED} 0{RESET}  {'Exit' if title == 'Main menu' else 'Back'}")
+    print(f"   {RED} 0{RESET}  {'Exit' if title == MAIN else 'Back'}")
     print()
     updater = None
     if live:
@@ -112,18 +101,71 @@ def choose(title, options, live=None):
     return pick if any(pick == k for k, _ in options if k) else "?"
 
 
+class LiveLine:
+    """Rewrites one line further up the screen every few seconds while the menu waits for input.
+
+    Uses ANSI 'save cursor / move up / clear line / restore cursor', so whatever the user is
+    typing at the prompt stays where it is. Only active in a real terminal with ANSI support.
+    """
+
+    def __init__(self, render, lines_up, interval=2.0):
+        self.render = render
+        self.lines_up = lines_up
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+        self._last = None
+
+    def start(self):
+        if not ANSI or self.lines_up <= 0:
+            return self
+        size = shutil.get_terminal_size((0, 0))
+        # Wrapped lines (narrow window) or a scrolled-off status line (short window) would make
+        # the cursor land on the wrong line, so only update when everything fits.
+        if size.columns < 90 or size.lines <= self.lines_up + 1:
+            return self
+        self._thread = threading.Thread(target=self._run, name="LiveStatus", daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            try:
+                text = self.render()
+            except Exception:
+                continue
+            if self._stop.is_set() or text == self._last:
+                continue
+            self._last = text
+            sys.stdout.write(f"\0337\033[{self.lines_up}A\r\033[2K  {text}\0338")
+            sys.stdout.flush()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
 # ------------------------------------------------------------- the drive
 def cli(*args, stdin_text=None):
-    """Run a DiscordDrive command in a fresh process (output goes straight to the screen)."""
+    """Run a DiscordDrive command in a fresh process; its output appears on the current page,
+    in the same theme (DISCORDDRIVE_EMBEDDED tells it the page already has a banner and title)."""
     cmd = [sys.executable, "-m", "discorddrive", *args]
+    env = dict(os.environ, DISCORDDRIVE_EMBEDDED="1")
+    sys.stdout.flush()   # the page header must appear before the command's own output
     if stdin_text is None:
-        return subprocess.call(cmd, cwd=ROOT)
-    return subprocess.run(cmd, cwd=ROOT, input=stdin_text, text=True).returncode
+        return subprocess.call(cmd, cwd=ROOT, env=env)
+    return subprocess.run(cmd, cwd=ROOT, env=env, input=stdin_text, text=True).returncode
 
 
 def is_mounted(cfg):
     from .cli import is_mounted as _m
     return _m(cfg.mount_point)
+
+
+def _winfsp():
+    from .fuse_loader import find_winfsp_dll
+    return find_winfsp_dll()
 
 
 def drive_line(cfg):
@@ -167,54 +209,6 @@ def quick_status(cfg):
         print(f"  {line}")
     print()
     return len(after) + 1
-
-
-class LiveLine:
-    """Rewrites one line further up the screen every few seconds while the menu waits for input.
-
-    Uses ANSI 'save cursor / move up / clear line / restore cursor', so whatever the user is
-    typing at the prompt stays where it is. Only active in a real terminal with ANSI support.
-    """
-
-    def __init__(self, render, lines_up, interval=2.0):
-        self.render = render
-        self.lines_up = lines_up
-        self.interval = interval
-        self._stop = threading.Event()
-        self._thread = None
-        self._last = None
-
-    def start(self):
-        if not _ANSI or self.lines_up <= 0:
-            return self
-        size = shutil.get_terminal_size((0, 0))
-        # Wrapped lines (narrow window) or a scrolled-off status line (short window) would make
-        # the cursor land on the wrong line, so only update when everything fits.
-        if size.columns < 90 or size.lines <= self.lines_up + 1:
-            return self
-        self._thread = threading.Thread(target=self._run, name="LiveStatus", daemon=True)
-        self._thread.start()
-        return self
-
-    def _run(self):
-        while not self._stop.wait(self.interval):
-            try:
-                text = self.render()
-            except Exception:
-                continue
-            if self._stop.is_set() or text == self._last:
-                continue
-            self._last = text
-            sys.stdout.write(f"\0337\033[{self.lines_up}A\r\033[2K  {text}\0338")
-            sys.stdout.flush()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-def _winfsp():
-    from .fuse_loader import find_winfsp_dll
-    return find_winfsp_dll()
 
 
 def _log_path():
@@ -282,18 +276,21 @@ def update():
     was_running = is_mounted(cfg)
     if was_running:
         stop_drive()
+        print()
     step("Downloading the latest version")
-    ok = subprocess.call(["git", "pull", "--ff-only"], cwd=ROOT) == 0
+    result = subprocess.run(["git", "pull", "--ff-only"], cwd=ROOT, capture_output=True, text=True)
+    for line in (result.stdout + result.stderr).strip().splitlines():
+        info(line)
+    ok = result.returncode == 0
     if not ok:
-        warn("Could not update (see the message above). Your current version is unchanged.")
+        warn("Could not update (see above). Your current version is unchanged.")
     if was_running:
         print()
-        # start through a fresh process so the new code is used
-        cli("menu-start")
+        cli("menu-start")   # a fresh process, so the new code is used
     return ok
 
 
-# ------------------------------------------------------------ sub-menus
+# --------------------------------------------------------- settings page
 SETTINGS = [
     ("cache_mode", "Read cache", "disk = keep opened files on disk (faster), memory = RAM only (nothing on disk)"),
     ("cache_max_bytes", "Read cache size (disk mode)", "e.g. 5G"),
@@ -315,35 +312,44 @@ def _shown(key, value):
 
 def settings_menu():
     while True:
-        clear(); banner()
+        page(MAIN, "Settings")
         cfg = Config.load()
         options = [(str(i), f"{label}: {BOLD}{_shown(k, getattr(cfg, k))}{RESET}")
                    for i, (k, label, _) in enumerate(SETTINGS, 1)]
-        options.append((None, None))
-        options.append(("8", "Show every setting"))
-        pick = choose("Settings", options)
+        options += [(None, None), ("8", "Show every setting")]
+        pick = choose("Choose a setting to change", options)
         if pick is None:
             return
-        print()
         if pick == "8":
-            cli("config"); pause(); continue
+            page(MAIN, "Settings", "Every setting")
+            cli("config")
+            back("Settings")
+            continue
         if not pick.isdigit() or not 1 <= int(pick) <= len(SETTINGS):
             continue
         key, label, hint = SETTINGS[int(pick) - 1]
+        page(MAIN, "Settings", label)
+        print(f"  Current value: {BOLD}{_shown(key, getattr(cfg, key))}{RESET}")
         info(hint)
-        value = ask(f"New value for '{label}' (Enter = keep)", "")
-        if not value:
-            continue
-        if cli("config", key, value) == 0 and is_mounted(cfg):
-            if confirm("Restart the drive now so this takes effect?"):
-                stop_drive(); start_drive()
-        pause()
+        print()
+        value = ask("New value (Enter = keep)", "")
+        if value:
+            print()
+            if cli("config", key, value) == 0 and is_mounted(cfg):
+                print()
+                if confirm("Restart the drive now so this takes effect?"):
+                    print()
+                    stop_drive()
+                    start_drive()
+        back("Settings")
 
 
+# ----------------------------------------------------------- files page
 def files_menu():
+    title = "Files: versions, recovery and offline"
     while True:
-        clear(); banner()
-        pick = choose("Files: versions, recovery and offline", [
+        page(MAIN, title)
+        pick = choose("What would you like to do?", [
             ("1", "List the old versions of a file"),
             ("2", "Bring back an old version of a file"),
             ("3", "List deleted files that can be recovered"),
@@ -355,39 +361,62 @@ def files_menu():
         ])
         if pick is None:
             return
-        print()
         if pick == "1":
+            page(MAIN, title, "Old versions of a file")
             p = ask("File (e.g. Z:\\Docs\\a.docx or /Docs/a.docx)")
-            if p: cli("versions", p)
+            if p:
+                print()
+                cli("versions", p)
         elif pick == "2":
+            page(MAIN, title, "Bring back an old version")
             p = ask("File")
             if p:
+                print()
                 cli("versions", p)
-                n = ask("Version number to bring back")
+                print()
+                n = ask("Version number to bring back (Enter = cancel)")
                 if n:
                     target = ask("Save as a new file instead? Enter a path, or leave empty to replace", "")
+                    print()
                     cli("restore-version", p, n, *(["--as", target] if target else []))
         elif pick == "3":
-            cli("deleted", ask("Only inside this folder (Enter = everywhere)", "/"))
+            page(MAIN, title, "Deleted files")
+            folder = ask("Only inside this folder (Enter = everywhere)", "/")
+            print()
+            cli("deleted", folder)
         elif pick == "4":
+            page(MAIN, title, "Recover a deleted file")
             p = ask("Original path of the deleted file")
-            if p: cli("undelete", p)
+            if p:
+                print()
+                cli("undelete", p)
         elif pick == "5":
+            page(MAIN, title, "Make available offline")
             p = ask("File or folder to keep on this computer")
-            if p: cli("offline", p)
+            if p:
+                print()
+                cli("offline", p)
         elif pick == "6":
+            page(MAIN, title, "Free up space")
             p = ask("File or folder (Enter = everything that isn't kept offline)", "")
-            cli("free-space", p) if p else cli("free-space", "--all")
+            print()
+            if p:
+                cli("free-space", p)
+            else:
+                cli("free-space", "--all")
         elif pick == "7":
+            page(MAIN, title, "Clear the read cache")
             cli("clear-cache")
         else:
             continue
-        pause()
+        back(title)
 
 
+# ----------------------------------------------------------- tools page
 def tools_menu():
+    title = "Tools and troubleshooting"
     while True:
-        clear(); banner()
+        page(MAIN, title)
         options = [
             ("1", "Check that files can be downloaded and decrypted (verify)"),
             ("2", "Show recent problems"),
@@ -405,37 +434,55 @@ def tools_menu():
         else:
             options += [("8", "Install / repair requirements (FUSE, cryptography; needs root)"),
                         ("9", "How to start the drive automatically at boot")]
-        pick = choose("Tools and troubleshooting", options)
+        pick = choose("What would you like to do?", options)
         if pick is None:
             return
-        print()
+        labels = {k: v for k, v in options if k}
+        if pick not in labels:
+            continue
+        page(MAIN, title, labels[pick].split(" (")[0])
         if pick == "1":
             p = ask("File or folder to check (Enter = everything; downloads it all once)", "")
-            cli("verify", p) if p else cli("verify")
+            print()
+            if p:
+                cli("verify", p)
+            else:
+                cli("verify")
         elif pick == "2":
             cli("log", "--errors", "-n", "25")
         elif pick == "3":
             cli("log", "-n", "40")
         elif pick == "4":
             warn("Anyone with this key and your bot token can read your files. Don't share it publicly.")
+            print()
             if confirm("Show it?", default=False):
+                print()
                 cli("export-key")
         elif pick == "5":
             info("Paste the key (64 hex characters), or the path of another device's config.json.")
+            print()
             value = ask("Key or file")
-            if value and os.path.isfile(value):
-                cli("add-old-key", "--from-config", value)
-            elif value:
-                cli("add-old-key", "-", stdin_text=value + "\n")
+            if value:
+                print()
+                if os.path.isfile(value):
+                    cli("add-old-key", "--from-config", value)
+                else:
+                    cli("add-old-key", "-", stdin_text=value + "\n")
         elif pick == "6":
             info("Use this when this device is missing files that your other devices show.")
+            print()
             cfg = Config.load()
             if is_mounted(cfg):
                 if not confirm("The drive has to stop for this. Stop it now?"):
+                    back(title)
                     continue
+                print()
                 stop_drive()
+                print()
             cli("restore")
+            print()
             if confirm("Start the drive again?"):
+                print()
                 start_drive()
         elif pick == "7":
             cli("backup")
@@ -443,45 +490,82 @@ def tools_menu():
             if WINDOWS:
                 cli("context-menu", "install")
             else:
-                script = os.path.join(SCRIPTS, "linux", "install.sh")
-                subprocess.call(["bash", script], cwd=ROOT)
+                subprocess.call(["bash", os.path.join(SCRIPTS, "linux", "install.sh")], cwd=ROOT)
         elif pick == "9":
             if WINDOWS:
                 cli("context-menu", "uninstall")
             else:
                 service = os.path.join(SCRIPTS, "linux", "discorddrive.service")
-                print("  Run these once (as the user that runs the drive):\n")
-                print("    mkdir -p ~/.config/systemd/user")
-                print(f"    sed \"s|%h/DiscordDrive|{ROOT}|g\" {service} > ~/.config/systemd/user/discorddrive.service")
-                print("    systemctl --user daemon-reload && systemctl --user enable --now discorddrive")
-                print("    sudo loginctl enable-linger \"$USER\"")
-        else:
-            continue
-        pause()
+                print("  Run these once, as the user that runs the drive:\n")
+                print(f"    {BOLD}mkdir -p ~/.config/systemd/user{RESET}")
+                print(f"    {BOLD}sed \"s|%h/DiscordDrive|{ROOT}|g\" {service} > "
+                      f"~/.config/systemd/user/discorddrive.service{RESET}")
+                print(f"    {BOLD}systemctl --user daemon-reload && systemctl --user enable --now discorddrive{RESET}")
+                print(f"    {BOLD}sudo loginctl enable-linger \"$USER\"{RESET}")
+        back(title)
+
+
+# ------------------------------------------------------------- copy help
+def copy_help(cfg):
+    mp = cfg.mount_point
+    print(f"  Copy files onto {BOLD}{mp}{RESET} like any other drive: they upload in the background.")
+    print()
+    if WINDOWS:
+        info("Drag and drop in File Explorer works. For very large folders, robocopy can resume:")
+        print()
+        print(f"    {BOLD}robocopy \"C:\\Source\\Folder\" \"{mp}\\Folder\" /E /Z{RESET}")
+    else:
+        info("For big copies, rsync skips what is already there and can be re-run any time.")
+        info("This keeps retrying by itself after errors, and stops when everything is copied:")
+        print()
+        print(f"    {BOLD}nohup sh -c 'until rsync -rt --info=progress2 /source/folder/ "
+              f"{mp}/folder/; do sleep 60; done; echo COPY COMPLETE' > ~/copy.log 2>&1 &{RESET}")
+        print()
+        info("Watch it with:  tail -f ~/copy.log")
+    print()
+    info("Status (option 3) shows uploads in progress. Files appear on your other devices as soon")
+    info("as their upload finishes.")
 
 
 # ------------------------------------------------------------- main menu
+MAIN_OPTIONS = [
+    ("1", "Start the drive"),
+    ("2", "Stop the drive"),
+    ("3", "Status (everything in detail)"),
+    ("4", "Update DiscordDrive"),
+    (None, None),
+    ("5", "Setup (bot token, channel, encryption password)"),
+    ("6", "Settings (cache, limits, drive letter...)"),
+    ("7", "Files: old versions, deleted files, offline"),
+    ("8", "Copy files onto the drive (help)"),
+    ("9", "Tools and troubleshooting"),
+]
+PAGE_TITLES = {"1": "Start the drive", "2": "Stop the drive", "3": "Status", "4": "Update DiscordDrive",
+               "5": "Setup", "8": "Copy files onto the drive"}
+
+
 def main():
     while True:
-        clear(); banner()
+        clear()
+        banner()
         cfg = Config.load()
         offset = quick_status(cfg)
-        pick = choose("Main menu", [
-            ("1", "Start the drive"),
-            ("2", "Stop the drive"),
-            ("3", "Status (everything in detail)"),
-            ("4", "Update DiscordDrive"),
-            (None, None),
-            ("5", "Setup (bot token, channel, encryption password)"),
-            ("6", "Settings (cache, limits, drive letter...)"),
-            ("7", "Files: old versions, deleted files, offline"),
-            ("8", "Copy files onto the drive (help)"),
-            ("9", "Tools and troubleshooting"),
-        ], live=(lambda: drive_line(cfg), offset))
+        pick = choose(MAIN, MAIN_OPTIONS, live=(lambda: drive_line(cfg), offset))
         if pick is None:
             clear()
             return 0
-        print()
+        if pick == "6":
+            settings_menu()
+            continue
+        if pick == "7":
+            files_menu()
+            continue
+        if pick == "9":
+            tools_menu()
+            continue
+        if pick not in PAGE_TITLES:
+            continue
+        page(MAIN, PAGE_TITLES[pick])
         if pick == "1":
             start_drive()
         elif pick == "2":
@@ -490,43 +574,22 @@ def main():
             cli("status")
         elif pick == "4":
             if update():
+                print()
                 done("Updated. Reopening the menu with the new version...")
                 time.sleep(1.5)
                 return RESTART
         elif pick == "5":
-            if cli("setup") == 0 and not is_mounted(Config.load()) and confirm("Start the drive now?"):
-                start_drive()
-        elif pick == "6":
-            settings_menu(); continue
-        elif pick == "7":
-            files_menu(); continue
+            if cli("setup") == 0 and not is_mounted(Config.load()):
+                print()
+                if confirm("Start the drive now?"):
+                    print()
+                    start_drive()
         elif pick == "8":
             copy_help(cfg)
-        elif pick == "9":
-            tools_menu(); continue
-        else:
-            continue
-        pause()
-
-
-def copy_help(cfg):
-    mp = cfg.mount_point
-    print(f"  Just copy files onto {BOLD}{mp}{RESET} like any other drive: they are uploaded in the background.\n")
-    if WINDOWS:
-        info("Drag and drop in File Explorer works. For very large folders, robocopy can resume:")
-        print(f"    robocopy \"C:\\Source\\Folder\" \"{mp}\\Folder\" /E /Z")
-    else:
-        info("For big copies, rsync skips what is already there and can be re-run any time.")
-        info("This keeps retrying by itself after errors, and stops when everything is copied:")
-        print("    nohup sh -c 'until rsync -rt --info=progress2 /source/folder/ "
-              f"{mp}/folder/; do sleep 60; done; echo COPY COMPLETE' > ~/copy.log 2>&1 &")
-        info("Watch it with:  tail -f ~/copy.log")
-    print()
-    info("Status (option 3) shows uploads in progress. Files appear on your other devices as soon")
-    info("as their upload finishes.")
+        back()
 
 
 def menu_start():
-    """'menu-start' helper: start the drive the same way the menu does (used after updating)."""
+    """'start' / 'menu-start': start the drive the same way the menu does."""
     start_drive()
     return 0

@@ -17,6 +17,7 @@ from .drive import DiscordDrive
 from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, unmount, FUSE_ERROR
 from .index import Index
 from .journal import Journal
+from .ui import embedded, theme_output
 
 log = logging.getLogger("discorddrive.cli")
 
@@ -81,9 +82,10 @@ def get_crypto_from_cfg(cfg: Config):
 def cmd_setup(args):
     setup_logging(args.verbose)
     cfg = Config.load()
-    print("=" * 60)
-    print("          DiscordDrive Configuration Setup")
-    print("=" * 60)
+    if not embedded():
+        print("=" * 60)
+        print("          DiscordDrive Configuration Setup")
+        print("=" * 60)
     print()
 
     token = args.token or cfg.bot_token
@@ -396,6 +398,17 @@ def cmd_log(args):
         lines = f.read().splitlines()
     if args.errors:
         lines = [l for l in lines if "[ERROR]" in l or "[WARNING]" in l]
+        # The same problem is often logged many times in a row; show it once with a count.
+        grouped = []
+        for line in lines:
+            key = line.split(" ", 1)[-1]                 # ignore the time
+            if grouped and grouped[-1][0] == key:
+                grouped[-1][2] += 1
+            else:
+                grouped.append([key, line, 1])
+        lines = [line + (f"  (x{n})" if n > 1 else "") for _, line, n in grouped]
+        if not lines:
+            print("[OK] No recent problems.")
     for line in lines[-args.lines:]:
         print(line)
     if not args.errors:
@@ -491,9 +504,10 @@ def cmd_status(args):
     def row(label, value):
         print(f"{label + ':':{w}}{value}")
 
-    print("=" * 60)
-    print("DiscordDrive Status".center(60))
-    print("=" * 60)
+    if not embedded():
+        print("=" * 60)
+        print("DiscordDrive Status".center(60))
+        print("=" * 60)
 
     # --- overview -------------------------------------------------------
     if not cfg.is_configured():
@@ -593,7 +607,8 @@ def cmd_status(args):
         row("Drive software", f"libfuse ({lib})" if lib else "libfuse NOT FOUND - ./run.sh -> Tools -> Install requirements")
     row("Settings file", config_path())
     row("Data folder", data_dir)
-    print("=" * 60)
+    if not embedded():
+        print("=" * 60)
     if idx is not None:
         idx.close()
     return 0
@@ -1143,6 +1158,7 @@ def cmd_context_menu(args):
 
 
 def main():
+    theme_output()   # the same colours and style for every command (menu pages or direct)
     parser = argparse.ArgumentParser(
         prog="discorddrive",
         description="DiscordDrive: an encrypted virtual drive (Windows/Linux) backed by a private Discord channel.",
