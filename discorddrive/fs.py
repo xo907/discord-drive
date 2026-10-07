@@ -616,10 +616,9 @@ class DiscordDriveFS(Operations):
                 on.mtime = mtime
         return 0
 
-    def lock(self, path, fh, cmd, lock):
-        # "Not supported" makes the kernel / WinFsp handle file locks locally, which is
-        # what applications expect from a single-user network-style drive.
-        raise FuseOSError(errno.ENOSYS)
+    # No `lock` method on purpose: without one, fusepy leaves POSIX/flock locking to the kernel
+    # (and WinFsp), which is what applications such as databases expect. Defining it makes the
+    # kernel route every lock request through FUSE instead, and they fail.
 
     def chmod(self, path, mode):
         return 0
