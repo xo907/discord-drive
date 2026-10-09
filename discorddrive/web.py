@@ -435,6 +435,7 @@ class _Handler(BaseHTTPRequestHandler):
             },
             "devices": devices,
             "lan": [f"http://{ip}:{self.app.port}/" for ip in lan_addresses()] if d.cfg.web_lan else [],
+            "public": self.public_base(),
             "snapshots": {"interval": d.cfg.snapshot_interval_hours, "keep": d.cfg.snapshot_keep_days},
         })
 
@@ -658,9 +659,24 @@ class _Handler(BaseHTTPRequestHandler):
             d.cache.free_space(node_id=node["id"], force=True)
         self._json({"ok": True})
 
+    def public_base(self):
+        """Where people reach this dashboard from outside: web_public_url, else the first domain in
+        web_hosts (https, as a reverse proxy serves it), else a network address with web_lan."""
+        cfg = self.drive.cfg
+        if (cfg.web_public_url or "").strip():
+            return cfg.web_public_url.strip().rstrip("/")
+        if cfg.web_hosts:
+            return "https://" + str(cfg.web_hosts[0]).strip().strip("/")
+        if cfg.web_lan:
+            ips = lan_addresses()
+            if ips:
+                return f"http://{ips[0]}:{self.app.port}"
+        return ""
+
     def _share_json(self, sid, rec):
         node = self.drive.index.get_by_uid(rec["u"])
-        return {"id": sid, "path": f"/s/{sid}",
+        pub = self.public_base()
+        return {"id": sid, "path": f"/s/{sid}", "url": f"{pub}/s/{sid}" if pub else "",
                 "lan": [f"http://{ip}:{self.app.port}/s/{sid}" for ip in lan_addresses()] if self.drive.cfg.web_lan else [],
                 "item": self.drive.index.path_of(node["id"]) if node else None, "dir": rec.get("d", False),
                 "created": rec.get("c"), "expires": rec.get("e"), "password": bool(rec.get("pw")),
@@ -693,6 +709,67 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.app.shares.revoke(str(self._body_json().get("id"))):
             raise ApiError(404, "That link no longer exists")
         self._json({"ok": True})
+
+    # ------------------------------------------------------------ settings
+    # name -> (type, needs a restart, check)
+    SETTINGS = {
+        "web_hosts": (list, False, None),
+        "web_public_url": (str, False, lambda v: not v or v.startswith(("http://", "https://"))),
+        "web_lan": (bool, True, None),
+        "web_port": (int, True, lambda v: 1 <= v <= 65535),
+        "parity_enabled": (bool, False, None),
+        "parity_pieces": (int, False, lambda v: 1 <= v <= 8),
+        "scrub_enabled": (bool, False, None),
+        "protect_existing": (bool, False, None),
+        "compression": (bool, False, None),
+        "dedup": (bool, False, None),
+        "keep_versions": (bool, True, None),
+        "version_retention_days": (float, False, lambda v: v >= 0),
+        "snapshot_interval_hours": (float, False, lambda v: v >= 0),
+        "snapshot_keep_days": (float, False, lambda v: v >= 0),
+        "cache_mode": (str, True, lambda v: v in ("disk", "memory")),
+        "hidden_folders": (list, False, None),
+    }
+
+    def _get_api_settings(self):
+        cfg = self.drive.cfg
+        self._json({"values": {k: getattr(cfg, k) for k in self.SETTINGS},
+                    "restart": [k for k, (_, r, _) in self.SETTINGS.items() if r]})
+
+    def _post_api_settings(self):
+        body = self._body_json()
+        changes = {}
+        for key, value in body.items():
+            if key not in self.SETTINGS:
+                raise ApiError(400, f"Unknown setting {key}")
+            kind, _, ok = self.SETTINGS[key]
+            try:
+                if kind is list:
+                    if isinstance(value, str):
+                        value = value.split(",")
+                    value = [str(v).strip() for v in value if str(v).strip()]
+                    if key == "web_hosts":
+                        value = [v.lower().split("://")[-1].split("/")[0] for v in value]
+                elif kind is bool:
+                    value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+                else:
+                    value = kind(str(value).strip()) if kind is not str else str(value).strip()
+            except ValueError:
+                raise ApiError(400, f"{key}: not a valid value") from None
+            if ok and not ok(value):
+                raise ApiError(400, f"{key}: not a valid value")
+            changes[key] = value
+        cfg = self.drive.cfg
+        for k, v in changes.items():
+            setattr(cfg, k, v)
+        k_restart = [k for k in changes if self.SETTINGS[k][1]]
+        if not getattr(self.drive, "local_test_dir", None):
+            saved = Config.load()
+            for k, v in changes.items():
+                setattr(saved, k, v)
+            saved.save()
+            self.app._cfg_mtime = os.path.getmtime(config_path())
+        self._json({"ok": True, "restart": k_restart})
 
     # ------------------------------------------------------------ notes
     def _get_api_notes(self):

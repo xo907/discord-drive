@@ -306,12 +306,19 @@ SETTINGS = [
     ("parity_enabled", "Self-healing (spare pieces)", "true = lost pieces can be rebuilt (recommended), false = off"),
     ("snapshot_interval_hours", "Automatic snapshot every (hours)", "e.g. 24, or 0 to turn them off"),
     ("snapshot_keep_days", "Keep snapshots for (days)", "e.g. 14"),
+    ("web_hosts", "Web dashboard domain names (reverse proxy)",
+     "e.g. drive.example.com (several: separate with commas, '-' clears). Needed behind Nginx Proxy Manager"),
+    ("web_public_url", "Address used in share links", "e.g. https://drive.example.com (empty: from the domain names)"),
     ("web_lan", "Web dashboard on your network (phone)", "true = phones and computers at home can open it, "
                                                          "false = only this computer"),
 ]
 
 
 def _shown(key, value):
+    if isinstance(value, list):
+        return ", ".join(map(str, value)) or "none"
+    if value == "":
+        return "not set"
     if isinstance(value, int) and not isinstance(value, bool) and (key.endswith("_bytes") or key == "max_file_size"):
         return "no limit" if value == 0 and key == "max_file_size" else format_size(value)
     if isinstance(value, float) and value.is_integer():

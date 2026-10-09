@@ -485,7 +485,8 @@ def cmd_config(args):
         print("(set)" if args.key in _SECRET_FIELDS and value else value)
         return 0
     if args.key == "web_hosts":
-        cfg.web_hosts = [h.strip() for h in args.value.split(",") if h.strip()]
+        raw = "" if args.value.strip() in ("-", "none", '""') else args.value
+        cfg.web_hosts = [h.strip().lower().split("://")[-1].split("/")[0] for h in raw.split(",") if h.strip()]
         cfg.save()
         print(f"[OK] web_hosts = {', '.join(cfg.web_hosts) or '(none)'}  (restart the drive for it to take effect)")
         return 0
@@ -507,7 +508,7 @@ def cmd_config(args):
         elif kind in (float, "float"):
             value = float(raw)
         else:
-            value = raw
+            value = "" if raw in ("-", '""') else raw
     except ValueError as e:
         print(f"[ERROR] Invalid value for {args.key}: {e}")
         return 1

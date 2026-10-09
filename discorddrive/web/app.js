@@ -52,6 +52,13 @@ const ICONS = {
   check: '<path d="m4.5 10.5 3.5 3.5 7.5-8"/>',
   user: '<circle cx="10" cy="7" r="3.2"/><path d="M3.8 16.5a6.2 6.2 0 0 1 12.4 0"/>',
   signout: '<path d="M12 4.5H15a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-3"/><path d="M12.5 10H4M7 7l-3 3 3 3"/>',
+  close: '<path d="m5 5 10 10M15 5 5 15"/>',
+  settings: '<circle cx="10" cy="10" r="2.5"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/>',
+  note: '<path d="M5 2.5h10a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z"/><path d="M7 7h6M7 10h6M7 13h3.5"/>',
+  lock: '<rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/>',
+  plus: '<path d="M10 4.5v11M4.5 10h11"/>',
+  back: '<path d="M12 4.5 6.5 10l5.5 5.5"/>',
+  save: '<path d="M4.5 3.5h9l2 2v11h-11z"/><path d="M7 3.5v4h6v-4M7 16.5v-5h6v5"/>',
 };
 const icon = (name, cls = "") => h("svg", { viewBox: "0 0 20 20", class: `ico ${cls}`, "aria-hidden": "true", html: ICONS[name] });
 
@@ -254,7 +261,7 @@ function itemMenu(it) {
            : { label: "Preview", icon: "open", run: () => openItem(it) },
     it.dir ? { label: "Download as ZIP", icon: "download", run: () => download("/api/zip" + q({ path: it.path }), it.name + ".zip") }
            : { label: "Download", icon: "download", run: () => download(fileUrl(it.path, true), it.name) },
-    !it.dir && { label: "Copy share link", icon: "link", run: () => quickShare(it) },
+    { label: "Share…", icon: "link", run: () => shareDialog(it) },
     "-",
     { label: "Available offline", icon: "offline", checked: !!it.pinned, run: () => setPinned(it, !it.pinned) },
     "-",
@@ -263,6 +270,7 @@ function itemMenu(it) {
     !it.dir && { label: "Duplicate", icon: "copy", run: () => duplicate(it) },
     !it.dir && { label: "Earlier versions", icon: "history", run: () => openItem(it, "versions") },
     { label: "Details", icon: "info", run: () => openItem(it) },
+    route.name === "files" && { label: sel.has(it.path) ? "Deselect" : "Select", icon: "check", run: () => toggleSel(it.path) },
     "-",
     { label: "Delete", icon: "trash", danger: true, run: () => remove(it) },
   ];
@@ -323,8 +331,11 @@ function render() {
     a.classList.toggle("on", n === route.name || (n === "snapshots" && route.name === "snapshot"));
   }
   closeSheet();
+  leaveNotes();
+  if (route.name !== "files" || route.path !== currentDir) sel.clear();
   const views = { files: renderFiles, search: renderSearch, deleted: renderDeleted, snapshots: renderSnapshots,
-                  snapshot: renderSnapshot, health: renderHealth };
+                  snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
+                  settings: renderSettings };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -368,6 +379,8 @@ function itemRow(it, opts = {}) {
                 h("span", { class: "size" }, it.dir ? "" : size(it.size)),
                 h("span", { class: "date" }, when(it.mtime)), more);
   bindMenu(row, () => itemMenu(it), it.name, sub);
+  if (route.name === "files") makeDraggable(row, it);
+  if (it.dir) dropTarget(row, it.path);
   return row;
 }
 
@@ -389,10 +402,195 @@ async function renderFiles() {
     h("div", { class: "actions" },
       h("button", { class: "btn ghost", onclick: newFolder }, "New folder"),
       h("button", { class: "btn", onclick: () => $("#pick").click() }, "Upload")));
+  listed = data.items;
   const rows = data.items.map((it) => itemRow(it));
   const body = rows.length ? h("div", { class: "list" }, listHead(), rows)
     : h("div", { class: "empty" }, h("b", {}, "Nothing here yet"), "Drop files anywhere on this page, or use Upload.");
-  page(bar, body, h("div", { class: "spacer" }));
+  page(bar, selBar, body, h("div", { class: "spacer" }));
+  for (const a of bar.querySelectorAll(".crumbs a")) {
+    dropTarget(a, "/" + decodeURIComponent(a.getAttribute("href").replace(/^#\/files\/?/, "")).replace(/\/+$/, ""));
+  }
+  syncSel();
+}
+
+// ------------------------------------------------------------------ selection, drag and drop
+// Ctrl/Cmd-click selects, Shift-click selects a range; drag a row (or the selection) onto a folder,
+// a part of the path at the top, or "Files" to move it, onto "Deleted" to delete it. Files dragged
+// in from the computer upload into the folder they are dropped on.
+let listed = [];
+const sel = new Set();
+let anchorPath = null;
+let dragging = null;
+const selBar = h("div", { class: "selbar files-sel" });
+
+function toggleSel(path) { sel.has(path) ? sel.delete(path) : sel.add(path); anchorPath = path; syncSel(); }
+
+function syncSel() {
+  for (const r of main.querySelectorAll(".row[data-path]")) r.classList.toggle("sel", sel.has(r.dataset.path));
+  const n = sel.size;
+  selBar.hidden = !n;
+  if (!n) return;
+  selBar.replaceChildren(h("span", { class: "count" }, `${plural(n, "item")} selected`),
+    h("div", { class: "actions" },
+      h("button", { class: "btn ghost small", onclick: () => { sel.clear(); syncSel(); } }, "Clear"),
+      h("button", { class: "btn ghost small", onclick: () => moveMany([...sel]) }, "Move to…"),
+      h("button", { class: "btn danger small", onclick: () => deleteMany([...sel]) }, "Delete")));
+}
+
+function clickSelect(e, it) {
+  if (route.name !== "files") return false;
+  if (e.shiftKey && anchorPath) {
+    const paths = listed.map((x) => x.path);
+    const [a, b] = [paths.indexOf(anchorPath), paths.indexOf(it.path)].sort((x, y) => x - y);
+    if (a >= 0) paths.slice(a, b + 1).forEach((p) => sel.add(p));
+    syncSel();
+    return true;
+  }
+  if (e.ctrlKey || e.metaKey) { toggleSel(it.path); return true; }
+  if (sel.size) { sel.clear(); syncSel(); }
+  return false;
+}
+
+function makeDraggable(row, it) {
+  row.dataset.path = it.path;
+  row.addEventListener("click", (e) => { if (clickSelect(e, it)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  if (sheetMode()) return;
+  row.draggable = true;
+  row.addEventListener("dragstart", (e) => {
+    dragging = sel.has(it.path) ? [...sel] : [it.path];
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", dragging.join("\n"));
+    const chip = h("div", { class: "drag-chip" }, dragging.length === 1 ? it.name : plural(dragging.length, "item"));
+    document.body.append(chip);
+    e.dataTransfer.setDragImage(chip, 12, 14);
+    setTimeout(() => chip.remove(), 0);
+    for (const r of main.querySelectorAll(".row[data-path]")) if (dragging.includes(r.dataset.path)) r.classList.add("dragging");
+  });
+  row.addEventListener("dragend", () => {
+    dragging = null;
+    for (const r of document.querySelectorAll(".dragging, .drop-into")) r.classList.remove("dragging", "drop-into");
+  });
+}
+
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+function canMove(paths, dest) {
+  return paths.some((p) => p !== dest && !dest.startsWith(p + "/") && parent(p) !== dest);
+}
+
+/** Dropping on `el`: move what is dragged into folder `dest` (or delete it), or upload files from the computer. */
+function dropTarget(el, dest, action = "move") {
+  el.addEventListener("dragover", (e) => {
+    if (dragging ? (action === "move" && !canMove(dragging, dest)) : (!hasFiles(e) || action !== "move")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = dragging ? "move" : "copy";
+    el.classList.add("drop-into");
+    if (!dragging) $("#drop-to").textContent = dest === "/" ? "Drive" : base(dest);
+  });
+  el.addEventListener("dragleave", (e) => { if (!el.contains(e.relatedTarget)) el.classList.remove("drop-into"); });
+  el.addEventListener("drop", async (e) => {
+    el.classList.remove("drop-into");
+    if (dragging) {
+      e.preventDefault();
+      e.stopPropagation();
+      const paths = dragging;
+      dragging = null;
+      if (action === "delete") deleteMany(paths);
+      else moveMany(paths, dest);
+    } else if (hasFiles(e) && action === "move") {
+      e.preventDefault();
+      e.stopPropagation();
+      dragDepth = 0;
+      drop.classList.remove("on");
+      uploadAll(await droppedFiles(e), dest);
+    }
+  });
+}
+
+async function moveMany(paths, dest) {
+  if (dest === undefined) {
+    dest = await pickFolder(paths.length === 1 ? `Move “${base(paths[0])}”` : `Move ${plural(paths.length, "item")}`,
+                            parent(paths[0]), paths);
+    if (dest == null) return;
+  }
+  let moved = 0;
+  for (const p of paths) {
+    if (p === dest || dest.startsWith(p + "/") || parent(p) === dest) continue;
+    if (await attempt(() => api("/api/move", { from: p, to: join(dest, base(p)) }))) moved++;
+  }
+  if (moved) toast(`Moved ${moved === 1 ? base(paths[0]) : plural(moved, "item")} to ${dest === "/" ? "Drive" : base(dest)}`);
+  sel.clear();
+  closeSheet();
+  render();
+}
+
+async function deleteMany(paths) {
+  const one = paths.length === 1;
+  const ok = await ask({ title: one ? `Delete “${base(paths[0])}”?` : `Delete ${plural(paths.length, "item")}?`, ok: "Delete",
+                         danger: true, text: "Deleted on every device. You can recover files from Deleted for a while." });
+  if (!ok) return;
+  let n = 0;
+  for (const p of paths) if (await attempt(() => api("/api/delete", { path: p }))) n++;
+  if (n) toast(one ? "Deleted" : `${plural(n, "item")} deleted`);
+  sel.clear();
+  render();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (route.name !== "files" || e.target.closest("input, textarea, dialog")) return;
+  if (e.key === "Escape" && sel.size) { sel.clear(); syncSel(); }
+  else if ((e.key === "Delete" || e.key === "Backspace") && sel.size) { e.preventDefault(); deleteMany([...sel]); }
+  else if (e.key.toLowerCase() === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); listed.forEach((it) => sel.add(it.path)); syncSel(); }
+});
+
+// ------------------------------------------------------------------ modal + folder picker
+function modal(title, ...content) {
+  const dlg = h("dialog", { class: "modal" });
+  const close = () => dlg.close();
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) close(); });
+  dlg.append(h("div", { class: "modal-head" }, h("h3", {}, title),
+                 h("button", { class: "icon-btn", "aria-label": "Close", onclick: close }, icon("close"))),
+             h("div", { class: "modal-body" }, ...content));
+  document.body.append(dlg);
+  dlg.showModal();
+  return { dlg, close };
+}
+
+function pickFolder(title, start, moving = []) {
+  return new Promise((resolve) => {
+    let cur = start || "/";
+    let chosen = null;
+    const list = h("div", { class: "picker-list" });
+    const where = h("div", { class: "picker-where" });
+    const here = h("button", { class: "btn", onclick: () => { chosen = cur; m.close(); } }, "Move here");
+    const m = modal(title, where, list,
+      h("div", { class: "modal-actions" },
+        h("button", { class: "btn ghost", onclick: async () => {
+          const name = await ask({ title: "New folder", value: "", ok: "Create" });
+          if (name && await attempt(() => api("/api/mkdir", { path: join(cur, name) }))) load(join(cur, name));
+        } }, "New folder"),
+        here));
+    m.dlg.addEventListener("close", () => resolve(chosen));
+    async function load(path) {
+      cur = path;
+      const data = await api("/api/list" + q({ path })).catch(() => null);
+      const parts = path.split("/").filter(Boolean);
+      where.replaceChildren(...["Drive", ...parts].flatMap((name, i) => {
+        const target = "/" + parts.slice(0, i).join("/");
+        const el = i === parts.length ? h("span", {}, name) : h("button", { class: "link", onclick: () => load(target) }, name);
+        return i ? [h("span", { class: "sep" }, "/"), el] : [el];
+      }));
+      const dirs = (data ? data.items : []).filter((it) => it.dir);
+      list.replaceChildren(...(dirs.length ? dirs.map((d) => {
+        const blocked = moving.some((p) => d.path === p || d.path.startsWith(p + "/"));
+        return h("button", { class: "picker-row", disabled: blocked, onclick: () => load(d.path) },
+                 icon("folder", "folder"), h("span", {}, d.name), icon("enter"));
+      }) : [h("div", { class: "muted picker-empty" }, "No folders in here")]));
+      here.disabled = moving.length > 0 && !canMove(moving, path);
+    }
+    load(cur);
+  });
 }
 bindMenu(main, backgroundMenu, "This folder", null,
          (e) => route.name !== "files" || !!e.target.closest(".row, button, a, input"));
@@ -471,7 +669,7 @@ function openItem(it, focus) {
     !it.dir && [h("dt", {}, "Stored"), h("dd", {}, it.state === "synced" ? "In Discord" : "Waiting to upload")]);
   const actions = h("div", { class: "sheet-actions" },
     !it.dir && h("a", { class: "btn", href: fileUrl(it.path, true), download: it.name }, "Download"),
-    !it.dir && h("button", { class: "btn ghost", onclick: () => share(it, extra) }, "Share link"),
+    h("button", { class: "btn ghost", onclick: () => shareDialog(it) }, "Share…"),
     h("button", { class: "btn ghost", onclick: () => rename(it) }, "Rename"),
     h("button", { class: "btn danger", onclick: () => remove(it) }, "Delete"));
   const sw = h("button", { class: "switch", role: "switch", "aria-checked": String(!!it.pinned), "aria-label": "Available offline",
@@ -518,43 +716,83 @@ async function loadVersions(it, into, focus) {
   if (focus) box.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
-async function share(it, into) {
-  const r = await attempt(() => api("/api/share", { path: it.path, hours: 24 * 7 }));
-  if (!r) return;
-  const url = (r.lan && r.lan[0]) || location.origin + r.path;
+const EXPIRY = [["1 hour", 1], ["1 day", 24], ["7 days", 168], ["30 days", 720], ["Never", 0]];
+const isLocal = () => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(location.hostname);
+/** The address to give out: the one you are browsing from, unless that is this computer itself. */
+function shareUrl(r) {
+  if (!isLocal()) return location.origin + r.path;
+  return r.url || (r.lan && r.lan[0]) || location.origin + r.path;
+}
+
+function switchEl(on, change, label) {
+  const b = h("button", { type: "button", class: "switch", role: "switch", "aria-checked": String(!!on), "aria-label": label,
+                          onclick: () => { const v = b.getAttribute("aria-checked") !== "true"; b.setAttribute("aria-checked", String(v)); change(v); } });
+  return b;
+}
+
+function field(label, control, hint) {
+  return h("div", { class: "field" }, h("div", { class: "fl" }, label), control, hint && h("div", { class: "hint" }, hint));
+}
+
+function linkBox(url, note) {
   const input = h("input", { value: url, readonly: true, onclick: (e) => e.target.select() });
-  const copy = h("button", { class: "btn small", onclick: async () => {
-    try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch { input.select(); }
-  } }, "Copy");
-  const local = !r.lan || !r.lan.length;
-  into.replaceChildren(h("div", { class: "share-url" }, input, copy),
-    h("div", { class: "hint" }, `Works for 7 days. ${local
-      ? "It only opens on this computer. To share with phones and computers at home, turn on “Web dashboard on your network” in the DiscordDrive menu (Settings)."
-      : "Anyone on your home network with this link can download this one file."}`));
+  return h("div", { class: "share-done" },
+    h("div", { class: "share-url" }, input,
+      h("button", { class: "btn small", type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch { input.select(); document.execCommand("copy"); toast("Link copied"); }
+      } }, "Copy")),
+    note && h("div", { class: "hint" }, note));
 }
 
-async function quickShare(it) {
-  const r = await attempt(() => api("/api/share", { path: it.path, hours: 24 * 7 }));
-  if (!r) return;
-  const url = (r.lan && r.lan[0]) || location.origin + r.path;
-  try {
-    await navigator.clipboard.writeText(url);
-    toast("Share link copied. It works for 7 days.");
-  } catch {
-    await ask({ title: "Share link", value: url, ok: "Done", text: "Copy this link. It works for 7 days." });
-  }
+function shareDialog(it, existing) {
+  let hours = existing ? null : 168;
+  let download = existing ? existing.download : true;
+  let clearPw = false;
+  const seg = h("div", { class: "seg", role: "radiogroup" }, EXPIRY.map(([label, v]) =>
+    h("button", { type: "button", role: "radio", "aria-checked": String(v === hours),
+                  onclick: (e) => { hours = v; for (const b of seg.children) b.setAttribute("aria-checked", String(b === e.currentTarget)); } }, label)));
+  const pw = h("input", { type: "password", autocomplete: "new-password",
+                          placeholder: existing && existing.password ? "Unchanged" : "None" });
+  const result = h("div");
+  const form = h("div", { class: "share-form" },
+    field("Link works for", seg, existing ? `Now: ${existing.expires ? "until " + fmtFull.format(new Date(existing.expires * 1000)) : "no expiry"}` : null),
+    field("Password", pw, existing && existing.password
+      ? h("button", { type: "button", class: "link", onclick: (e) => { clearPw = true; pw.value = ""; pw.placeholder = "None"; e.target.remove(); } }, "Remove the password")
+      : "Optional. People need it to open the link."),
+    h("div", { class: "toggle" },
+      h("div", {}, h("div", { class: "t" }, "Allow downloading"),
+        h("div", { class: "s" }, "Off: people can view it on the page but get no download button")),
+      switchEl(download, (v) => { download = v; }, "Allow downloading")));
+  const go = h("button", { class: "btn", type: "button", onclick: async () => {
+    go.disabled = true;
+    let r;
+    if (existing) {
+      const body = { id: existing.id, download };
+      if (hours !== null) body.hours = hours;
+      if (pw.value || clearPw) body.password = pw.value;
+      r = await attempt(() => api("/api/shares/update", body), "Link updated");
+      if (r) { m.close(); if (route.name === "shared") renderShared(); }
+    } else {
+      r = await attempt(() => api("/api/share", { path: it.path, hours, password: pw.value, download }));
+      if (r) {
+        const url = shareUrl(r);
+        form.remove();
+        go.remove();
+        const reach = isLocal() && !r.url && !(r.lan && r.lan.length)
+          ? "It only opens on this computer. Set a domain name or turn on “On your network” in Settings to share it."
+          : `Anyone with the link${r.password ? " and the password" : ""} can ${download ? "view and download" : "view"} ${it.dir ? "this folder" : "this file"}.`;
+        result.replaceChildren(linkBox(url, reach));
+        try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch { /* the box is there to copy from */ }
+        if (route.name === "shared") renderShared();
+      }
+    }
+    go.disabled = false;
+  } }, existing ? "Save" : "Create link");
+  const m = modal(existing ? `Link to “${base(existing.item || "deleted item")}”` : `Share “${it.name}”`,
+                  form, result, h("div", { class: "modal-actions" }, go));
 }
 
-async function moveTo(it) {
-  const dest = await ask({ title: `Move “${it.name}”`, value: parent(it.path), ok: "Move",
-                           text: "Folder to move it into, for example /Photos/2024." });
-  if (!dest) return;
-  const folder = "/" + dest.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
-  if (folder === parent(it.path)) return;
-  if (await attempt(() => api("/api/move", { from: it.path, to: join(folder, it.name) }), `Moved to ${folder}`)) {
-    closeSheet(); render();
-  }
-}
+function moveTo(it) { return moveMany([it.path]); }
 
 async function duplicate(it) {
   const dot = it.name.lastIndexOf(".");
@@ -648,7 +886,7 @@ const drop = $("#drop");
 document.addEventListener("dragenter", (e) => {
   if (route.name !== "files" || ![...(e.dataTransfer?.types || [])].includes("Files")) return;
   dragDepth++;
-  $("#drop-to").textContent = currentDir === "/" ? "Drive" : base(currentDir);
+  if (!e.target.closest || !e.target.closest(".drop-into")) $("#drop-to").textContent = currentDir === "/" ? "Drive" : base(currentDir);
   drop.classList.add("on");
 });
 document.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove("on"); } });
@@ -658,12 +896,17 @@ document.addEventListener("drop", async (e) => {
   e.preventDefault();
   dragDepth = 0;
   drop.classList.remove("on");
+  if (!hasFiles(e)) return;
+  uploadAll(await droppedFiles(e), currentDir);
+});
+
+async function droppedFiles(e) {
   const out = [];
   const items = [...(e.dataTransfer.items || [])].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
   if (items.length) for (const entry of items) await readEntries(entry, "", out);
   else for (const file of e.dataTransfer.files) out.push({ file, rel: file.name });
-  uploadAll(out, currentDir);
-});
+  return out;
+}
 
 // ------------------------------------------------------------------ deleted
 const picked = new Set();
@@ -863,18 +1106,311 @@ function renderHealth(quiet) {
     h("p", { class: "muted", style: "margin-top:40px;font-size:12px" }, `DiscordDrive ${status.version} · Made by XO.ST`));
 }
 
+// ------------------------------------------------------------------ shared links
+async function renderShared() {
+  const data = await attempt(() => api("/api/shares"));
+  const items = data ? data.items : [];
+  const menu = (l) => () => [
+    { label: "Copy link", icon: "link", run: async () => {
+      try { await navigator.clipboard.writeText(shareUrl(l)); toast("Link copied"); }
+      catch { await ask({ title: "Share link", value: shareUrl(l), ok: "Done" }); } } },
+    { label: "Open the link", icon: "open", run: () => window.open(l.path, "_blank", "noopener") },
+    l.item && { label: "Show in Files", icon: "enter", run: () => go("#/files" + enc(l.dir ? l.item : parent(l.item))) },
+    { label: "Link settings…", icon: "settings", run: () => shareDialog(null, l) },
+    "-",
+    { label: "Turn off the link", icon: "trash", danger: true, run: async () => {
+      if (await ask({ title: "Turn off this link?", ok: "Turn off", danger: true,
+                      text: "It stops working right away. The file itself stays where it is." })
+          && await attempt(() => api("/api/shares/revoke", { id: l.id }), "Link turned off")) renderShared();
+    } },
+  ];
+  page(h("h1", {}, "Shared"),
+       h("p", { class: "lede" }, "Links you made. Anyone with a link can open what it points to until it expires or you turn it off."),
+       items.length ? h("div", { class: "list" },
+         h("div", { class: "row head" }, h("span", {}, "Item"), h("span", { class: "size" }, "Views"), h("span", { class: "date" }, "Works until"), h("span")),
+         items.map((l) => {
+           const name = l.item ? base(l.item) || "Drive" : "Deleted item";
+           const row = h("div", { class: "row click", tabindex: "0", onclick: () => shareDialog(null, l) },
+             h("span", { class: "name" }, icon(l.dir ? "folder" : kind(name) === "pdf" ? "text" : kind(name), l.dir ? "folder" : ""),
+               h("span", { style: "min-width:0" }, h("span", { class: "label" }, name), h("div", { class: "where" }, l.item ? parent(l.item) : "")),
+               l.password && h("span", { class: "tag", title: "Needs a password" }, icon("lock", "tag-ico"), "Password"),
+               !l.download && h("span", { class: "tag" }, "View only")),
+             h("span", { class: "size" }, String(l.views)),
+             h("span", { class: "date" }, l.expires ? when(l.expires) : "No expiry"),
+             menuButton(menu(l), name, l.expires ? `until ${fmtFull.format(new Date(l.expires * 1000))}` : "no expiry"));
+           bindMenu(row, menu(l), name);
+           return row;
+         }))
+       : h("div", { class: "empty" }, h("b", {}, "No links yet"), "Right-click a file or folder and choose Share."));
+}
+
+// ------------------------------------------------------------------ settings
+const SETTING_ROWS = [
+  ["Web dashboard", [
+    ["web_hosts", "Domain names", "Names this dashboard answers to behind a reverse proxy (e.g. drive.example.com). Several: separate with commas.", "list"],
+    ["web_public_url", "Address for share links", "Used when you share from this computer itself, e.g. https://drive.example.com. Empty: the first domain name.", "text"],
+    ["web_lan", "On your network", "Phones and computers at home (and a reverse proxy on another machine) can open the dashboard.", "bool"],
+  ]],
+  ["Protection", [
+    ["parity_enabled", "Self-healing", "Spare pieces let lost pieces be rebuilt.", "bool"],
+    ["parity_pieces", "Spare pieces per 10", "How many pieces of a group can be lost (2 is about 20% extra space).", "num"],
+    ["scrub_enabled", "Background check", "Regularly confirm every piece is still on Discord, and repair what isn't.", "bool"],
+    ["protect_existing", "Protect older files", "Add spare pieces to files uploaded without them.", "bool"],
+  ]],
+  ["Storage", [
+    ["compression", "Compression", "Shrink pieces that compress well before encrypting them. Lossless.", "bool"],
+    ["dedup", "Store identical pieces once", "A copy of a file uploads nothing new.", "bool"],
+    ["keep_versions", "Keep earlier versions", "Replaced and deleted files can be brought back.", "bool"],
+    ["version_retention_days", "Keep versions for (days)", "0 keeps them forever.", "num"],
+    ["snapshot_interval_hours", "Snapshot every (hours)", "0 turns automatic snapshots off.", "num"],
+    ["snapshot_keep_days", "Keep snapshots for (days)", "", "num"],
+  ]],
+  ["This computer", [
+    ["cache_mode", "Read cache", "Disk keeps opened files for faster reopening; memory stores nothing on disk.", ["disk", "memory"]],
+    ["hidden_folders", "Hidden folders", "Folders this computer doesn't show, e.g. /Movies. Separate with commas.", "list"],
+  ]],
+];
+
+async function renderSettings() {
+  const data = await attempt(() => api("/api/settings"));
+  if (!data) return;
+  const v = data.values;
+  async function save(key, value) {
+    const r = await attempt(() => api("/api/settings", { [key]: value }));
+    if (r) { v[key] = value; toast(r.restart.length ? "Saved. Restart the drive for this to take effect." : "Saved"); }
+  }
+  const control = (key, type) => {
+    if (type === "bool") return switchEl(v[key], (on) => save(key, on), key);
+    if (Array.isArray(type)) {
+      const s = h("select", { onchange: (e) => save(key, e.target.value) }, type.map((o) => h("option", { value: o, selected: v[key] === o }, o)));
+      return s;
+    }
+    const val = type === "list" ? (v[key] || []).join(", ") : String(v[key] ?? "");
+    const input = h("input", { value: val, inputmode: type === "num" ? "decimal" : null, spellcheck: "false",
+                               placeholder: type === "list" ? "None" : type === "text" ? "Not set" : "",
+                               onkeydown: (e) => { if (e.key === "Enter") e.target.blur(); },
+                               onchange: (e) => save(key, type === "list" ? e.target.value.split(",").map((x) => x.trim()).filter(Boolean) : e.target.value.trim()) });
+    return input;
+  };
+  page(h("h1", {}, "Settings"),
+       h("p", { class: "lede" }, "Changes are saved as you make them, for this computer's drive."),
+       SETTING_ROWS.map(([title, rows]) => [h("h2", {}, title), h("div", { class: "settings" }, rows.map(([key, label, hint, type]) =>
+         h("div", { class: "set-row" }, h("div", { class: "set-text" }, h("div", { class: "t" }, label), hint && h("div", { class: "s" }, hint),
+           data.restart.includes(key) && h("div", { class: "s faint" }, "Takes effect after a restart")),
+           h("div", { class: "set-ctl" + (type === "bool" ? "" : " wide") }, control(key, type)))))]).flat(),
+       h("h2", {}, "Sign-in"),
+       h("p", { class: "muted" }, `Signed in as ${status && status.user ? status.user : "you"}. Change the user name or password in the DiscordDrive menu (Settings → Web dashboard sign-in) or with `, h("code", {}, "web-password"), "."));
+}
+
+// ------------------------------------------------------------------ notes
+// Notes are files in /Notes on the drive: encrypted, synced to every device, with earlier versions.
+// Typing saves to this computer at once and uploads to Discord when you pause; Save uploads now.
+const NOTES = "/Notes";
+let note = null;          // the open note: {path, name, mtime, dirty, gen, saving, timer}
+let notesTimer = null;
+let notesList = [];
+
+function leaveNotes() {
+  if (note && note.dirty) saveNote("later");
+  if (route.name !== "notes") { clearInterval(notesTimer); notesTimer = null; note = null; }
+}
+window.addEventListener("beforeunload", () => { if (note && note.dirty) saveNote("later", true); });
+
+const noteTitle = (name) => name.replace(/\.(md|txt)$/i, "");
+const cleanTitle = (t) => (t.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim() || "Untitled").slice(0, 120);
+
+async function renderNotes() {
+  const name = route.rest.length ? decodeURIComponent(route.rest.join("/")) : "";
+  const data = await attempt(() => api("/api/notes"));
+  notesList = data ? data.items : [];
+  const current = notesList.find((n) => n.name === name);
+  const search = h("input", { type: "search", placeholder: "Search notes", class: "notes-search",
+                              oninput: () => fillList(search.value.trim().toLowerCase()) });
+  const list = h("div", { class: "note-list" });
+  function fillList(filter = "") {
+    const shown = notesList.filter((n) => !filter || (n.title + " " + n.snippet).toLowerCase().includes(filter));
+    list.replaceChildren(...(shown.length ? shown.map((n) => h("a", { class: "note-item" + (n.name === name ? " on" : ""), href: "#/notes/" + encodeURIComponent(n.name) },
+      h("div", { class: "nt" }, n.title), h("div", { class: "ns" }, h("span", {}, when(n.mtime)), " ", n.snippet.replace(n.title, "").trim() || "Empty note")))
+      : [h("div", { class: "muted note-none" }, filter ? "No matches" : "No notes yet")]));
+  }
+  fillList();
+  const side = h("div", { class: "notes-side" },
+    h("div", { class: "notes-head" }, h("h1", {}, "Notes"), h("button", { class: "btn small", onclick: newNote }, icon("plus"), "New")),
+    search, list);
+  let editor;
+  if (current) {
+    editor = noteEditor(current);
+  } else {
+    editor = h("div", { class: "notes-empty" }, h("b", {}, notesList.length ? "Pick a note" : "Write your first note"),
+      h("p", { class: "muted" }, "Notes save as you type and sync to all your devices."),
+      h("button", { class: "btn", onclick: newNote }, "New note"));
+  }
+  page(h("div", { class: "notes" + (current ? " editing" : "") }, side, editor));
+  clearInterval(notesTimer);
+  notesTimer = setInterval(pollNotes, 4000);
+}
+
+function noteEditor(n) {
+  if (!note || note.path !== n.path) note = { path: n.path, name: n.name, mtime: n.mtime, dirty: false, gen: 0, saving: false };
+  const title = h("input", { class: "note-title", value: noteTitle(n.name), spellcheck: "false", "aria-label": "Title",
+                             onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); body.focus(); } },
+                             onchange: () => renameNote(title) });
+  const body = h("textarea", { class: "note-body", placeholder: "Start writing…", "aria-label": "Note" });
+  const state = h("span", { class: "note-state", id: "note-state" }, "Loading…");
+  const saveBtn = h("button", { class: "btn small", title: "Back up to Discord now (Ctrl+S)", onclick: () => saveNote("now") }, icon("save"), "Save");
+  const it = { path: n.path, name: n.name, dir: false, size: n.size, mtime: n.mtime, state: n.state };
+  const more = menuButton(() => [
+    { label: "Earlier versions", icon: "history", run: () => openItem(it, "versions") },
+    { label: "Download", icon: "download", run: () => download(fileUrl(n.path, true), n.name) },
+    { label: "Share…", icon: "link", run: () => shareDialog(it) },
+    "-",
+    { label: "Delete note", icon: "trash", danger: true, run: async () => {
+      if (await ask({ title: `Delete “${noteTitle(n.name)}”?`, ok: "Delete", danger: true, text: "You can recover it from Deleted for a while." })
+          && await attempt(() => api("/api/delete", { path: n.path }), "Note deleted")) { note = null; go("#/notes"); }
+    } },
+  ], noteTitle(n.name));
+  body.addEventListener("input", () => {
+    note.dirty = true;
+    note.gen++;
+    setState("Editing…");
+    clearTimeout(note.timer);
+    note.timer = setTimeout(() => saveNote("later"), 700);
+  });
+  body.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "s" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveNote("now"); }
+  });
+  loadNoteText(body, n.state);
+  return h("div", { class: "note-editor" },
+    h("div", { class: "note-bar" },
+      h("a", { class: "icon-btn note-back", href: "#/notes", "aria-label": "All notes" }, icon("back")),
+      state, h("div", { class: "actions" }, saveBtn, more)),
+    title, h("div", { class: "note-conflict", id: "note-conflict", hidden: true }), body);
+}
+
+function setState(text) { const el = $("#note-state"); if (el) el.textContent = text; }
+function syncedText(state) { return state === "synced" ? "Backed up to Discord" : "Saved on this computer · uploading soon"; }
+
+async function loadNoteText(body, state) {
+  const r = await fetch(fileUrl(note.path), { credentials: "same-origin", cache: "no-store" }).catch(() => null);
+  if (!r || !r.ok) { setState("Could not open this note"); return; }
+  const text = await r.text();
+  if (note.dirty) return;
+  const pos = [body.selectionStart, body.selectionEnd];
+  body.value = text;
+  if (document.activeElement === body) body.setSelectionRange(...pos);
+  setState(syncedText(state));
+}
+
+async function saveNote(mode, unloading) {
+  if (!note) return;
+  const ta = $(".note-body");
+  if (!ta) return;
+  clearTimeout(note.timer);
+  if (note.saving && !unloading) { note.again = mode === "now" ? "now" : note.again || "later"; return; }
+  const gen = note.gen;
+  note.saving = true;
+  setState("Saving…");
+  try {
+    const r = await fetch("/api/upload" + q({ path: note.path, save: mode }), {
+      method: "POST", credentials: "same-origin", keepalive: !!unloading, headers: { "X-DD": "1" },
+      body: new Blob([ta.value], { type: "text/plain;charset=utf-8" }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "Could not save");
+    if (data.mtime) note.mtime = data.mtime;
+    if (note.gen === gen) note.dirty = false;
+    setState(mode === "now" ? "Backing up to Discord…" : "Saved on this computer · uploading soon");
+    if (mode === "now") note.backup = true;
+  } catch (e) {
+    setState("Not saved: " + e.message);
+  } finally {
+    note.saving = false;
+    if (note.again) { const m = note.again; note.again = null; saveNote(m); }
+  }
+}
+
+async function renameNote(input) {
+  const t = cleanTitle(input.value);
+  input.value = t;
+  const name = t + ".md";
+  if (!note || name === note.name) return;
+  if (notesList.some((n) => n.name.toLowerCase() === name.toLowerCase())) { toast("A note with that title already exists"); input.value = noteTitle(note.name); return; }
+  if (note.dirty) await saveNote("later");
+  if (await attempt(() => api("/api/move", { from: note.path, to: join(NOTES, name) }))) {
+    note.path = join(NOTES, name);
+    note.name = name;
+    history.replaceState(null, "", "#/notes/" + encodeURIComponent(name));
+    route = parseRoute();
+    refreshNoteList();
+  }
+}
+
+async function newNote() {
+  await api("/api/mkdir", { path: NOTES }).catch(() => null);
+  const names = new Set(notesList.map((n) => n.name.toLowerCase()));
+  let name = "Untitled.md";
+  for (let i = 2; names.has(name.toLowerCase()); i++) name = `Untitled ${i}.md`;
+  const r = await fetch("/api/upload" + q({ path: join(NOTES, name), save: "later" }),
+                        { method: "POST", credentials: "same-origin", headers: { "X-DD": "1" }, body: "" });
+  if (!r.ok) { toast("Could not create the note"); return; }
+  note = null;
+  go("#/notes/" + encodeURIComponent(name));
+  setTimeout(() => { const t = $(".note-title"); if (t) { t.focus(); t.select(); } }, 300);
+}
+
+async function refreshNoteList() {
+  const data = await api("/api/notes").catch(() => null);
+  if (!data) return null;
+  notesList = data.items;
+  const search = $(".notes-search");
+  const list = $(".note-list");
+  if (list) {
+    const filter = search ? search.value.trim().toLowerCase() : "";
+    const name = note ? note.name : "";
+    const shown = notesList.filter((n) => !filter || (n.title + " " + n.snippet).toLowerCase().includes(filter));
+    list.replaceChildren(...(shown.length ? shown.map((n) => h("a", { class: "note-item" + (n.name === name ? " on" : ""), href: "#/notes/" + encodeURIComponent(n.name) },
+      h("div", { class: "nt" }, n.title), h("div", { class: "ns" }, h("span", {}, when(n.mtime)), " ", n.snippet.replace(n.title, "").trim() || "Empty note")))
+      : [h("div", { class: "muted note-none" }, "No notes yet")]));
+  }
+  return notesList;
+}
+
+async function pollNotes() {
+  if (route.name !== "notes") return;
+  const items = await refreshNoteList();
+  if (!items || !note) return;
+  const cur = items.find((n) => n.path === note.path);
+  if (!cur) return;
+  if (!note.dirty && !note.saving) setState(syncedText(cur.state));
+  if (cur.mtime > note.mtime + 0.5) {
+    note.mtime = cur.mtime;
+    const box = $("#note-conflict");
+    if (!note.dirty) {
+      const ta = $(".note-body");
+      if (ta) { await loadNoteText(ta, cur.state); toast("Updated with changes from another device"); }
+    } else if (box) {
+      box.hidden = false;
+      box.replaceChildren(h("span", {}, "This note was changed somewhere else while you were typing."),
+        h("button", { class: "btn ghost small", onclick: () => { note.dirty = false; box.hidden = true; loadNoteText($(".note-body"), cur.state); } }, "Load theirs"),
+        h("button", { class: "btn small", onclick: () => { box.hidden = true; saveNote("now"); } }, "Keep mine"));
+    }
+  }
+}
+
 // ------------------------------------------------------------------ account
 $("#account").addEventListener("click", (e) => {
   const r = e.currentTarget.getBoundingClientRect();
   openMenu([
     { label: status && status.user ? `Signed in as ${status.user}` : "Signed in", icon: "user", disabled: true },
     "-",
+    { label: "Settings", icon: "settings", run: () => go("#/settings") },
     { label: "Sign out", icon: "signout", run: async () => { await api("/api/logout", {}).catch(() => null); location.reload(); } },
   ], r.right - 220, r.bottom + 6, "Account");
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
 
 // ------------------------------------------------------------------ start
+dropTarget(document.querySelector('#nav a[data-nav="files"]'), "/");
+dropTarget(document.querySelector('#nav a[data-nav="deleted"]'), "/", "delete");
 render();
 refreshStatus();
 setInterval(refreshStatus, 3000);

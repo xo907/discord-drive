@@ -56,7 +56,10 @@ def password_keys(passphrase: str, channel_id: str):
     salt = channel_salt(channel_id)
     out = []
     if hasattr(hashlib, "scrypt"):
-        out.append(("scrypt", derive_key_scrypt(passphrase, salt)))
+        try:
+            out.append(("scrypt", derive_key_scrypt(passphrase, salt)))
+        except (ValueError, MemoryError) as e:     # not enough free memory for 128 MiB right now
+            log.warning("Could not use scrypt (%s); using PBKDF2 for this password.", e)
     out.append(("pbkdf2", derive_key(passphrase, salt)[0]))
     return out
 

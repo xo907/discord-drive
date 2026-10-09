@@ -178,6 +178,75 @@ class WebTest(helpers.DriveTest):
         tampered = share["path"][:-3] + ("AAA" if not share["path"].endswith("AAA") else "BBB")
         self.assertEqual(self.req("GET", tampered, auth=False)[0], 404)
 
+    def test_share_options(self):
+        self.login()
+        self.write(self.d, "/Trip/photo.txt", b"a view of the sea")
+        self.write(self.d, "/Trip/day 2/notes.txt", b"second day")
+        self.upload(self.d)
+        # a password-protected, view-only link to a folder
+        link = json.loads(self.req("POST", "/api/share", {"path": "/Trip", "hours": 1, "password": "open sesame",
+                                                          "download": False})[2])
+        self.assertTrue(link["password"])
+        status, _, body = self.req("GET", link["path"], auth=False)
+        self.assertIn(b"Password needed", body)
+        self.assertEqual(self.req("GET", link["path"] + "/raw?p=photo.txt", auth=False)[0], 200)   # still the form
+        status, _, _ = self.req("POST", link["path"], self.form(password="wrong"), auth=False)
+        self.assertEqual(status, 401)
+        status, headers, _ = self.req("POST", link["path"], self.form(password="open sesame"), auth=False)
+        self.assertEqual(status, 303)
+        unlock = headers["Set-Cookie"].split(";")[0]
+        status, _, body = self.req("GET", link["path"], headers={"Cookie": unlock}, auth=False)
+        self.assertIn(b"photo.txt", body)
+        self.assertIn(b"day 2", body)
+        self.assertNotIn(b"Download all", body)                     # view only
+        status, _, body = self.req("GET", link["path"] + "?p=photo.txt", headers={"Cookie": unlock}, auth=False)
+        self.assertIn(b"a view of the sea", body)                   # text shown on the page
+        self.assertEqual(self.req("GET", link["path"] + "/raw?p=photo.txt&dl=1", headers={"Cookie": unlock}, auth=False)[0], 403)
+        self.assertEqual(self.req("GET", link["path"] + "?p=..", headers={"Cookie": unlock}, auth=False)[0], 404)
+        # change it: downloads allowed, no password
+        r = json.loads(self.req("POST", "/api/shares/update", {"id": link["id"], "download": True, "password": ""})[2])
+        self.assertFalse(r["password"])
+        status, _, body = self.req("GET", link["path"] + "/raw?p=day%202/notes.txt&dl=1", auth=False)
+        self.assertEqual(body, b"second day")
+        status, _, body = self.req("GET", link["path"] + "/zip", auth=False)
+        self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).read("photo.txt"), b"a view of the sea")
+        listed = json.loads(self.req("GET", "/api/shares")[2])["items"]
+        self.assertEqual([x["item"] for x in listed], ["/Trip"])
+        self.assertGreaterEqual(listed[0]["views"], 1)
+        self.assertEqual(self.req("POST", "/api/shares/revoke", {"id": link["id"]})[0], 200)
+        self.assertEqual(self.req("GET", link["path"], auth=False)[0], 404)
+
+    def test_share_link_uses_domain(self):
+        self.login()
+        self.write(self.d, "/x.txt", b"x")
+        self.assertEqual(self.req("GET", "/api/status", headers={"Host": "drive.example.com"})[0], 421)
+        self.assertEqual(self.req("POST", "/api/settings", {"web_hosts": "https://Drive.Example.com/"})[0], 200)
+        self.assertEqual(self.d.cfg.web_hosts, ["drive.example.com"])
+        self.assertEqual(self.req("GET", "/api/status", headers={"Host": "drive.example.com"})[0], 200)
+        link = json.loads(self.req("POST", "/api/share", {"path": "/x.txt"})[2])
+        self.assertTrue(link["url"].startswith("https://drive.example.com/s/"))
+        self.req("POST", "/api/settings", {"web_public_url": "https://files.example.org"})
+        link = json.loads(self.req("POST", "/api/share", {"path": "/x.txt"})[2])
+        self.assertTrue(link["url"].startswith("https://files.example.org/s/"))
+        self.assertEqual(self.req("POST", "/api/settings", {"web_public_url": "not a url"})[0], 400)
+        self.assertEqual(self.req("POST", "/api/settings", {"bot_token": "x"})[0], 400)
+        values = json.loads(self.req("GET", "/api/settings")[2])["values"]
+        self.assertEqual(values["web_public_url"], "https://files.example.org")
+
+    def test_notes(self):
+        self.login()
+        self.assertEqual(json.loads(self.req("GET", "/api/notes")[2])["items"], [])
+        self.req("POST", "/api/mkdir", {"path": "/Notes"})
+        self.assertEqual(self.req("POST", "/api/upload?path=%2FNotes%2FShopping.md&save=later", b"Milk, eggs")[0], 200)
+        items = json.loads(self.req("GET", "/api/notes")[2])["items"]
+        self.assertEqual([(n["title"], n["snippet"]) for n in items], [("Shopping", "Milk, eggs")])
+        nid = self.d.index.resolve("/Notes/Shopping.md")["id"]
+        self.assertGreater(self.d.uploader._pending[nid], __import__("time").time() + 5)   # waits for a pause
+        self.req("POST", "/api/upload?path=%2FNotes%2FShopping.md&save=now", b"Milk, eggs, bread")
+        self.assertLessEqual(self.d.uploader._pending[nid], __import__("time").time() + 0.5)  # Save: right away
+        self.upload(self.d)
+        self.assertEqual(self.read(self.d, "/Notes/Shopping.md"), b"Milk, eggs, bread")
+
     def test_html_files_are_sandboxed(self):
         self.login()
         self.write(self.d, "/page.html", b"<script>alert(1)</script>")

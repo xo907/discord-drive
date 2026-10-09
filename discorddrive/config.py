@@ -116,6 +116,7 @@ class Config:
     web_enabled: bool = True           # the web dashboard (http://127.0.0.1:<web_port>)
     web_port: int = 8765
     web_hosts: list = field(default_factory=list)  # extra names the dashboard answers to (reverse proxy domains)
+    web_public_url: str = ""           # address share links use, e.g. https://drive.example.com (default: from web_hosts)
     web_lan: bool = False              # also reachable from other devices on your network (phone)
     web_token: str = ""                # secret that signs dashboard sessions and share links (generated)
     web_user: str = ""                 # dashboard sign-in: user name...
