@@ -5,6 +5,8 @@ import os
 import re
 import sys
 
+from . import __version__
+
 WINDOWS = sys.platform == "win32"
 
 
@@ -40,7 +42,7 @@ RED, GREEN, YELLOW, GRAY, BOLD, RESET = (
 def banner():
     print()
     print(f"  {BOLD}X {RED}O{RESET}   {BOLD}DiscordDrive{RESET}  {GRAY}encrypted drive in your Discord channel{RESET}")
-    print(f"       {GRAY}Made by XO.ST{RESET}")
+    print(f"       {GRAY}Made by XO.ST  |  v{__version__}{RESET}")
     print()
 
 
