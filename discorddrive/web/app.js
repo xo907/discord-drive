@@ -101,6 +101,14 @@ function ago(t) {
   if (s < 86400 * 1.5) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86400)} days ago`;
 }
+function speed(bps) { return bps > 0 ? size(bps) + "/s" : ""; }
+function eta(sec) {
+  if (sec == null || !isFinite(sec)) return "";
+  sec = Math.max(1, Math.round(sec));
+  if (sec < 60) return `${sec} s left`;
+  if (sec < 3600) return `${Math.round(sec / 60)} min left`;
+  return `${Math.floor(sec / 3600)} h ${Math.round((sec % 3600) / 60)} min left`;
+}
 const plural = (n, one, many) => `${Number(n).toLocaleString()} ${n === 1 ? one : many || one + "s"}`;
 
 function join(dir, name) { return (dir === "/" ? "" : dir) + "/" + name; }
@@ -307,6 +315,8 @@ async function refreshStatus() {
   else if (st.outbox) { dot.className = "dot busy"; text.textContent = "Syncing"; }
   else { dot.className = "dot ok"; text.textContent = "Up to date"; }
   $("#usage").textContent = `${plural(st.files, "file")} · ${size(st.bytes)}`;
+  showDiscordUploads(status.uploads);
+  if (note && route.name === "notes") noteUploadState();
   const acct = $("#account");
   if (acct && status.user) { acct.textContent = status.user.slice(0, 1).toUpperCase(); acct.title = `Signed in as ${status.user}`; }
   if (route.name === "health" && !$("#sheet").classList.contains("open")) {
@@ -335,7 +345,7 @@ function render() {
   if (route.name !== "files" || route.path !== currentDir) sel.clear();
   const views = { files: renderFiles, search: renderSearch, deleted: renderDeleted, snapshots: renderSnapshots,
                   snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
-                  settings: renderSettings };
+                  settings: renderSettings, log: renderLog };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -379,7 +389,13 @@ function itemRow(it, opts = {}) {
                 h("span", { class: "size" }, it.dir ? "" : size(it.size)),
                 h("span", { class: "date" }, when(it.mtime)), more);
   bindMenu(row, () => itemMenu(it), it.name, sub);
-  if (route.name === "files") makeDraggable(row, it);
+  if (route.name === "files") {
+    makeDraggable(row, it);
+    const box = h("button", { class: "cb row-cb", role: "checkbox", "aria-checked": String(sel.has(it.path)),
+                              "aria-label": `Select ${it.name}`, tabindex: "-1",
+                              onclick: (e) => { e.preventDefault(); e.stopPropagation(); toggleSel(it.path); } }, icon("check"));
+    row.querySelector(".name").prepend(box);
+  }
   if (it.dir) dropTarget(row, it.path);
   return row;
 }
@@ -426,7 +442,12 @@ const selBar = h("div", { class: "selbar files-sel" });
 function toggleSel(path) { sel.has(path) ? sel.delete(path) : sel.add(path); anchorPath = path; syncSel(); }
 
 function syncSel() {
-  for (const r of main.querySelectorAll(".row[data-path]")) r.classList.toggle("sel", sel.has(r.dataset.path));
+  for (const r of main.querySelectorAll(".row[data-path]")) {
+    r.classList.toggle("sel", sel.has(r.dataset.path));
+    const box = r.querySelector(".row-cb");
+    if (box) box.setAttribute("aria-checked", String(sel.has(r.dataset.path)));
+  }
+  main.classList.toggle("selecting", sel.size > 0);
   const n = sel.size;
   selBar.hidden = !n;
   if (!n) return;
@@ -453,7 +474,10 @@ function clickSelect(e, it) {
 
 function makeDraggable(row, it) {
   row.dataset.path = it.path;
-  row.addEventListener("click", (e) => { if (clickSelect(e, it)) { e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+  row.addEventListener("click", (e) => {
+    if (e.target.closest(".row-cb")) return;          // the checkbox toggles on its own
+    if (clickSelect(e, it)) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
   if (sheetMode()) return;
   row.draggable = true;
   row.addEventListener("dragstart", (e) => {
@@ -542,6 +566,52 @@ document.addEventListener("keydown", (e) => {
   else if ((e.key === "Delete" || e.key === "Backspace") && sel.size) { e.preventDefault(); deleteMany([...sel]); }
   else if (e.key.toLowerCase() === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); listed.forEach((it) => sel.add(it.path)); syncSel(); }
 });
+
+// Box selection: press on empty space and drag; rows the box touches are selected
+// (Ctrl/Cmd/Shift keeps what was already selected).
+(function boxSelect() {
+  let start = null, box = null, before = null, scrollTimer = null, last = null;
+  main.addEventListener("pointerdown", (e) => {
+    if (route.name !== "files" || e.button !== 0 || e.pointerType !== "mouse") return;
+    if (e.target.closest(".row:not(.head), button, a, input, textarea, .selbar, .bar")) return;
+    start = { x: e.clientX, y: e.clientY + main.scrollTop };
+    before = e.ctrlKey || e.metaKey || e.shiftKey ? new Set(sel) : new Set();
+    e.preventDefault();
+  });
+  function update(e) {
+    last = e;
+    const y = e.clientY + main.scrollTop;
+    const r = { left: Math.min(start.x, e.clientX), right: Math.max(start.x, e.clientX),
+                top: Math.min(start.y, y) - main.scrollTop, bottom: Math.max(start.y, y) - main.scrollTop };
+    if (!box) {
+      if (Math.hypot(e.clientX - start.x, y - start.y) < 6) return;
+      box = h("div", { class: "marquee" });
+      document.body.append(box);
+    }
+    Object.assign(box.style, { left: r.left + "px", top: r.top + "px", width: r.right - r.left + "px", height: r.bottom - r.top + "px" });
+    sel.clear();
+    before.forEach((p) => sel.add(p));
+    for (const row of main.querySelectorAll(".row[data-path]")) {
+      const b = row.getBoundingClientRect();
+      if (b.bottom > r.top && b.top < r.bottom && b.right > r.left && b.left < r.right) sel.add(row.dataset.path);
+    }
+    syncSel();
+  }
+  window.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    update(e);
+    clearInterval(scrollTimer);
+    const m = main.getBoundingClientRect();
+    const dir = e.clientY < m.top + 30 ? -1 : e.clientY > m.bottom - 30 ? 1 : 0;
+    if (dir && box) scrollTimer = setInterval(() => { main.scrollTop += dir * 18; if (last) update(last); }, 30);
+  });
+  window.addEventListener("pointerup", () => {
+    clearInterval(scrollTimer);
+    if (box) { box.remove(); box = null; if (sel.size) anchorPath = [...sel].pop(); }
+    else if (start && !before.size && sel.size) { sel.clear(); syncSel(); }   // a plain click on empty space
+    start = null;
+  });
+})();
 
 // ------------------------------------------------------------------ modal + folder picker
 function modal(title, ...content) {
@@ -822,20 +892,26 @@ function uploadFile(file, dir) {
   return new Promise((resolve) => {
     const bar = h("i", { style: "width:0%" });
     const pct = h("span", {}, "0%");
-    const item = h("div", { class: "item" }, h("div", { class: "n" }, h("span", {}, file.name), pct), h("div", { class: "meter" }, bar));
-    tray.append(item);
+    const sub = h("div", { class: "sub" }, "Sending to the drive…");
+    const item = h("div", { class: "item" }, h("div", { class: "n" }, h("span", {}, file.name), pct), h("div", { class: "meter" }, bar), sub);
+    tray.prepend(item);
+    const started = Date.now();
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/upload" + q({ path: join(dir, file.name) }));
     xhr.setRequestHeader("X-DD", "1");
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const p = Math.round((e.loaded / e.total) * 100);
+      const bps = e.loaded / Math.max(0.3, (Date.now() - started) / 1000);
       bar.style.width = p + "%";
       pct.textContent = p < 100 ? p + "%" : "Saving";
+      sub.textContent = p < 100 ? `${size(e.loaded)} of ${size(e.total)} · ${speed(bps)} · ${eta((e.total - e.loaded) / bps)}`
+                                : "Saving on the drive…";
     };
     xhr.onload = () => {
       const ok = xhr.status >= 200 && xhr.status < 300;
       pct.textContent = ok ? "Done" : "Failed";
+      sub.textContent = ok ? "On the drive · uploading to Discord next" : "Not uploaded";
       if (!ok) { try { toast(JSON.parse(xhr.responseText).error); } catch { toast("Upload failed"); } }
       setTimeout(() => item.remove(), ok ? 1500 : 6000);
       resolve(ok);
@@ -843,6 +919,35 @@ function uploadFile(file, dir) {
     xhr.onerror = () => { pct.textContent = "Failed"; setTimeout(() => item.remove(), 6000); resolve(false); };
     xhr.send(file);
   });
+}
+
+/** Uploads from the drive to Discord, live (one tray card per file). */
+const discordCards = new Map();
+function showDiscordUploads(list) {
+  const seen = new Set();
+  for (const u of list || []) {
+    seen.add(u.path);
+    let c = discordCards.get(u.path);
+    if (!c) {
+      c = { bar: h("i", { style: "width:0%" }), pct: h("span", {}), sub: h("div", { class: "sub" }) };
+      c.el = h("div", { class: "item discord" }, h("div", { class: "n" }, h("span", { title: u.path }, base(u.path)), c.pct),
+               h("div", { class: "meter" }, c.bar), c.sub);
+      discordCards.set(u.path, c);
+      tray.append(c.el);
+    }
+    c.bar.style.width = u.pct + "%";
+    c.pct.textContent = Math.floor(u.pct) + "%";
+    c.sub.textContent = u.stage === "spare pieces" ? "Adding spare pieces…"
+      : `To Discord · ${size(u.bytes)} of ${size(u.size)}${u.speed ? " · " + speed(u.speed) : ""}${u.eta ? " · " + eta(u.eta) : ""}`;
+  }
+  for (const [path, c] of discordCards) {
+    if (seen.has(path)) continue;
+    discordCards.delete(path);
+    c.bar.style.width = "100%";
+    c.pct.textContent = "Done";
+    c.sub.textContent = "Stored in Discord";
+    setTimeout(() => c.el.remove(), 1500);
+  }
 }
 
 async function uploadAll(entries, dir) {
@@ -1103,7 +1208,8 @@ function renderHealth(quiet) {
       h("span", { class: "date" }, d.me ? "online" : `seen ${ago(d.seen)}`)))),
     status.lan.length ? [h("h2", {}, "On your network"), h("div", { class: "kv" },
       h("div", {}, "Open on your phone"), h("div", {}, h("code", {}, status.lan[0])))] : null,
-    h("p", { class: "muted", style: "margin-top:40px;font-size:12px" }, `DiscordDrive ${status.version} · Made by XO.ST`));
+    h("p", { class: "muted", style: "margin-top:40px;font-size:12px" }, `DiscordDrive ${status.version} · Made by XO.ST · `,
+      h("button", { class: "link", onclick: whatsNew }, "What's new")));
 }
 
 // ------------------------------------------------------------------ shared links
@@ -1288,6 +1394,19 @@ function noteEditor(n) {
 }
 
 function setState(text) { const el = $("#note-state"); if (el) el.textContent = text; }
+function noteUploadState() {
+  const u = status && status.uploads.find((x) => x.path === note.path);
+  const el = $("#note-state");
+  if (!el) return;
+  let bar = $("#note-progress");
+  if (u && !note.dirty && !note.saving) {
+    el.textContent = `Uploading to Discord ${Math.floor(u.pct)}%${u.eta ? " · " + eta(u.eta) : ""}`;
+    if (!bar) { bar = h("div", { class: "meter note-meter", id: "note-progress" }, h("i")); el.after(bar); }
+    bar.firstChild.style.width = u.pct + "%";
+  } else if (bar) {
+    bar.remove();
+  }
+}
 function syncedText(state) { return state === "synced" ? "Backed up to Discord" : "Saved on this computer · uploading soon"; }
 
 async function loadNoteText(body, state) {
@@ -1396,6 +1515,106 @@ async function pollNotes() {
   }
 }
 
+// ------------------------------------------------------------------ log
+let logTimer = null;
+let logAfter = 0;
+let logLines = [];
+let logPaused = false;
+let logLevel = "all";
+const LEVELS = { all: () => true, info: (l) => l !== "DEBUG", warn: (l) => l === "WARNING" || l === "ERROR" || l === "CRITICAL",
+                 error: (l) => l === "ERROR" || l === "CRITICAL" };
+
+function progressRow(title, sub, pct, ico) {
+  return h("div", { class: "act-row" },
+    h("div", { class: "act-top" }, icon(ico || kind(title)), h("span", { class: "act-name", title }, base(title) || title),
+      h("span", { class: "act-pct" }, pct == null ? "" : Math.floor(pct) + "%")),
+    pct == null ? null : h("div", { class: "meter" }, h("i", { style: `width:${pct}%` })),
+    h("div", { class: "act-sub" }, sub));
+}
+
+async function renderLog() {
+  logAfter = 0;
+  logLines = [];
+  const now = h("div", { class: "activity" });
+  const search = h("input", { type: "search", placeholder: "Search the log", class: "log-search", oninput: () => drawLog() });
+  const chips = h("div", { class: "seg log-levels", role: "radiogroup" }, [["all", "All"], ["info", "Info"], ["warn", "Warnings"], ["error", "Errors"]]
+    .map(([k, label]) => h("button", { type: "button", role: "radio", "aria-checked": String(k === logLevel),
+                                       onclick: (e) => { logLevel = k; for (const b of chips.children) b.setAttribute("aria-checked", String(b === e.currentTarget)); drawLog(); } }, label)));
+  const pause = h("button", { class: "btn ghost small", onclick: () => { logPaused = !logPaused; pause.textContent = logPaused ? "Resume" : "Pause"; } }, logPaused ? "Resume" : "Pause");
+  const save = h("button", { class: "btn ghost small", onclick: () => {
+    const text = logLines.map((l) => `${new Date(l.t * 1000).toISOString()} [${l.l}] ${l.n}: ${l.m}`).join("\n");
+    download(URL.createObjectURL(new Blob([text], { type: "text/plain" })), "discorddrive-log.txt");
+  } }, "Download");
+  const box = h("div", { class: "log-box", role: "log", "aria-live": "off" });
+  page(h("h1", {}, "Log"),
+       h("p", { class: "lede" }, "Everything the drive is doing, live: uploads and downloads with their progress, then every log line."),
+       h("h2", {}, "Now"), now,
+       h("div", { class: "log-bar" }, h("h2", { style: "margin:0" }, "Log"), chips, search, h("div", { class: "actions" }, pause, save)),
+       box);
+
+  function drawLog() {
+    const f = LEVELS[logLevel];
+    const term = search.value.trim().toLowerCase();
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const shown = logLines.filter((l) => f(l.l) && (!term || (l.m + " " + l.n).toLowerCase().includes(term))).slice(-1500);
+    box.replaceChildren(...shown.map((l) => h("div", { class: "log-line lvl-" + l.l.toLowerCase() },
+      h("span", { class: "lt" }, fmtTime.format(new Date(l.t * 1000))), h("span", { class: "ll" }, l.l === "WARNING" ? "WARN" : l.l),
+      h("span", { class: "ln" }, l.n), h("span", { class: "lm" }, l.m))));
+    if (atBottom || !box.dataset.scrolled) { box.scrollTop = box.scrollHeight; box.dataset.scrolled = "1"; }
+  }
+
+  async function tick() {
+    if (route.name !== "log") { clearInterval(logTimer); logTimer = null; return; }
+    const [a, lg] = await Promise.all([api("/api/activity").catch(() => null),
+                                       logPaused ? null : api("/api/log" + q({ after: logAfter })).catch(() => null)]);
+    if (a) {
+      const parts = [];
+      a.uploads.forEach((u) => parts.push(progressRow(u.path,
+        u.stage === "spare pieces" ? "Adding spare pieces" :
+          `Uploading to Discord · ${size(u.bytes)} of ${size(u.size)} · piece ${u.done} of ${u.total}${u.speed ? " · " + speed(u.speed) : ""}${u.eta ? " · " + eta(u.eta) : ""}`, u.pct)));
+      a.offline.forEach((j) => parts.push(progressRow(j.path, `Downloading to keep offline · ${size(j.bytes)} of ${size(j.total)}${j.speed ? " · " + speed(j.speed) : ""}${j.eta ? " · " + eta(j.eta) : ""}`, j.pct, "download")));
+      a.downloads.forEach((d) => parts.push(progressRow(d.path, `Downloading ${plural(d.pieces, "piece")} (${size(d.bytes)}) for reading`, null, "download")));
+      a.queue.forEach((qd) => parts.push(progressRow(qd.path, `Waiting to upload · ${size(qd.size)}${qd.due > a.time ? " · starts in " + Math.ceil(qd.due - a.time) + " s" : ""}`, null)));
+      const sum = [];
+      if (a.upload_speed) sum.push(`Uploading ${speed(a.upload_speed)}${a.upload_eta ? ", all done in about " + eta(a.upload_eta).replace(" left", "") : ""}`);
+      if (a.download_speed) sum.push(`Downloading ${speed(a.download_speed)}`);
+      if (a.sync.outbox) sum.push(`${plural(a.sync.outbox, "change")} to send to other devices`);
+      if (a.sync.trash) sum.push(`${plural(a.sync.trash, "old piece")} to delete from Discord`);
+      if (a.sync.repairs) sum.push(`${plural(a.sync.repairs, "repair")} queued`);
+      if (a.sync.failures) sum.push("Can't reach Discord right now; retrying");
+      if (a.check && a.check.total) sum.push(`Background check: ${Number(a.check.done || 0).toLocaleString()} of ${Number(a.check.total).toLocaleString()} pieces`);
+      now.replaceChildren(h("div", { class: "act-sum" }, sum.length ? sum.join(" · ") : "Nothing is uploading or downloading right now."), ...parts);
+    }
+    if (lg && lg.lines.length) {
+      logLines = logLines.concat(lg.lines).slice(-5000);
+      logAfter = lg.lines[lg.lines.length - 1].i;
+      drawLog();
+    } else if (!logLines.length) {
+      drawLog();
+    }
+  }
+  clearInterval(logTimer);
+  await tick();
+  logTimer = setInterval(tick, 1000);
+}
+
+// ------------------------------------------------------------------ what's new
+async function whatsNew() {
+  const data = await attempt(() => api("/api/changelog"));
+  if (!data) return;
+  const body = h("div", { class: "changelog" });
+  let list = null;
+  for (const line of (data.text || "No changelog found.").split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("# ")) { list = null; continue; }
+    if (t.startsWith("## ")) { list = null; body.append(h("h4", {}, t.slice(3))); }
+    else if (t.startsWith("- ")) { if (!list) { list = h("ul"); body.append(list); } list.append(h("li", {}, t.slice(2).replace(/\*\*/g, ""))); }
+    else if (list && line.startsWith("  ")) list.lastChild && list.lastChild.append(" " + t);
+    else { list = null; body.append(h("p", { class: "muted" }, t)); }
+  }
+  modal(`What's new · version ${data.version}`, body);
+}
+
 // ------------------------------------------------------------------ account
 $("#account").addEventListener("click", (e) => {
   const r = e.currentTarget.getBoundingClientRect();
@@ -1403,6 +1622,7 @@ $("#account").addEventListener("click", (e) => {
     { label: status && status.user ? `Signed in as ${status.user}` : "Signed in", icon: "user", disabled: true },
     "-",
     { label: "Settings", icon: "settings", run: () => go("#/settings") },
+    { label: "What's new", icon: "info", run: whatsNew },
     { label: "Sign out", icon: "signout", run: async () => { await api("/api/logout", {}).catch(() => null); location.reload(); } },
   ], r.right - 220, r.bottom + 6, "Account");
 });
@@ -1413,4 +1633,7 @@ dropTarget(document.querySelector('#nav a[data-nav="files"]'), "/");
 dropTarget(document.querySelector('#nav a[data-nav="deleted"]'), "/", "delete");
 render();
 refreshStatus();
-setInterval(refreshStatus, 3000);
+(function poll() {
+  const busy = status && (status.uploads.length || status.downloads || status.queued);
+  setTimeout(async () => { await refreshStatus(); poll(); }, busy ? 1000 : 3000);
+})();

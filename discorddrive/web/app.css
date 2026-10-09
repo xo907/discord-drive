@@ -632,3 +632,60 @@ button.link { padding: 0; border: 0; background: none; color: var(--ink); text-d
   .seg button { font-size: 12px; }
   .side a { padding: 6px 6px; }
 }
+
+/* ------------------------------------------------------------------ progress in the tray */
+.tray .item .sub { margin-top: 6px; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tray .item.discord .meter i { background: var(--accent); }
+.note-meter { width: 120px; margin: 0; }
+.note-meter i { background: var(--accent); }
+
+/* ------------------------------------------------------------------ row checkboxes, box selection */
+.row-cb { opacity: 0; margin-right: 2px; transition: opacity .1s; }
+.row:hover .row-cb, .row.sel .row-cb, main.selecting .row-cb, .row-cb:focus-visible { opacity: 1; }
+@media (hover: none) { .row-cb { display: none; } main.selecting .row-cb { display: grid; } }
+.marquee { position: fixed; z-index: 30; border: 1px solid var(--ink); border-radius: 3px; pointer-events: none;
+           background: color-mix(in srgb, var(--ink) 7%, transparent); }
+
+/* ------------------------------------------------------------------ log tab */
+.activity { border-top: 1px solid var(--line); }
+.act-sum { padding: 12px 0; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
+.act-row { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.act-top { display: flex; align-items: center; gap: 10px; }
+.act-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.act-pct { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+.act-row .meter { margin: 8px 0 0 28px; }
+.act-row .meter i { background: var(--accent); }
+.act-sub { margin: 4px 0 0 28px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.log-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 36px 0 10px; }
+.log-levels { flex: none; }
+.log-levels button { flex: none; padding: 0 12px; }
+.log-search { flex: 1; min-width: 160px; height: 32px; padding: 0 10px; border: 0; border-radius: var(--radius);
+              background: var(--hover); outline: none; }
+.log-search:focus { box-shadow: 0 0 0 2px var(--ring); }
+.log-box { height: 56vh; overflow-y: auto; padding: 8px 0; border: 1px solid var(--line); border-radius: 10px;
+           background: var(--panel); font: 12px/1.65 var(--mono); }
+.log-line { display: grid; grid-template-columns: 64px 48px 92px minmax(0, 1fr); gap: 10px; padding: 1px 14px; }
+.log-line:hover { background: var(--hover); }
+.log-line .lt, .log-line .ln { color: var(--faint); }
+.log-line .ln { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-line .ll { color: var(--muted); }
+.log-line .lm { white-space: pre-wrap; word-break: break-word; }
+.log-line.lvl-warning .ll, .log-line.lvl-warning .lm { color: var(--warn); }
+.log-line.lvl-error .ll, .log-line.lvl-error .lm, .log-line.lvl-critical .lm { color: var(--accent); }
+
+/* ------------------------------------------------------------------ what's new */
+.changelog { max-height: 62vh; overflow-y: auto; font-size: 13.5px; }
+.changelog h4 { margin: 18px 0 6px; font-size: 13px; }
+.changelog h4:first-child { margin-top: 0; }
+.changelog ul { margin: 0; padding-left: 18px; }
+.changelog li { margin: 3px 0; }
+
+@media (max-width: 760px) {
+  .side { justify-content: flex-start; overflow-x: auto; scrollbar-width: none; }
+  .side::-webkit-scrollbar { display: none; }
+  .side a { flex: none; min-width: 64px; }
+  .log-line { grid-template-columns: 58px minmax(0, 1fr); }
+  .log-line .ll, .log-line .ln { display: none; }
+  .log-box { height: 60vh; }
+}

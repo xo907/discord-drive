@@ -293,7 +293,8 @@ class Uploader:
                 log.info("Resuming upload of %s at %d of %d pieces", path, len(job.done), total)
             else:
                 log.info("Starting upload of %s (%d bytes, version %d)", path, file_size, version)
-            self.progress[nid] = {"path": path, "done": len(job.done), "total": total, "size": file_size}
+            job.base = sum(c["size"] for c in job.done.values())
+            self._report(job, "uploading")
             for start in range(0, total, group):
                 idxs = list(range(start, min(start + group, total)))
                 self._check(nid)
@@ -306,7 +307,10 @@ class Uploader:
                     existing = None
                     if all(job.done[i].get("reused") for i in idxs):
                         existing = self.index.find_group([job.done[i]["message_id"] for i in idxs])
+                    if not existing:
+                        self._report(job, "spare pieces")
                     job.parity[gkey] = existing or self._upload_parity(staging_path, idxs, chunk_size)
+                    self._report(job, "uploading")
                     self._save_progress(nid, version, file_size, chunk_size, job.done, k, job.parity)
             chunks = [job.done[i] for i in range(total)]
             self._reverify_reused(job, staging_path, chunks)
@@ -355,6 +359,25 @@ class Uploader:
             log.info("%s changed during upload; re-queued", path)
             self.enqueue(nid, delay=self.cfg.upload_delay)
 
+    def _report(self, job, stage):
+        """Live progress of one upload (status page, dashboard, log tab)."""
+        done = sum(c["size"] for c in job.done.values())
+        self.progress[job.nid] = {
+            "path": job.path, "size": job.size, "bytes": done, "base": job.base, "started": job.started,
+            "done": len(job.done), "total": (job.size + job.chunk_size - 1) // job.chunk_size,
+            "stage": stage, "updated": time.time()}
+
+    def queue_info(self):
+        """Files waiting to upload (not started yet): [{path, size, due}]."""
+        with self._lock:
+            pending = sorted(self._pending.items(), key=lambda kv: kv[1])
+        out = []
+        for nid, due in pending[:200]:
+            node = self.index.get(nid)
+            if node is not None:
+                out.append({"path": self.index.path_of(nid), "size": node["size"], "due": due})
+        return out
+
     def _unreserve(self, job):
         with self._lock:
             for mid in job.reserved:
@@ -380,9 +403,7 @@ class Uploader:
                         continue
                     job.done[c["idx"]] = c
                     self._save_progress(job.nid, job.version, job.size, job.chunk_size, job.done, k, job.parity)
-                    self.progress[job.nid] = {"path": job.path, "done": len(job.done),
-                                              "total": (job.size + job.chunk_size - 1) // job.chunk_size,
-                                              "size": job.size}
+                    self._report(job, "uploading")
                 if error is None and pending:
                     try:
                         self._check(job.nid)
@@ -578,3 +599,5 @@ class _Job:
         self.parity = {}       # group number (str) -> [gid, [[mid, size, sha], ...]]
         self.reserved = []
         self.last_report = time.time()
+        self.started = time.time()
+        self.base = 0

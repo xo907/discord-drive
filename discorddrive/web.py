@@ -424,7 +424,8 @@ class _Handler(BaseHTTPRequestHandler):
             "encrypted": d.crypto is not None,
             "bots": getattr(d.backend, "upload_slots", 1),
             "stats": st,
-            "uploads": list(d.uploader.progress.values()) if d.uploader else [],
+            "uploads": self._uploads(),
+            "downloads": len(d.cache.active) if d.cache else 0,
             "queued": len(d.uploader._pending) if d.uploader else 0,
             "saved": dict(d.uploader.stats) if d.uploader else {},
             "health": {
@@ -438,6 +439,79 @@ class _Handler(BaseHTTPRequestHandler):
             "public": self.public_base(),
             "snapshots": {"interval": d.cfg.snapshot_interval_hours, "keep": d.cfg.snapshot_keep_days},
         })
+
+    # ------------------------------------------------------------ activity and log
+    def _uploads(self):
+        """Uploads to Discord in progress, with percent, speed and time left."""
+        d = self.drive
+        out, now = [], time.time()
+        for p in list(d.uploader.progress.values()) if d.uploader else []:
+            sent = p.get("bytes", 0) - p.get("base", 0)
+            elapsed = max(0.5, now - p.get("started", now))
+            speed = sent / elapsed if sent > 0 else 0.0
+            left = max(0, p.get("size", 0) - p.get("bytes", 0))
+            out.append({**p, "pct": round(100.0 * p.get("bytes", 0) / max(1, p.get("size", 1)), 1),
+                        "speed": speed, "eta": left / speed if speed > 0 else None})
+        return out
+
+    def _get_api_activity(self):
+        d = self.drive
+        now = time.time()
+        cache = d.cache
+        downloads = {}
+        for mid, a in list(cache.active.items()):
+            node = a.get("node")
+            g = downloads.setdefault(node, {"path": d.index.path_of(node) if node else "(piece)", "pieces": 0,
+                                            "bytes": 0, "since": a["started"]})
+            g["pieces"] += 1
+            g["bytes"] += a.get("size") or 0
+            g["since"] = min(g["since"], a["started"])
+        recent = [r for r in cache.recent if now - r[0] < 10]
+        dl_speed = sum(b for _, b in recent) / 10.0
+        jobs = []
+        for job in list(cache.jobs.values()):
+            elapsed = max(0.5, now - job["started"])
+            speed = job["bytes"] / elapsed if job["bytes"] else 0.0
+            jobs.append({**job, "pct": round(100.0 * job["bytes"] / max(1, job["total"]), 1), "speed": speed,
+                         "eta": (job["total"] - job["bytes"]) / speed if speed else None})
+        uploads = self._uploads()
+        queue = d.uploader.queue_info() if d.uploader else []
+        up_speed = sum(u["speed"] for u in uploads)
+        queued_bytes = sum(q["size"] for q in queue) + sum(max(0, u["size"] - u["bytes"]) for u in uploads)
+        st = d.index.stats(max_age=2)
+        self._json({
+            "time": now,
+            "uploads": uploads,
+            "queue": queue,
+            "upload_speed": up_speed,
+            "upload_eta": queued_bytes / up_speed if up_speed else None,
+            "downloads": list(downloads.values()),
+            "download_speed": dl_speed,
+            "offline": jobs,
+            "sync": {"outbox": st["outbox"], "trash": st["trash"], "unsynced": st["unsynced"],
+                     "failures": getattr(d.journal, "_failures", 0),
+                     "repairs": d.healer._queue.qsize() if d.healer else 0},
+            "check": d.maintenance.scrub_state() if d.maintenance else {},
+        })
+
+    def _get_api_log(self):
+        from .logbuf import BUFFER
+        q = self._query()
+        try:
+            after = int(q.get("after") or 0)
+        except ValueError:
+            after = 0
+        self._json({"lines": BUFFER.since(after, 2000 if not after else 1000)})
+
+    def _get_api_changelog(self):
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        for p in (os.path.join(getattr(sys, "_MEIPASS", ""), "CHANGELOG.md"), os.path.join(os.path.dirname(here), "CHANGELOG.md"),
+                  os.path.join(here, "CHANGELOG.md")):
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as f:
+                    return self._json({"version": __version__, "text": f.read()})
+        self._json({"version": __version__, "text": ""})
 
     # ------------------------------------------------------------ browsing
     def _get_api_list(self):

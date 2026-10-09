@@ -89,6 +89,9 @@ class DiscordDrive:
                 saved.device_id = self.cfg.device_id
                 saved.save()
 
+        from . import logbuf
+        from .config import default_data_dir
+        logbuf.install(os.path.join(default_data_dir(), "discorddrive.log") if not self.local_test_dir else None)
         self.index = Index(db_path)
         self.index.keep_versions = bool(self.cfg.keep_versions)
         self.journal = Journal(self.cfg, self.index, self.backend, crypto=self.crypto, staging_dir=staging_dir)

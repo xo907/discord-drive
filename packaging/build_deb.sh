@@ -10,7 +10,7 @@ PKG="build/deb/discorddrive_${VERSION}_all"
 rm -rf "$PKG"
 mkdir -p "$PKG/DEBIAN" "$PKG/opt/discorddrive" "$PKG/usr/bin" "$PKG/usr/lib/systemd/user"
 
-cp -r discorddrive run.sh README.md LICENSE "$PKG/opt/discorddrive/"
+cp -r discorddrive run.sh README.md CHANGELOG.md LICENSE "$PKG/opt/discorddrive/"
 find "$PKG/opt/discorddrive" -name "__pycache__" -prune -exec rm -rf {} +
 find "$PKG/opt/discorddrive" -type d -exec chmod 755 {} +
 find "$PKG/opt/discorddrive" -type f -exec chmod 644 {} +

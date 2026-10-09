@@ -247,6 +247,29 @@ class WebTest(helpers.DriveTest):
         self.upload(self.d)
         self.assertEqual(self.read(self.d, "/Notes/Shopping.md"), b"Milk, eggs, bread")
 
+    def test_activity_log_and_changelog(self):
+        import logging
+        self.login()
+        logging.getLogger("discorddrive.test").warning("a line for the log tab")
+        lines = json.loads(self.req("GET", "/api/log")[2])["lines"]
+        self.assertTrue(any(l["m"] == "a line for the log tab" and l["l"] == "WARNING" for l in lines))
+        after = lines[-1]["i"]
+        self.assertEqual(json.loads(self.req("GET", f"/api/log?after={after}")[2])["lines"], [])
+        # a file being uploaded shows up with progress, speed and time left
+        self.write(self.d, "/big.bin", os.urandom(300_000))
+        nid = self.d.index.resolve("/big.bin")["id"]
+        self.d.uploader.progress[nid] = {"path": "/big.bin", "size": 300_000, "bytes": 100_000, "base": 0,
+                                         "started": __import__("time").time() - 2, "done": 1, "total": 3,
+                                         "stage": "uploading", "updated": 0}
+        a = json.loads(self.req("GET", "/api/activity")[2])
+        u = a["uploads"][0]
+        self.assertAlmostEqual(u["pct"], 33.3, places=1)
+        self.assertGreater(u["speed"], 0)
+        self.assertGreater(u["eta"], 0)
+        self.assertEqual(json.loads(self.req("GET", "/api/status")[2])["uploads"][0]["path"], "/big.bin")
+        log = json.loads(self.req("GET", "/api/changelog")[2])
+        self.assertIn(log["version"], log["text"])
+
     def test_html_files_are_sandboxed(self):
         self.login()
         self.write(self.d, "/page.html", b"<script>alert(1)</script>")

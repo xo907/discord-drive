@@ -47,6 +47,10 @@ class ChunkCache:
         self._mem_total = 0
         self._pinned = (0.0, set())
         self.healer = None                          # rebuilds pieces missing from Discord (heal.py)
+        self.active = {}                            # message_id -> {node, idx, size, started} (log tab)
+        self.recent = []                            # (time, bytes) of finished downloads, for the speed
+        self.jobs = {}                              # node_id -> progress of "available offline" downloads
+        self.downloaded = 0
         self.pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="download")
         entries = []
         for name in os.listdir(directory):
@@ -163,6 +167,8 @@ class ChunkCache:
 
     def _download(self, chunk, persist=None):
         mid = chunk["message_id"]
+        self.active[mid] = {"node": chunk.get("node_id"), "idx": chunk.get("idx"), "size": chunk.get("size") or 0,
+                            "started": time.time()}
         try:
             last_err = None
             for attempt in range(3):
@@ -195,6 +201,11 @@ class ChunkCache:
                     return self.put(mid, data, persist=persist)
             raise last_err
         finally:
+            info = self.active.pop(mid, None)
+            if info is not None and (mid in self._mem or mid in self._lru):
+                now = time.time()
+                self.downloaded += info["size"]
+                self.recent = [r for r in self.recent if now - r[0] < 10] + [(now, info["size"])]
             with self._lock:
                 self._inflight.pop(mid, None)
 
@@ -292,10 +303,19 @@ class ChunkCache:
             if data is not None:
                 self.put(mid, data, persist=True)
                 continue
-            futures.append(self.pool.submit(self._download, c, True))
+            futures.append((c, self.pool.submit(self._download, c, True)))
 
-        for fut in futures:
-            fut.result()
+        if futures:
+            job = {"path": self.index.path_of(node_id), "total": sum(c["size"] for c, _ in futures), "bytes": 0,
+                   "pieces": len(futures), "done": 0, "started": time.time()}
+            self.jobs[node_id] = job
+            try:
+                for c, fut in futures:
+                    fut.result()
+                    job["bytes"] += c["size"]
+                    job["done"] += 1
+            finally:
+                self.jobs.pop(node_id, None)
 
         return len(all_chunks)
 
