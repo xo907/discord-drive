@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS trash(message_id TEXT PRIMARY KEY, added REAL);
 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY AUTOINCREMENT, op TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS alias(uid TEXT PRIMARY KEY, target TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tombstones(uid TEXT PRIMARY KEY, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS versions(
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     uid        TEXT NOT NULL,
@@ -316,8 +317,27 @@ class Index:
             db.execute("DELETE FROM nodes WHERE id=?", (nid,))
             if old and vid is None:
                 self._release(db, [c[0] for c in old])
+            db.execute("INSERT OR REPLACE INTO tombstones(uid, at) VALUES(?, ?)", (row["uid"], time.time()))
             if row["jstate"] >= J_QUEUED:
                 self._queue(db, {"t": "rm", "u": row["uid"]})
+
+    def purge_node(self, nid):
+        """Remove a file for good (no old version kept), e.g. when its data can't be decrypted."""
+        with self.tx() as db:
+            row = db.execute("SELECT * FROM nodes WHERE id=?", (nid,)).fetchone()
+            if row is None or row["is_dir"]:
+                return
+            mids = [c[0] for c in self._chunk_list(db, nid)]
+            db.execute("DELETE FROM chunks WHERE node_id=?", (nid,))
+            db.execute("DELETE FROM nodes WHERE id=?", (nid,))
+            self._release(db, mids)
+            db.execute("INSERT OR REPLACE INTO tombstones(uid, at) VALUES(?, ?)", (row["uid"], time.time()))
+            if row["jstate"] >= J_QUEUED:
+                self._queue(db, {"t": "rm", "u": row["uid"]})
+
+    def is_tombstoned(self, uid):
+        with self.lock:
+            return self.db.execute("SELECT 1 FROM tombstones WHERE uid=?", (uid,)).fetchone() is not None
 
     def is_ancestor_or_self(self, ancestor_id, nid):
         with self.lock:
@@ -464,6 +484,7 @@ class Index:
                 expired |= {r[0] for r in db.execute(
                     "SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY uid ORDER BY superseded DESC, id DESC) rn "
                     "FROM versions) WHERE rn > ?", (max_versions,))}
+            db.execute("DELETE FROM tombstones WHERE at < ?", (time.time() - 180 * 86400,))
             for vid in expired:
                 mids = [r[0] for r in db.execute("SELECT message_id FROM version_chunks WHERE version_id=?", (vid,))]
                 db.execute("DELETE FROM version_chunks WHERE version_id=?", (vid,))
@@ -564,8 +585,14 @@ class Index:
             db.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('journal_cursor', ?)", (str(cursor),))
         return changed
 
+    @staticmethod
+    def _dead(db, uid):
+        return db.execute("SELECT 1 FROM tombstones WHERE uid=?", (uid,)).fetchone() is not None
+
     def _op_mkdir(self, db, op, busy, changed):
         uid = op["u"]
+        if self._dead(db, uid):
+            return  # deleted on some device: never comes back
         nid = self._nid(db, uid)
         if nid is not None:
             db.execute("UPDATE nodes SET jstate=2 WHERE id=? AND jstate<2", (nid,))
@@ -588,6 +615,10 @@ class Index:
         chunks = [(str(c[0]), int(c[1]), c[2]) for c in op["c"]]
         size = int(op.get("s", sum(c[1] for c in chunks)))
         mtime = float(op.get("m") or time.time())
+        if self._dead(db, uid):
+            if not op.get("r"):
+                return  # a late upload of something deleted elsewhere: ignore it
+            db.execute("DELETE FROM tombstones WHERE uid=?", (uid,))   # undelete / restore-version
         nid = self._nid(db, uid)
         if nid is not None:
             row = db.execute("SELECT * FROM nodes WHERE id=?", (nid,)).fetchone()
@@ -649,22 +680,29 @@ class Index:
         changed.add(nid)
 
     def _op_rm(self, db, op, busy, changed):
+        """Deletes are final: the item (a folder with everything in it) is removed on every
+        device and remembered, so a device that still had it can't upload it again."""
+        db.execute("INSERT OR REPLACE INTO tombstones(uid, at) VALUES(?, ?)", (op["u"], time.time()))
         nid = self._nid(db, op["u"])
         if nid is None or nid == ROOT_ID:
             return
-        row = db.execute("SELECT * FROM nodes WHERE id=?", (nid,)).fetchone()
-        if row["is_dir"]:
-            if db.execute("SELECT 1 FROM nodes WHERE parent=? LIMIT 1", (nid,)).fetchone():
-                return  # something was added to it concurrently; keep it
-        elif row["state"] != "synced" or busy(nid):
-            return  # local edits win; they are published after this op
-        old = self._chunk_list(db, nid)
-        vid = self._add_version(db, row, old, "deleted") if old else None
-        db.execute("DELETE FROM chunks WHERE node_id=?", (nid,))
-        db.execute("DELETE FROM nodes WHERE id=?", (nid,))
-        if old and vid is None:
-            self._release(db, [c[0] for c in old])
-        changed.add(nid)
+        stack, order = [nid], []
+        while stack:
+            cur = stack.pop()
+            order.append(cur)
+            stack.extend(r[0] for r in db.execute("SELECT id FROM nodes WHERE parent=?", (cur,)))
+        for cur in reversed(order):          # children before their folder
+            row = db.execute("SELECT * FROM nodes WHERE id=?", (cur,)).fetchone()
+            if row is None:
+                continue
+            old = [] if row["is_dir"] else self._chunk_list(db, cur)
+            vid = self._add_version(db, row, old, "deleted") if old else None
+            db.execute("DELETE FROM chunks WHERE node_id=?", (cur,))
+            db.execute("DELETE FROM nodes WHERE id=?", (cur,))
+            db.execute("INSERT OR REPLACE INTO tombstones(uid, at) VALUES(?, ?)", (row["uid"], time.time()))
+            if old and vid is None:
+                self._release(db, [c[0] for c in old])
+            changed.add(cur)
 
     def _op_mt(self, db, op, busy, changed):
         nid = self._nid(db, op["u"])

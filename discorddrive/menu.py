@@ -436,6 +436,7 @@ def tools_menu():
             ("6", "Rebuild this device's file list from Discord"),
             ("7", "Save an index checkpoint now"),
             ("10", "Request the key from another device"),
+            ("11", "Cancel stuck uploads"),
             (None, None),
         ]
         if WINDOWS:
@@ -452,12 +453,14 @@ def tools_menu():
             continue
         page(MAIN, title, labels[pick].split(" (")[0])
         if pick == "1":
-            p = ask("File or folder to check (Enter = everything; downloads it all once)", "")
+            p = ask("File or folder to check (Enter = everything; downloads it all once)", "") or "/"
             print()
-            if p:
-                cli("verify", p)
-            else:
-                cli("verify")
+            if cli("verify", p) != 0:
+                print()
+                if confirm("Remove the files that can never be read (lost key / missing) from the drive?",
+                           default=False):
+                    print()
+                    cli("verify", p, "--remove")
         elif pick == "2":
             cli("log", "--errors", "-n", "25")
         elif pick == "3":
@@ -496,6 +499,20 @@ def tools_menu():
                 start_drive()
         elif pick == "7":
             cli("backup")
+        elif pick == "11":
+            cfg = Config.load()
+            running = is_mounted(cfg)
+            if running:
+                if not confirm("The drive has to stop for this. Stop it now?"):
+                    back(title)
+                    continue
+                print()
+                stop_drive()
+                print()
+            cli("cancel-uploads")
+            if running:
+                print()
+                start_drive()
         elif pick == "10":
             info("For a device that is missing the key, or has the wrong one. Another device approves it")
             info("from its menu: 'Approve a new device'.")

@@ -301,7 +301,9 @@ Devices stay in sync while they are running:
   - Folders with the same name are merged.
   - If the same file is edited on two devices, the edit that reaches Discord last wins. The other
     edit is kept as a version (`discorddrive versions <file>`).
-  - If one device deletes a file while another edits it, the edit wins.
+  - **Deletes are final.** A deleted file or folder (with everything in it) disappears on every
+    device and can't come back through another device's late upload or checkpoint. To get
+    something back on purpose, use `deleted` / `undelete` or `versions` / `restore-version`.
 - Windows Explorer does not refresh open folders by itself; press F5 to see changes made elsewhere.
 
 **Upgrading from an older DiscordDrive:** update and start **one** device first. It converts its
@@ -468,8 +470,9 @@ on Linux (background starts also write `mount.log` next to it).
   and come back: `cd ~ && ls /mnt/discord`.
 - **"already mounted" after an update.** The old version is still running. Update from the menu
   (option 4), which restarts it; see [Updating](#updating).
-- **"Mount directory is not empty".** DiscordDrive refuses to mount on top of existing files,
-  because they would be hidden. Move them away or pick another directory (`./run.sh setup -m <dir>`).
+- **Files appeared in `/mnt/discord` while the drive was stopped** (a program or container kept
+  writing there). They're handled automatically on the next start: moved aside, the drive mounts,
+  and they're copied onto the drive. The log says how many.
 - **"Transport endpoint is not connected".** An earlier instance crashed. Starting again cleans
   this up automatically, or run `fusermount -uz /mnt/discord` (`fusermount3 -uz` on FUSE 3 systems).
 
@@ -515,6 +518,14 @@ on Linux (background starts also write `mount.log` next to it).
   file that can't be downloaded or decrypted and why. "Encrypted with a different key" means that
   file was uploaded while this setup used another key, so it can only be read with that old key.
   If an older version of it exists, `versions <path>` and `restore-version` can bring it back.
+  Files that can never be read again (their key is lost) can be cleared out with
+  `verify <path> --remove` (menu: Tools → check files, then answer yes). Copy them onto the drive
+  again from their originals if you still have them.
+- **A file is stuck "uploading"** (it shows in the menu's top line or in `status` and never
+  finishes). Menu → **9 (Tools) → Cancel stuck uploads**: a changed file goes back to its last
+  uploaded version, a file that was never uploaded is removed.
+- **A deleted folder keeps coming back.** One of your devices runs an older version, which still
+  re-uploads it. Update every device (menu option 4); deletes are final from then on.
 - **A "Recovered files" folder appeared.** A change arrived for a file whose folder had been
   deleted on another device at the same time. The file was put here instead of being lost.
 - **Bot invite says "successful" but the bot did not join.** The invite URL must include `scope=bot`.

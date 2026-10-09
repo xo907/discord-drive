@@ -510,9 +510,9 @@ def cmd_verify(args):
             if n["is_dir"]:
                 todo.extend(idx.children(n["id"]))
             elif n["state"] == "synced":
-                files.append((idx.path_of(n["id"]), idx.get_chunks(n["id"])))
+                files.append((idx.path_of(n["id"]), idx.get_chunks(n["id"]), n["id"]))
         files.sort()
-        total = sum(c["size"] for _, chunks in files for c in chunks)
+        total = sum(c["size"] for _, chunks, _ in files for c in chunks)
         print(f"Checking {len(files)} file(s), {total / 2**20:.1f} MiB under {vpath} (downloads everything once)...")
 
         def check(chunk):
@@ -534,11 +534,14 @@ def cmd_verify(args):
 
         bad = 0
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for i, (path, chunks) in enumerate(files, 1):
+            unreadable = []
+            for i, (path, chunks, nid) in enumerate(files, 1):
                 problems = [p for p in pool.map(check, chunks) if p]
                 if problems:
                     bad += 1
                     print(f"  [BAD] {path}: {problems[0]}")
+                    if problems[0].startswith(("cannot decrypt", "missing from Discord", "checksum")):
+                        unreadable.append((nid, path))
                 elif args.verbose:
                     print(f"  [OK]  {path}")
                 if i % 25 == 0:
@@ -546,6 +549,15 @@ def cmd_verify(args):
         if bad:
             print(f"\n{bad} of {len(files)} file(s) cannot be read. Older versions may still work: "
                   f"{launcher()} versions <path>")
+            if unreadable and getattr(args, "remove", False):
+                for nid, path in unreadable:
+                    idx.purge_node(nid)
+                print(f"[OK] Removed {len(unreadable)} unreadable file(s) from the drive (on every device).")
+                print("     Copy them onto the drive again from their originals if you still have them.")
+                return 0
+            if unreadable:
+                print(f"To remove the {len(unreadable)} file(s) that can never be read (e.g. encrypted with a lost key):")
+                print(f"  {launcher()} verify {args.path} --remove")
             return 1
         print(f"\n[OK] All {len(files)} file(s) downloaded and decrypted correctly.")
         return 0
@@ -624,6 +636,63 @@ def cmd_add_old_key(args):
         cfg.save()
         print("Restart the drive for this to take effect.")
     return 0
+
+
+def cmd_cancel_uploads(args):
+    """Cancel uploads that are stuck: a changed file goes back to its last uploaded version,
+    a file that was never uploaded is removed. The drive has to be stopped."""
+    setup_logging(args.verbose)
+    cfg = Config.load()
+    if is_mounted(cfg.mount_point):
+        print("[ERROR] Stop the drive first (uploads run inside it), then try again.")
+        return 1
+    idx = Index(os.path.join(cfg.resolved_data_dir, "index.db"))
+    try:
+        pending = idx.unsynced_files()
+        if not pending:
+            print("[OK] Nothing is waiting to upload.")
+            return 0
+        for i, n in enumerate(pending, 1):
+            print(f"  {i}) {idx.path_of(n['id'])}  ({_human(n['size'])})")
+        if args.all:
+            chosen = pending
+        else:
+            try:
+                pick = input("\nCancel which? (a number, or 'all') [all]: ").strip().lower() or "all"
+            except EOFError:
+                pick = "all"
+            if pick == "all":
+                chosen = pending
+            else:
+                try:
+                    chosen = [pending[int(pick) - 1]]
+                except (ValueError, IndexError):
+                    print("[!] Nothing cancelled.")
+                    return 0
+        staging = os.path.join(cfg.resolved_data_dir, "staging")
+        for n in chosen:
+            path = idx.path_of(n["id"])
+            rec = idx.kv_get(f"upload:{n['id']}")
+            if rec:
+                try:
+                    idx.trash_add([c["message_id"] for c in json.loads(rec).get("chunks") or []])
+                except ValueError:
+                    pass
+                idx.kv_delete(f"upload:{n['id']}")
+            chunks = idx.get_chunks(n["id"])
+            if chunks:
+                idx.update(n["id"], state="synced", size=sum(c["size"] for c in chunks))
+                print(f"[OK] {path}: back to its last uploaded version.")
+            else:
+                idx.delete_node(n["id"])
+                print(f"[OK] {path}: removed (it had never been uploaded).")
+            try:
+                os.remove(os.path.join(staging, f"{n['id']}.dat"))
+            except OSError:
+                pass
+        return 0
+    finally:
+        idx.close()
 
 
 _AUTOSTART_TAG = "# DiscordDrive autostart"
@@ -1139,7 +1208,8 @@ def _put_op_for_version(idx, v, uid, parent_uid, name):
     chunks = idx.version_chunks(v["id"])
     return {"t": "put", "u": uid, "p": parent_uid, "n": name, "s": v["size"],
             "m": v["mtime"] or time.time(),
-            "c": [[c["message_id"], c["size"], c["sha256"]] for c in chunks]}
+            "c": [[c["message_id"], c["size"], c["sha256"]] for c in chunks],
+            "r": 1}   # an explicit restore: allowed even though the file was deleted
 
 
 def _publish(j, ops, what):
@@ -1428,6 +1498,10 @@ def main():
     p_old.add_argument("--from-config", help="Take the key(s) from another device's config.json")
     p_verify = subparsers.add_parser("verify", help="Check that files can be downloaded and decrypted")
     p_verify.add_argument("path", nargs="?", default="/", help="File or folder to check (default: everything)")
+    p_verify.add_argument("--remove", action="store_true",
+                          help="Remove files that can never be read (lost key, missing from Discord)")
+    p_cancel = subparsers.add_parser("cancel-uploads", help="Cancel uploads that are stuck (drive must be stopped)")
+    p_cancel.add_argument("--all", action="store_true", help="Cancel every pending upload without asking")
     p_log = subparsers.add_parser("log", help="Show the end of the log file")
     p_log.add_argument("-n", "--lines", type=int, default=30, help="Number of lines (default 30)")
     p_log.add_argument("--errors", action="store_true", help="Only warnings and errors")
@@ -1490,6 +1564,8 @@ def main():
         return cmd_log(args)
     elif args.command == "add-old-key":
         return cmd_add_old_key(args)
+    elif args.command == "cancel-uploads":
+        return cmd_cancel_uploads(args)
     elif args.command == "autostart":
         return cmd_autostart(args)
     elif args.command == "approve-keys":

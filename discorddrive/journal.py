@@ -352,6 +352,8 @@ class Journal:
                 idx.makedirs(path)
                 added += 1
         for f in files:
+            if idx.is_tombstoned(f["uid"]):
+                continue   # deleted on another device: don't bring it back
             node = idx.get_by_uid(f["uid"]) or idx.resolve(f["path"])
             local_mids = [c[0] for c in f["chunks"]]
             if node is not None and node["is_dir"]:

@@ -4,9 +4,11 @@ import errno
 import logging
 import os
 import secrets
+import shutil
 import signal
 import sys
 import threading
+import time
 
 from .backend import DiscordBackend, LocalBackend, is_encrypted_index
 from .cache import ChunkCache
@@ -174,7 +176,10 @@ class DiscordDrive:
         volname = self.cfg.volume_name or "DiscordDrive"
 
         if sys.platform != "win32":
-            _prepare_mount_dir(mp)
+            strays = _prepare_mount_dir(mp, self.cfg.resolved_data_dir)
+            if strays:
+                threading.Thread(target=_import_strays, args=(strays, mp), name="ImportStrays",
+                                 daemon=True).start()
 
         self.initialize()
         self.start_background_services()
@@ -246,9 +251,10 @@ class DiscordDrive:
             self.stop_background_services()
 
 
-def _prepare_mount_dir(mp):
-    """Create the mount directory, clear a stale FUSE mount left by a crash, and refuse
-    to mount over existing files (they would be hidden, which looks like data loss)."""
+def _prepare_mount_dir(mp, data_dir):
+    """Create the mount directory and clear a stale FUSE mount left by a crash. Files found in
+    the (unmounted) folder were written there while the drive was down: they are moved to a
+    holding folder (returned) and copied onto the drive once it is mounted."""
     try:
         os.makedirs(mp, exist_ok=True)
         entries = os.listdir(mp)
@@ -260,8 +266,43 @@ def _prepare_mount_dir(mp):
         entries = os.listdir(mp)
     if os.path.ismount(mp):
         raise RuntimeError(f"Something is already mounted on {mp}. Run '{launcher()} stop' first.")
-    if entries:
-        raise RuntimeError(
-            f"Mount directory {mp} is not empty; mounting over it would hide those files. "
-            f"Move them elsewhere or choose another mount point ({launcher()} setup -m <dir>)."
-        )
+    if not entries:
+        return None
+    holding = os.path.join(data_dir, "left-in-mount-folder-" + time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(holding, exist_ok=True)
+    for name in entries:
+        shutil.move(os.path.join(mp, name), os.path.join(holding, name))
+    log.warning("Found %d item(s) in %s while the drive was unmounted (written there while it was down); "
+                "they will be copied onto the drive. Kept meanwhile in %s", len(entries), mp, holding)
+    return holding
+
+
+def _import_strays(holding, mp, wait=120):
+    """Copy files that were left in the unmounted mount folder onto the mounted drive."""
+    end = time.time() + wait
+    while time.time() < end and not os.path.ismount(mp):
+        time.sleep(1)
+    if not os.path.ismount(mp):
+        log.warning("Drive did not mount; files that were left in the mount folder stay in %s", holding)
+        return
+    copied = skipped = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(holding):
+            rel = os.path.relpath(dirpath, holding)
+            target_dir = mp if rel == "." else os.path.join(mp, rel)
+            os.makedirs(target_dir, exist_ok=True)
+            for fn in filenames:
+                src, dst = os.path.join(dirpath, fn), os.path.join(target_dir, fn)
+                if os.path.exists(dst):
+                    if os.path.getsize(dst) == os.path.getsize(src):
+                        skipped += 1
+                        continue
+                    stem, ext = os.path.splitext(fn)
+                    dst = os.path.join(target_dir, f"{stem} (from mount folder){ext}")
+                shutil.copy2(src, dst)
+                copied += 1
+        shutil.rmtree(holding, ignore_errors=True)
+        log.info("Copied %d file(s) that were left in the mount folder onto the drive (%d already there).",
+                 copied, skipped)
+    except Exception as e:
+        log.warning("Could not copy all files left in the mount folder (%s); the rest are in %s", e, holding)

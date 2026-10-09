@@ -383,6 +383,11 @@ class DiscordDriveFS(Operations):
                 if self.uploader:
                     self.uploader.enqueue(node["id"], 0)
                 requeued += 1
+            elif not self.index.get_chunks(node["id"]):
+                # Never uploaded and its local copy is gone: nothing left to upload or show.
+                log.warning("Dropping %s: it was never uploaded and its local copy is gone",
+                            self.index.path_of(node["id"]))
+                self.index.delete_node(node["id"])
             else:
                 size = sum(c["size"] for c in self.index.get_chunks(node["id"]))
                 log.warning("Local copy of %s is missing; reverting to last uploaded version",
