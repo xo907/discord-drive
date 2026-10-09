@@ -768,3 +768,6 @@ button.link { padding: 0; border: 0; background: none; color: var(--ink); text-d
 }
 
 @media (max-width: 760px) { .toast { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+
+.share-kind { margin: 14px 0 6px; font-size: 13px; font-weight: 500; }
+.share-kind:first-child { margin-top: 0; }

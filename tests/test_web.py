@@ -325,6 +325,38 @@ class WebTest(helpers.DriveTest):
         self.upload(self.d)
         self.assertIn(b"Alan Turing", self.read(self.d, "/Contacts/Contacts.vcf"))
 
+    def test_direct_links_for_embedding(self):
+        self.login()
+        png = bytes([0x89]) + b"PNG fake image bytes" * 50
+        self.write(self.d, "/Pics/cat.png", png)
+        self.write(self.d, "/Pics/clip.mp4", os.urandom(50_000))
+        self.upload(self.d)
+        link = json.loads(self.req("POST", "/api/share", {"path": "/Pics/cat.png"})[2])
+        self.assertEqual(link["direct_path"], link["path"] + "/cat.png")
+        status, headers, body = self.req("GET", link["direct_path"], auth=False)
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/png", png))
+        self.assertIn("public", headers["Cache-Control"])
+        self.assertIn("inline", headers["Content-Disposition"])
+        status, headers, body = self.req("HEAD", link["direct_path"], auth=False)
+        self.assertEqual((status, body), (200, b""))
+        status, headers, body = self.req("GET", link["direct_path"], headers={"Range": "bytes=0-9"}, auth=False)
+        self.assertEqual((status, body), (206, png[:10]))
+        # the page carries preview tags pointing at the direct file
+        _, _, page = self.req("GET", link["path"], headers={"X-Forwarded-Proto": "https", "Host": "127.0.0.1"}, auth=False)
+        self.assertIn(b"property='og:image' content='https://127.0.0.1" + link["direct_path"].encode(), page)
+        video = json.loads(self.req("POST", "/api/share", {"path": "/Pics/clip.mp4"})[2])
+        _, _, page = self.req("GET", video["path"], auth=False)
+        self.assertIn(b"og:video:type' content='video/mp4'", page)
+        # a whole folder: /s/<id>/<path inside it>
+        folder = json.loads(self.req("POST", "/api/share", {"path": "/Pics"})[2])
+        self.assertEqual(folder["direct_path"], "")
+        self.assertEqual(self.req("GET", folder["path"] + "/cat.png", auth=False)[2], png)
+        self.assertEqual(self.req("GET", folder["path"] + "/..%2Fsecret", auth=False)[0], 404)
+        # with a password there is no direct link (Discord couldn't type it)
+        locked = json.loads(self.req("POST", "/api/share", {"path": "/Pics/cat.png", "password": "pw"})[2])
+        self.assertEqual(locked["direct_path"], "")
+        self.assertNotEqual(self.req("GET", locked["path"] + "/cat.png", auth=False)[2], png)
+
     def test_html_files_are_sandboxed(self):
         self.login()
         self.write(self.d, "/page.html", b"<script>alert(1)</script>")

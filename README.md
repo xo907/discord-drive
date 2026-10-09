@@ -389,6 +389,9 @@ devices).
 - **Sharing**: choose how long a link works (1 hour to never), an optional password, and whether
   people may download or only view. The page shows photos, video, music, PDFs and text, and whole
   folders can be shared. The **Shared** tab lists your links, their views, and turns them off.
+  Each shared file also has a **direct link** (`…/s/<id>/<file name>`): posted on its own in Discord,
+  the image, GIF, video or song is shown without the link (needs the dashboard reachable from the
+  internet, e.g. through your reverse proxy, and no password on the link).
 - **Behind a reverse proxy** (e.g. Nginx Proxy Manager): add your domain under Settings → Domain
   names (or `config web_hosts drive.example.com`); share links then use that domain. Settings is in
   the account menu (top right) and in the DiscordDrive menu.

@@ -3,6 +3,15 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.7.0 (2026-10-09)
+
+- Direct links for shared files (`/s/<id>/<file name>`): the file itself instead of a page. Post one on
+  its own in Discord and the picture, GIF, video or song shows up with no link text. Shown in the
+  share dialog and in Shared → "Copy direct link". Works for files in shared folders too
+  (`/s/<id>/<path inside the folder>`). Not available for password-protected links.
+- Share pages carry preview tags (Open Graph), so posting the page link shows the photo, video or
+  song as well.
+
 ## 0.6.0 (2026-10-09)
 
 - Encrypted contacts: a Contacts tab in the dashboard. All contacts live in one vCard file,

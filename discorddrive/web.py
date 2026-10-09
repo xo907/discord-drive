@@ -545,7 +545,7 @@ class _Handler(BaseHTTPRequestHandler):
         path, node = self._node(q.get("path"), want_dir=False)
         self._stream(node, download=q.get("dl") == "1")
 
-    def _stream(self, node, download=False):
+    def _stream(self, node, download=False, public=False):
         total = node["size"]
         on = self.drive.fs.open_nodes.get(node["id"])
         staging = self.drive.fs.staging_path(node["id"])
@@ -579,7 +579,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(max(0, end - start + 1)))
-        self.send_header("Cache-Control", "private, max-age=60")
+        # Share links may be cached by Discord's media proxy (and other link previewers).
+        self.send_header("Cache-Control", "public, max-age=3600" if public else "private, max-age=60")
+        if public:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("X-Content-Type-Options", "nosniff")
         if ctype.split(";")[0] in _ACTIVE_TYPES:
             # A stored web page or SVG must not run scripts with the dashboard's rights.
@@ -752,7 +755,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _share_json(self, sid, rec):
         node = self.drive.index.get_by_uid(rec["u"])
         pub = self.public_base()
+        direct = ""
+        if node is not None and not node["is_dir"] and not rec.get("pw"):
+            direct = f"/s/{sid}/{urllib.parse.quote(node['name'])}"     # the file itself, for embedding
         return {"id": sid, "path": f"/s/{sid}", "url": f"{pub}/s/{sid}" if pub else "",
+                "direct_path": direct, "direct": f"{pub}{direct}" if pub and direct else "",
                 "lan": [f"http://{ip}:{self.app.port}/s/{sid}" for ip in lan_addresses()] if self.drive.cfg.web_lan else [],
                 "item": self.drive.index.path_of(node["id"]) if node else None, "dir": rec.get("d", False),
                 "created": rec.get("c"), "expires": rec.get("e"), "password": bool(rec.get("pw")),
@@ -1129,15 +1136,23 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(200, _share_password(sid, rec).encode(), "text/html; charset=utf-8", _SHARE_HEADERS)
         elif method == "POST":
             return self._redirect(f"/s/{sid}")
-        rel = (self._query().get("p") or "").strip("/")
+        direct = tail not in ("", "raw", "zip")
+        if direct:
+            # /s/<id>/<file name>: the file itself (an image, GIF, video or song embeds where it is posted).
+            # In a shared folder the rest of the address is the path inside it.
+            rel = urllib.parse.unquote(tail).strip("/") if root["is_dir"] else ""
+        else:
+            rel = (self._query().get("p") or "").strip("/")
         node, shown = self._share_target(root, rel)
         if node is None:
             return self._send(404, _share_message("Not found", "That file isn't in this share.").encode(),
                               "text/html; charset=utf-8", _SHARE_HEADERS)
-        if tail == "raw" and not node["is_dir"]:
+        if (tail == "raw" or direct) and not node["is_dir"]:
             if self._query().get("dl") == "1" and not rec.get("dl", True):
                 return self._send(403, b"Downloading is turned off for this link.", "text/plain; charset=utf-8")
-            return self._stream(node, download=self._query().get("dl") == "1")
+            if direct:
+                self.app.shares.viewed(sid)
+            return self._stream(node, download=self._query().get("dl") == "1", public=not rec.get("pw"))
         if tail == "zip" and node["is_dir"]:
             if not rec.get("dl", True):
                 return self._send(403, b"Downloading is turned off for this link.", "text/plain; charset=utf-8")
@@ -1153,7 +1168,9 @@ class _Handler(BaseHTTPRequestHandler):
         text = None
         if not node["is_dir"] and _kind(node["name"]) == "text" and node["size"] <= 2 * 2 ** 20:
             text = self.drive.fs.read_file(node["id"], 0, 256 * 1024).decode("utf-8", "replace")
-        html = _share_page(sid, rec, root, node, rel, children, text)
+        proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip()
+        origin = f"{proto}://{self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or ''}"
+        html = _share_page(sid, rec, root, node, rel, children, text, origin)
         self._send(200, html.encode("utf-8"), "text/html; charset=utf-8", _SHARE_HEADERS)
 
     def _share_target(self, root, rel):
@@ -1318,9 +1335,9 @@ _ICON_FILE = ('<svg class="ic" viewBox="0 0 20 20" fill="none" stroke="currentCo
               'stroke-linejoin="round"><path d="M5 2.5h6.5L15 6v11.5H5z"/><path d="M11.5 2.5V6H15"/></svg>')
 
 
-def _share_shell(title, body):
+def _share_shell(title, body, head=""):
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport "
-            f"content='width=device-width,initial-scale=1'><meta name=robots content=noindex><title>{_esc(title)}</title>"
+            f"content='width=device-width,initial-scale=1'><meta name=robots content=noindex><title>{_esc(title)}</title>{head}"
             f"<link rel=icon href='/logo.svg'><style>{_SHARE_STYLE}</style></head><body><main>"
             f"<div class=top><img src='/logo.svg' alt=''>Shared with you</div>{body}"
             f"<p class=f>Shared from DiscordDrive</p></main></body></html>")
@@ -1344,7 +1361,27 @@ def _until(rec):
     return "link works until " + time.strftime("%d %b %Y, %H:%M", time.localtime(rec["e"]))
 
 
-def _share_page(sid, rec, root, node, rel, children, text):
+def _preview_tags(sid, node, rel, origin):
+    """Open Graph tags, so Discord (and other apps) show the photo, video or song when the page link is posted."""
+    kind = _kind(node["name"])
+    path = f"/s/{sid}/" + urllib.parse.quote(rel if rel else node["name"])
+    url = origin + path
+    ctype = mimetypes.guess_type(node["name"])[0] or "application/octet-stream"
+    tags = [("og:title", node["name"]), ("og:site_name", "DiscordDrive"), ("og:url", f"{origin}/s/{sid}")]
+    if kind == "image":
+        tags += [("og:type", "website"), ("og:image", url), ("og:image:type", ctype), ("twitter:card", "summary_large_image"),
+                 ("twitter:image", url)]
+    elif kind == "video":
+        tags += [("og:type", "video.other"), ("og:video", url), ("og:video:url", url), ("og:video:secure_url", url),
+                 ("og:video:type", ctype), ("og:video:width", "1280"), ("og:video:height", "720"), ("twitter:card", "player")]
+    elif kind == "audio":
+        tags += [("og:type", "music.song"), ("og:audio", url), ("og:audio:type", ctype)]
+    else:
+        tags += [("og:type", "website"), ("og:description", f"{_human(node['size'])}, shared from DiscordDrive")]
+    return "".join(f"<meta property='{k}' content='{_esc(v)}'>" for k, v in tags)
+
+
+def _share_page(sid, rec, root, node, rel, children, text, origin=""):
     base = f"/s/{sid}"
     q = (lambda r: "?" + urllib.parse.urlencode({"p": r}) if r else "")
     crumbs = ""
@@ -1392,4 +1429,5 @@ def _share_page(sid, rec, root, node, rel, children, text):
     if not rec.get("dl", True) and not pv:
         btns.append("<span class=m>This kind of file can't be shown here, and downloading is turned off.</span>")
     return _share_shell(node["name"], f"{crumbs}<h1>{name}</h1><p class=m>{_human(node['size'])} &middot; {_until(rec)}</p>"
-                                      f"{pv}<div class=btns>{''.join(btns)}</div>")
+                                      f"{pv}<div class=btns>{''.join(btns)}</div>",
+                        _preview_tags(sid, node, rel, origin) if origin and not rec.get("pw") else "")

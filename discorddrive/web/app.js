@@ -799,6 +799,12 @@ async function loadVersions(it, into, focus) {
 const EXPIRY = [["1 hour", 1], ["1 day", 24], ["7 days", 168], ["30 days", 720], ["Never", 0]];
 const isLocal = () => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(location.hostname);
 /** The address to give out: the one you are browsing from, unless that is this computer itself. */
+const EMBEDS = ["image", "video", "audio"];
+function directUrl(r) {
+  if (!r.direct_path) return "";
+  if (!isLocal()) return location.origin + r.direct_path;
+  return r.direct || location.origin + r.direct_path;
+}
 function shareUrl(r) {
   if (!isLocal()) return location.origin + r.path;
   return r.url || (r.lan && r.lan[0]) || location.origin + r.path;
@@ -856,12 +862,17 @@ function shareDialog(it, existing) {
       r = await attempt(() => api("/api/share", { path: it.path, hours, password: pw.value, download }));
       if (r) {
         const url = shareUrl(r);
+        const direct = directUrl(r);
         form.remove();
         go.remove();
         const reach = isLocal() && !r.url && !(r.lan && r.lan.length)
           ? "It only opens on this computer. Set a domain name or turn on “On your network” in Settings to share it."
           : `Anyone with the link${r.password ? " and the password" : ""} can ${download ? "view and download" : "view"} ${it.dir ? "this folder" : "this file"}.`;
-        result.replaceChildren(linkBox(url, reach));
+        result.replaceChildren(h("div", { class: "fl share-kind" }, "Page"), linkBox(url, reach),
+          direct && h("div", { class: "fl share-kind" }, "Direct link"),
+          direct && linkBox(direct, EMBEDS.includes(kind(it.name))
+            ? "The file itself. Posted on its own in Discord (or anywhere that shows media), it appears as the picture, video or song, without a link."
+            : "The file itself, for downloading or linking from elsewhere."));
         try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch { /* the box is there to copy from */ }
         if (route.name === "shared") renderShared();
       }
@@ -1232,6 +1243,9 @@ async function renderShared() {
     { label: "Copy link", icon: "link", run: async () => {
       try { await navigator.clipboard.writeText(shareUrl(l)); toast("Link copied"); }
       catch { await ask({ title: "Share link", value: shareUrl(l), ok: "Done" }); } } },
+    l.direct_path && { label: "Copy direct link (embeds in Discord)", icon: "link", run: async () => {
+      try { await navigator.clipboard.writeText(directUrl(l)); toast("Direct link copied"); }
+      catch { await ask({ title: "Direct link", value: directUrl(l), ok: "Done" }); } } },
     { label: "Open the link", icon: "open", run: () => window.open(l.path, "_blank", "noopener") },
     l.item && { label: "Show in Files", icon: "enter", run: () => go("#/files" + enc(l.dir ? l.item : parent(l.item))) },
     { label: "Link settings…", icon: "settings", run: () => shareDialog(null, l) },
