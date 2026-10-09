@@ -19,5 +19,8 @@ discorddrive = "discorddrive.cli:main"
 [tool.setuptools]
 packages = ["discorddrive", "discorddrive._vendor"]
 
+[tool.setuptools.package-data]
+discorddrive = ["web/*", "scripts/linux/*", "scripts/windows/*"]
+
 [tool.setuptools.dynamic]
 version = { attr = "discorddrive.__version__" }

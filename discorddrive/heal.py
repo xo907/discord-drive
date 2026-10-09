@@ -1,0 +1,417 @@
+"""Self-healing: rebuild pieces Discord lost from their spare pieces, and put them back.
+
+* Reading: when a piece is missing (or damaged), the cache asks the Healer, which downloads the
+  other pieces of its group plus enough spare pieces, rebuilds it (rs.py), and hands it back, so
+  the application never notices.
+* Repairing: the rebuilt piece is uploaded again and a "fix" operation tells every device where
+  it lives now (index._op_fix). Spare pieces that went missing are recomputed the same way.
+* Maintenance (one device at a time, see Index.is_leader):
+    - check that every piece is still on Discord, spread over `scrub_days`, and repair what isn't,
+    - add spare pieces to files uploaded before self-healing existed (`protect_existing`),
+    - take automatic snapshots (`snapshot_interval_hours`),
+  and on every device: keep files marked "available offline" downloaded as they change.
+"""
+
+import hashlib
+import json
+import logging
+import queue
+import secrets
+import threading
+import time
+
+from . import codec, rs
+from .crypto import AuthenticationError
+from .discord_api import DiscordError
+
+log = logging.getLogger("discorddrive.heal")
+
+
+class Healer:
+    def __init__(self, cfg, index, backend, crypto=None, cache=None, wake=None):
+        self.cfg = cfg
+        self.index = index
+        self.backend = backend
+        self.crypto = crypto
+        self.cache = cache
+        self.wake = wake or (lambda: None)       # tells the journal there is something to publish
+        self._lock = threading.Lock()
+        self._queued = set()
+        self._done = set()            # pieces this process already repaired (their fix may not be applied yet)
+        self._queue = queue.Queue()
+        self._thread = None
+        self._running = False
+        self.stats = {"rebuilt": 0, "repaired": 0, "lost": 0}
+
+    # ------------------------------------------------------------ fetching
+    def _fetch(self, mid, sha):
+        """A piece's original bytes, or None if it is missing or damaged. Network errors propagate."""
+        data = self.cache.peek(mid) if self.cache is not None else None
+        if data is not None and (not sha or hashlib.sha256(data).hexdigest() == sha):
+            return data
+        try:
+            payload, _ = self.backend.download(mid, None)
+            data = codec.decode(payload, self.crypto, sha)
+        except DiscordError as e:
+            if e.status in (403, 404):
+                return None
+            raise
+        except AuthenticationError:
+            return None
+        if sha and hashlib.sha256(data).hexdigest() != sha:
+            return None
+        return data
+
+    # ------------------------------------------------------------ rebuilding
+    def rebuild_members(self, group, missing):
+        """Rebuild the missing data pieces of `group`. `missing`: message ids known to be gone.
+        Returns {message_id: bytes}, or None when too many pieces are gone."""
+        members, shards = group["members"], group["shards"]
+        k, m = len(members), len(shards)
+        missing = set(missing)
+        avail = {}
+        for pos, (mid, _, sha) in enumerate(members):
+            if mid in missing:
+                continue
+            if sum(1 for x in members if x[0] in missing) > m:
+                return None
+            data = self._fetch(mid, sha)
+            if data is None:
+                missing.add(mid)
+                continue
+            avail[pos] = data
+        lost = [pos for pos, x in enumerate(members) if x[0] in missing]
+        if len(lost) > m:
+            return None
+        if not lost:
+            return {}
+        for pos in list(avail):
+            if members[pos][0] in missing:       # the same piece used twice in the group
+                del avail[pos]
+        for j, (pmid, _, psha) in enumerate(shards):
+            if len(avail) >= k:
+                break
+            data = self._fetch(pmid, psha)
+            if data is not None:
+                avail[k + j] = data
+        if len(avail) < k:
+            return None
+        size = max(x[1] for x in members)
+        out = rs.decode(k, m, avail, size)
+        result = {}
+        for pos in lost:
+            mid, sz, sha = members[pos]
+            data = out[pos][:sz]
+            if sha and hashlib.sha256(data).hexdigest() != sha:
+                log.error("Rebuilt piece %s does not match its checksum", mid)
+                return None
+            result[mid] = data
+        return result
+
+    def rebuild_shard(self, group, j):
+        """Recompute spare piece j of a group from its data pieces."""
+        members = group["members"]
+        datas = {}
+        missing = set()
+        for mid, _, sha in members:
+            if mid in datas or mid in missing:
+                continue
+            data = self._fetch(mid, sha)
+            if data is None:
+                missing.add(mid)
+            else:
+                datas[mid] = data
+        if missing:
+            rebuilt = self.rebuild_members(group, missing)
+            if rebuilt is None:
+                return None
+            datas.update(rebuilt)
+            for mid, data in rebuilt.items():
+                self.schedule_repair(mid, data)
+        enc = rs.Encoder(len(members), len(group["shards"]))
+        for pos, (mid, _, _) in enumerate(members):
+            enc.add(pos, datas[mid])
+        return enc.parity()[j]
+
+    def recover(self, mid):
+        """Rebuild piece `mid` (data or spare) and schedule its repair. Returns its bytes or None."""
+        for group in self.index.parity_groups_for(mid):
+            member_mids = [x[0] for x in group["members"]]
+            try:
+                if mid in member_mids:
+                    rebuilt = self.rebuild_members(group, {mid})
+                    if not rebuilt or mid not in rebuilt:
+                        continue
+                    for m2, data in rebuilt.items():
+                        self._remember(m2, data)
+                        self.schedule_repair(m2, data)
+                    with self._lock:
+                        self.stats["rebuilt"] += 1
+                    log.warning("Piece %s was missing from Discord; rebuilt it from its spare pieces", mid)
+                    return rebuilt[mid]
+                for j, s in enumerate(group["shards"]):
+                    if s[0] == mid:
+                        data = self.rebuild_shard(group, j)
+                        if data is not None:
+                            self.schedule_repair(mid, data)
+                            return data
+            except DiscordError as e:
+                log.warning("Could not rebuild piece %s right now: %s", mid, e)
+                return None
+        with self._lock:
+            self.stats["lost"] += 1
+        log.error("Piece %s is missing from Discord and can't be rebuilt (no spare pieces, or too many "
+                  "pieces of its group are gone)", mid)
+        return None
+
+    def _remember(self, mid, data):
+        """Keep a rebuilt piece in the read cache (RAM), so reading it again needs no second rebuild."""
+        if self.cache is not None:
+            try:
+                self.cache.put(mid, data, persist=False)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------ repairing
+    def schedule_repair(self, mid, data):
+        with self._lock:
+            if mid in self._queued or mid in self._done:
+                return
+            self._queued.add(mid)
+        self._queue.put((mid, data))
+        if not self._running:
+            self.drain()
+
+    def drain(self):
+        """Repair everything queued, in this thread."""
+        while True:
+            try:
+                mid, data = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            self._repair(mid, data)
+
+    def _repair(self, mid, data):
+        try:
+            if not self.index.is_referenced(mid):
+                return        # already repaired by another device, or no longer needed
+            payload, _ = codec.encode(data, self.crypto, bool(getattr(self.cfg, "compression", True)))
+            stored = self.backend.upload(f"chk_{secrets.token_hex(8)}.bin", payload, content="")
+            self.index.queue_op({"t": "fix", "o": mid, "n": stored.message_id})
+            if self.cache is not None:
+                try:
+                    self.cache.put(stored.message_id, data, persist=False)
+                except Exception:
+                    pass
+            with self._lock:
+                self.stats["repaired"] += 1
+                self._done.add(mid)
+            log.info("Repaired piece %s: uploaded again as %s", mid, stored.message_id)
+            self.wake()
+        except Exception as e:
+            log.warning("Could not repair piece %s yet (%s); will try again later", mid, e)
+            with self._lock:
+                self._queued.discard(mid)
+            return
+        with self._lock:
+            self._queued.discard(mid)
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, name="Repair", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        self._queue.put(None)
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    def _loop(self):
+        while self._running:
+            item = self._queue.get()
+            if item is None:
+                continue
+            self._repair(*item)
+
+    # ------------------------------------------------------------ protecting
+    def protect(self, members, m):
+        """Add spare pieces to a group of already stored pieces. Returns False if a piece is unreadable."""
+        datas = []
+        for mid, _, sha in members:
+            data = self._fetch(mid, sha)
+            if data is None:
+                return False
+            datas.append(data)
+        shards = rs.encode(datas, m)
+        out = []
+        for s in shards:
+            payload, _ = codec.encode(s, self.crypto, bool(getattr(self.cfg, "compression", True)))
+            stored = self.backend.upload(f"chk_{secrets.token_hex(8)}.bin", payload, content="")
+            out.append([stored.message_id, len(s), hashlib.sha256(s).hexdigest()])
+        self.index.add_parity_group(secrets.token_hex(8), [list(x) for x in members], out)
+        self.wake()
+        return True
+
+
+class Maintenance:
+    """Background chores of a running drive (see the module docstring)."""
+
+    TICK = 2.0
+
+    def __init__(self, cfg, index, backend, healer, uploader=None, journal=None, cache=None, device_id=""):
+        self.cfg = cfg
+        self.index = index
+        self.backend = backend
+        self.healer = healer
+        self.uploader = uploader
+        self.journal = journal
+        self.cache = cache
+        self.device_id = device_id
+        self._stop = threading.Event()
+        self._thread = None
+        self._scrub_list = []
+        self._scrub_pos = 0
+        self._next_scrub = 0.0
+        self._next_protect = time.time() + 60
+        self._next_snapshot = time.time() + 120
+        self._next_offline = time.time() + 30
+        self._leader = (0.0, False)
+        self._unreadable = set()      # files protect_step gave up on this session
+
+    def start(self):
+        self._thread = threading.Thread(target=self._loop, name="Maintenance", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=10)
+
+    def leader(self):
+        t, value = self._leader
+        if time.time() - t > 300:
+            value = self.index.is_leader(self.device_id)
+            self._leader = (time.time(), value)
+        return value
+
+    def _loop(self):
+        while not self._stop.wait(self.TICK):
+            for name, fn in (("check", self.scrub_step), ("protect", self.protect_step),
+                             ("snapshot", self.snapshot_step), ("offline", self.offline_step)):
+                if self._stop.is_set():
+                    return
+                try:
+                    fn()
+                except Exception as e:
+                    log.debug("Background %s step failed: %s", name, e)
+
+    def _uploads_busy(self):
+        return self.uploader is not None and not self.uploader.is_idle()
+
+    # ------------------------------------------------------------ checking
+    def scrub_state(self):
+        try:
+            return json.loads(self.index.kv_get("scrub") or "{}")
+        except ValueError:
+            return {}
+
+    def _save_scrub(self, st):
+        self.index.kv_set("scrub", json.dumps(st, separators=(",", ":")))
+
+    def scrub_step(self, force=False):
+        if not getattr(self.cfg, "scrub_enabled", True) or (not force and not self.leader()):
+            return
+        now = time.time()
+        if not force and now < self._next_scrub:
+            return
+        st = self.scrub_state()
+        if self._scrub_pos >= len(self._scrub_list):
+            if self._scrub_list:
+                st["last_pass"] = now
+                st["passes"] = st.get("passes", 0) + 1
+            self._scrub_list = self.index.referenced_mids()
+            last = st.pop("pos", None) if self._scrub_list and not self._scrub_pos else None
+            self._scrub_pos = 0
+            if last:
+                # carry on after the piece the previous run (before a restart) stopped at
+                key = (len(last), last)
+                self._scrub_pos = next((i for i, m in enumerate(self._scrub_list) if (len(m), m) > key), 0)
+            if not self._scrub_list:
+                self._next_scrub = now + 600
+                return
+        days = max(0.01, float(getattr(self.cfg, "scrub_days", 7.0) or 7.0))
+        self._next_scrub = now + max(1.0, days * 86400 / len(self._scrub_list))
+        mid = self._scrub_list[self._scrub_pos]
+        self._scrub_pos += 1
+        info = self.backend.message_info(mid)     # network errors: try this piece again later
+        st["pos"] = mid
+        st["checked"] = st.get("checked", 0) + 1
+        st["total"] = len(self._scrub_list)
+        st["done"] = self._scrub_pos
+        if info is None and self.index.is_referenced(mid):
+            st["missing"] = st.get("missing", 0) + 1
+            if self.healer.recover(mid) is not None:
+                st["repaired"] = st.get("repaired", 0) + 1
+            else:
+                st["lost"] = st.get("lost", 0) + 1
+        self._save_scrub(st)
+
+    # ------------------------------------------------------------ protecting
+    def protect_step(self):
+        from .uploader import parity_shape
+        now = time.time()
+        if now < self._next_protect:
+            return
+        self._next_protect = now + 20
+        if not (getattr(self.cfg, "protect_existing", True) and getattr(self.cfg, "parity_enabled", True)):
+            return
+        if not self.leader() or self._uploads_busy():
+            return
+        k, _ = parity_shape(self.cfg, 10)
+        if not k:
+            return
+        work = self.index.unprotected_slices(k, limit=1, skip=self._unreadable)
+        if not work:
+            self._next_protect = now + 600
+            return
+        nid, slices = work[0]
+        for members in slices:
+            if self._stop.is_set() or self._uploads_busy():
+                return
+            _, m = parity_shape(self.cfg, len(members))
+            if not self.healer.protect(members, m):
+                log.warning("Could not add spare pieces to %s: part of it can't be read", self.index.path_of(nid))
+                self._unreadable.add(nid)
+                return
+        log.info("Added spare pieces to %s", self.index.path_of(nid))
+        self._next_protect = time.time()
+
+    # ------------------------------------------------------------ snapshots
+    def snapshot_step(self):
+        now = time.time()
+        if now < self._next_snapshot:
+            return
+        self._next_snapshot = now + 600
+        hours = float(getattr(self.cfg, "snapshot_interval_hours", 0) or 0)
+        if hours <= 0 or self.journal is None or not self.leader():
+            return
+        last = max(self.index.last_snapshot_time(), float(self.index.kv_get("snapshot_posted") or 0))
+        if now - last < hours * 3600:
+            return
+        if self.index.stats()["files"] == 0:
+            return
+        self.journal.create_snapshot("Automatic", float(getattr(self.cfg, "snapshot_keep_days", 14) or 0))
+
+    # ------------------------------------------------------------ offline files
+    def offline_step(self):
+        now = time.time()
+        if now < self._next_offline or self.cache is None:
+            return
+        self._next_offline = now + 60
+        for nid in self.index.pinned_roots():
+            if self._stop.is_set():
+                return
+            self.cache.prefetch_node(nid)

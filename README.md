@@ -10,9 +10,14 @@ DiscordDrive turns a private Discord channel into an encrypted drive: a drive le
 (e.g. `Z:\`) or a folder on Linux (e.g. `/mnt/discord`). It works on Windows, Linux servers and
 Raspberry Pi, and keeps all your devices in sync.
 
-Files you save to the drive are staged locally, split into chunks, encrypted, and uploaded as
-attachments to your channel. Reading only downloads the chunks that cover the requested byte range,
-so videos stream and seek without downloading the whole file first.
+Files you save to the drive are staged locally, split into pieces, compressed when that helps,
+encrypted, and uploaded as attachments to your channel, together with a few **spare pieces** that
+let the drive rebuild anything Discord loses. Reading only downloads the pieces that cover the
+requested byte range, so videos stream and seek without downloading the whole file first.
+
+Version 0.2 adds self-healing, compression and de-duplication, faster uploads with extra bots, a
+web dashboard you can also open on your phone, snapshots of the whole drive, and stronger
+password protection. See [What's new in 0.2](#whats-new-in-02).
 
 <p align="center"><img src="docs/images/overview.svg" alt="Your devices sync through DiscordDrive, which stores encrypted pieces in a private Discord channel" width="100%"></p>
 
@@ -41,6 +46,11 @@ in Discord, click **+** in the server list → **Create My Own**).
    should be able to see it: in the channel's settings → **Permissions**, make it private and add your bot.
 5. In Discord, go to **User Settings → Advanced** and turn on **Developer Mode**. Then right-click
    the channel → **Copy Channel ID**. You need this in Step 2 as well.
+
+> **Prefer an installer?** Each [release](https://github.com/xo907/discord-drive/releases) has
+> `DiscordDrive.exe` for Windows (no Python or git needed; WinFsp is still required) and a `.deb`
+> for Debian, Ubuntu and Raspberry Pi OS (`sudo apt install ./discorddrive_*.deb`, then run
+> `discorddrive`). The steps below install from source, which the menu can update by itself.
 
 ### Step 2a: Windows 10 / 11
 
@@ -106,6 +116,7 @@ Everything is in the menu: **`run.bat`** on Windows (double-click it), **`./run.
 | 8 | How to copy lots of files onto the drive |
 | 9 | Tools: check files, logs, encryption keys, rebuild the file list, Explorer menu, autostart |
 | 10 | Approve a new device: send it the key when it asks |
+| 11 | Web dashboard: browse, preview, upload and share files in your browser (also on your phone) |
 
 Every option is also a direct command, handy for scripts and remote servers:
 `run.bat status`, `./run.sh start`, `./run.sh stop`, `./run.sh config max_file_size 2G`, and so on
@@ -137,6 +148,37 @@ other devices**:
 
 ---
 
+## What's new in 0.2
+
+- **Self-healing.** Every group of 10 pieces is stored with 2 spare pieces (Reed-Solomon, the same
+  idea as RAID 6), so any 2 lost pieces of a group can be rebuilt. If Discord deletes a piece, the
+  file still opens: the piece is rebuilt on the fly, uploaded again, and every device learns where
+  it now lives. A background check confirms every piece is still there (one full pass a week) and
+  repairs what isn't, before losses can pile up. Files uploaded with older versions get spare
+  pieces added in the background. Everything stays 100% on Discord: spare pieces are ordinary
+  encrypted attachments in your channel. They cost about 20% extra space on big files.
+- **Compression and de-duplication.** Pieces that shrink (documents, text, logs, many app files)
+  are compressed before they are encrypted; lossless, and the encryption is exactly as strong.
+  Pieces the drive already stores (a copied file, the same photo in two folders) are not uploaded
+  again.
+- **Faster uploads.** Several pieces upload at once, and you can add extra bots: Discord limits
+  how fast *one* bot may post, so each extra bot adds speed (menu 6 → Bots, or `bots add`).
+- **Web dashboard.** Browse, preview (photos, video, music, PDF, text), upload, rename, share and
+  restore files in your browser, see what is uploading and how healthy the drive is. Turn on
+  "Web dashboard on your network" to use it from your phone. See [Web dashboard](#web-dashboard).
+- **Snapshots.** The whole drive as it was at one moment, taken every 24 hours and kept 14 days.
+  Bring back a folder (or everything) as it was on Tuesday, into a new folder so nothing current
+  is touched.
+- **Selective sync.** Folders marked "available offline" now stay downloaded as they change,
+  including new files added on other devices. Folders can be hidden on one device only (`hide`),
+  e.g. `/Movies` on the Raspberry Pi.
+- **Stronger password protection** for new drives: passwords are turned into keys with scrypt,
+  which makes guessing them far more expensive than before (existing drives keep working).
+- **Tests** run on Windows and Linux for every change, and releases come with installers.
+
+> **Update every device.** Pieces uploaded by 0.2 can be compressed, which older versions can't
+> read. Update all your devices (menu option 4) before copying new files onto the drive.
+
 ## Features
 
 <p align="center"><img src="docs/images/what-discord-sees.svg" alt="What you see on the drive compared with what Discord stores: only random names and encrypted data" width="100%"></p>
@@ -145,6 +187,10 @@ other devices**:
   Attachments get random names (`chk_<random>.bin`) and empty message text, so Discord never sees
   file names, folder structure, or contents. It can still see how many chunks there are, their
   sizes, and when they were uploaded.
+- **Self-healing.** Spare pieces rebuild what Discord loses; a background check finds losses early.
+- **Compression and de-duplication** before encryption; extra bots and parallel uploads for speed.
+- **Web dashboard** for your browser and phone, with expiring share links.
+- **Snapshots** of the whole drive, restorable folder by folder.
 - **Real drive / mount.** Uses [WinFsp](https://winfsp.dev/) on Windows and libfuse on Linux,
   so any application can use it.
 - **Streaming and seeking.** Byte-range reads, read-ahead, and an on-disk LRU chunk cache.
@@ -202,6 +248,13 @@ Useful limits:
 | `min_free_disk_bytes` | `2G` | Never take the local disk below this much free space |
 | `staging_max_bytes` | `10G` | Pause writing while this much is waiting to upload |
 | `cache_mode` | `disk` | `memory` keeps files you open in RAM only |
+| `parity_enabled` | `true` | Spare pieces (self-healing). `parity_group` (10) data pieces get `parity_pieces` (2) spare pieces |
+| `scrub_days` | `7` | One full check that every piece is still on Discord takes this long (`scrub_enabled` turns it off) |
+| `protect_existing` | `true` | Add spare pieces to files uploaded before self-healing (downloads each such file once) |
+| `compression` / `dedup` | `true` | Compress pieces that shrink; store identical pieces once |
+| `snapshot_interval_hours` | `24` | Automatic snapshot of the whole drive (`0` = off), kept `snapshot_keep_days` (14) |
+| `web_enabled` / `web_port` | `true` / `8765` | The web dashboard on `http://127.0.0.1:8765` |
+| `web_lan` | `false` | Also open the dashboard to phones and computers on your home network |
 
 `DISCORDDRIVE_CONFIG`, `DISCORDDRIVE_TOKEN` and `DISCORDDRIVE_CHANNEL` environment variables
 override the config file location, token, and channel. See [`docs/config.example.json`](docs/config.example.json)
@@ -239,6 +292,13 @@ add-old-key [--from-config <file>]   Add an earlier key so files encrypted with 
 restore                              Rebuild this device's file list from Discord (drive stopped)
 backup                               Save an index checkpoint now (normally automatic)
 context-menu install|uninstall       "Make available offline" / "Free up space" in Explorer (Windows)
+web [--open]                         Show (and open) the sign-in link of the web dashboard
+health [--check] [--protect]         Self-healing status; check every piece now; protect old files now
+snapshots [create [label]|delete <n>] List snapshots, take one now, or delete one
+snapshot-restore <n> [path] [--to p] [--in-place]
+                                     Bring back a folder (or everything) from snapshot n
+bots [add [token]|remove <n>]        Extra bots for faster uploads
+hide <folder> / unhide <folder>      Don't show a folder on this device (it stays everywhere else)
 ```
 
 Paths can be given as `Z:\Folder\file.mp4`, `/mnt/discord/Folder/file.mp4`, or `/Folder/file.mp4`.
@@ -250,7 +310,10 @@ run.bat / run.sh       start here: the menu, or a command
 discorddrive/          the program (Python)
   scripts/windows/     helpers used by run.bat (hidden start, Explorer menu)
   scripts/linux/       install.sh (requirements) and the systemd service
+  web/                 the web dashboard (plain HTML, CSS and JavaScript)
 docs/                  images and config.example.json
+tests/                 tests (python -m unittest discover -s tests), run for every change on GitHub
+packaging/             builds DiscordDrive.exe and the .deb (see .github/workflows/release.yml)
 ```
 
 ### Start automatically on Linux (systemd)
@@ -271,6 +334,71 @@ Set `"allow_other": true` in the config, or pass `mount --allow-other`. This req
 `user_allow_other` in `/etc/fuse.conf`, which the Linux installer (`install.sh`) enables.
 
 ---
+
+## Self-healing
+
+Discord can delete messages or attachments at any time. DiscordDrive plans for that:
+
+- **Spare pieces.** Each group of `parity_group` (10) pieces of a file gets `parity_pieces` (2)
+  spare pieces, computed with Reed-Solomon coding. Any 2 pieces of a group can go missing and the
+  group can still be rebuilt exactly (every piece has a SHA-256 checksum, so a rebuilt piece is
+  verified). Small files (fewer than 4 pieces) get one spare piece. Spare pieces are encrypted and
+  named like every other piece, so Discord can't tell them apart.
+- **On the fly.** When a piece is missing while you read a file, it is rebuilt from the rest of
+  its group and the read simply succeeds. The rebuilt piece is uploaded again, and every device
+  is told where it lives now.
+- **Background check.** One device (the one with the smallest device ID among those active in
+  the last 3 days) asks Discord about every piece, spread over `scrub_days` (a week), and repairs
+  anything missing, including lost spare pieces. `health` shows the progress; `health --check`
+  checks everything right now.
+- **Older files.** Files uploaded before 0.2 have no spare pieces yet. That same device adds them
+  in the background, one file at a time, while nothing else is uploading (it downloads each file
+  once). `health --protect` does it all now; `config protect_existing false` turns it off.
+
+Space: about 20% extra for big files, one extra piece for small ones. `config parity_pieces 3`
+survives 3 losses per group; `config parity_enabled false` turns spare pieces off for new uploads.
+
+## Web dashboard
+
+The drive serves a small web app on `http://127.0.0.1:8765` while it runs: menu **11**, or
+`run.bat web --open` / `./run.sh web --open`. It shows your files (search, preview, download,
+upload by drag and drop, new folder, rename, delete, earlier versions, "available offline"),
+recently deleted files, snapshots, and a health page (protection, checks, repairs, uploads,
+devices).
+
+- **Signing in.** The link the menu shows contains a secret (`web_token` in the config) that signs
+  the browser in. Anyone with that link can open your files, so keep it to yourself. To sign every
+  browser out, delete `web_token` from the config and restart the drive.
+- **Phone.** `config web_lan true` (menu 6 → Web dashboard on your network), restart the drive,
+  then open the "On your phone" link from `web` on a phone on the same Wi-Fi. The connection
+  inside your home network is not encrypted (plain HTTP), so only do this on a network you trust.
+- **Share links** give one file to someone else for 7 days. They work for whoever can reach this
+  computer: on your home network with `web_lan`, or from anywhere only if you forward the port
+  yourself (not recommended).
+
+## Faster uploads with more bots
+
+Discord limits how fast each bot may post messages. Uploads already send several pieces at once,
+and every extra bot adds the same again:
+
+1. Create another application and bot exactly as in [Step 1](#step-1-create-the-discord-bot-same-for-windows-and-linux)
+   and invite it to the same server, with access to the drive channel.
+2. Menu **6 (Settings) → Bots for uploading → Add a bot**, or `bots add` (it asks for the token,
+   checks the bot can post in the channel, and saves it). Restart the drive.
+
+Each device can use its own set of extra bots; any bot in the channel can read every piece.
+
+## Snapshots
+
+Every `snapshot_interval_hours` (24) one device takes a snapshot: a record of the whole drive at
+that moment. Its pieces are kept until it expires after `snapshot_keep_days` (14), even if the files
+are changed or deleted meanwhile. Snapshots cost no space until files change.
+
+- `snapshots` lists them, `snapshots create` takes one now (menu 7 → Snapshots).
+- `snapshot-restore 2 /Photos` brings `/Photos` back as it was in snapshot 2, into a new folder
+  `Restored <date>`, so nothing you have now changes. `--in-place` puts files back where they were
+  instead (their current content is kept as an earlier version, so that can be undone too).
+- The web dashboard can browse a snapshot like a folder and restore any folder from it.
 
 ## Using the same drive on several devices
 
@@ -349,10 +477,14 @@ so it is slower.
 ```
 
 - **Writing:** data goes to a staging file. When the last handle closes, the file is queued.
-  Upload workers (`upload_threads`, default 3) split it into `chunk_size` pieces (9 MiB, just under
-  the 10 MiB attachment limit for non-boosted servers), encrypt each piece, and post it as its own
-  message. When all pieces are uploaded, the chunk list in the index is swapped atomically. The
-  previous content is kept as a version, and expired versions are deleted from Discord in the background.
+  Upload workers (`upload_threads`, default 3 per bot) split it into `chunk_size` pieces (9 MiB,
+  just under the 10 MiB attachment limit for non-boosted servers). A piece the drive already stores
+  is reused; any other piece is compressed if that helps, encrypted, and posted as its own message,
+  several at a time and spread over every bot. After each group of pieces, its spare pieces are
+  computed from the local copy and uploaded too. When everything is uploaded, the chunk list in the
+  index is swapped atomically. The previous content is kept as a version, and expired versions are
+  deleted from Discord in the background (after a 10-minute grace period, and only if nothing else
+  uses those pieces).
 - **Syncing:** every change to the tree (file uploaded, folder created, rename, move, delete,
   timestamp) is recorded together with the local change and posted to the channel as a small
   encrypted "operation" message. Every device reads the channel every `poll_interval` seconds and
@@ -378,7 +510,13 @@ so it is slower.
 | `cache.py` | On-disk LRU chunk cache with de-duplicated parallel downloads |
 | `backend.py` | Discord storage adapter (and a local folder backend for testing) |
 | `discord_api.py` | Minimal Discord REST client (curl or urllib) with retry and rate-limit handling |
-| `crypto.py` | AES-256-GCM via Windows CNG or the `cryptography` package |
+| `crypto.py` | AES-256-GCM via Windows CNG or the `cryptography` package; scrypt for passwords |
+| `codec.py` | How a piece is stored: compressed when that helps, then encrypted |
+| `rs.py` | Reed-Solomon erasure coding (the spare pieces), standard library only |
+| `heal.py` | Rebuilding and repairing pieces, the background check, protecting old files, snapshots |
+| `web.py`, `web/` | The web dashboard (server and app) |
+| `actions.py` | Restoring versions and snapshots (shared by the command line and the dashboard) |
+| `runtime.py` | Starting DiscordDrive again as a process (from source or as DiscordDrive.exe) |
 | `fuse_loader.py` | Finds WinFsp / libfuse and loads the vendored fusepy |
 
 You can try it without Discord: `python -m discorddrive mount --mock <folder>` stores "messages"
@@ -524,6 +662,12 @@ on Linux (background starts also write `mount.log` next to it).
 - **A file is stuck "uploading"** (it shows in the menu's top line or in `status` and never
   finishes). Menu → **9 (Tools) → Cancel stuck uploads**: a changed file goes back to its last
   uploaded version, a file that was never uploaded is removed.
+- **After updating one device, the other says "checksum mismatch" for new files.** It still runs
+  an older version, which can't read compressed pieces. Update it too (menu option 4).
+- **The log says a piece "was missing from Discord; rebuilt it from its spare pieces".** Self-healing
+  at work: nothing to do. "Can't be rebuilt" means a file without spare pieces (uploaded before 0.2
+  and not protected yet) or a group that lost more pieces than it has spare ones; `verify` lists the
+  affected files.
 - **A deleted folder keeps coming back.** One of your devices runs an older version, which still
   re-uploads it. Update every device (menu option 4); deletes are final from then on.
 - **A "Recovered files" folder appeared.** A change arrived for a file whose folder had been

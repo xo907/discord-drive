@@ -15,10 +15,12 @@ import urllib.error
 import urllib.request
 import uuid
 
+from . import __version__
+
 log = logging.getLogger("discorddrive.discord")
 
 API_BASE = "https://discord.com/api/v10"
-USER_AGENT = "DiscordDrive (https://github.com/xo907/discord-drive, 0.1)"
+USER_AGENT = f"DiscordDrive (https://github.com/xo907/discord-drive, {__version__})"
 
 
 def _ram_tmpdir():

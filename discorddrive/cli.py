@@ -11,7 +11,9 @@ import time
 from .backend import DiscordBackend, is_encrypted_index
 from .cache import ChunkCache
 from .config import Config, config_path, default_data_dir, format_size, launcher, normalize_mount_point, parse_size
-from .crypto import AuthenticationError, CryptoEngine, KeyRing, channel_salt, derive_key, generate_key, key_fingerprint, parse_key
+from . import codec
+from .crypto import (AuthenticationError, KeyRing, channel_salt, generate_key, key_fingerprint, parse_key,
+                     password_keys)
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
 from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, unmount, FUSE_ERROR
@@ -176,10 +178,10 @@ def cmd_setup(args):
         enc_enabled = True
         print(f"  [OK] Custom encryption key configured (fingerprint {key_fingerprint(enc_key_hex)}).")
     elif getattr(args, "passphrase", None):
-        salt = channel_salt(channel_id)
-        key, _ = derive_key(args.passphrase, salt)
-        enc_key_hex = key.hex()
-        enc_salt_hex = salt.hex()
+        enc_key_hex = _key_for_password(args.passphrase, api, channel_id, latest if existing_encrypted else None)
+        if enc_key_hex is None:
+            return 1
+        enc_salt_hex = channel_salt(channel_id).hex()
         enc_enabled = True
         print(f"  [OK] Key derived from provided passphrase (fingerprint {key_fingerprint(enc_key_hex)}).")
     elif not enc_key_hex and existing_encrypted:
@@ -199,9 +201,10 @@ def cmd_setup(args):
             if not passphrase:
                 print("  [FAIL] No password entered.")
                 return 1
-            salt = channel_salt(channel_id)
-            enc_key_hex = derive_key(passphrase, salt)[0].hex()
-            enc_salt_hex = salt.hex()
+            enc_key_hex = _key_for_password(passphrase, api, channel_id, latest)
+            if enc_key_hex is None:
+                return 1
+            enc_salt_hex = channel_salt(channel_id).hex()
         elif how == "3":
             try:
                 enc_key_hex = parse_key(input("Key: ")).hex()
@@ -229,11 +232,9 @@ def cmd_setup(args):
             except EOFError:
                 passphrase = ""
             if passphrase:
-                salt = channel_salt(channel_id)
-                key, _ = derive_key(passphrase, salt)
-                enc_key_hex = key.hex()
-                enc_salt_hex = salt.hex()
-                print("  [OK] Key derived with PBKDF2-HMAC-SHA256 (200,000 iterations).")
+                enc_key_hex = _key_for_password(passphrase, api, channel_id, None)
+                enc_salt_hex = channel_salt(channel_id).hex()
+                print("  [OK] Key derived with scrypt (memory-hard, so passwords are slow to guess).")
                 print("       Use the same passphrase and channel on other machines to get the same key.")
             elif existing_encrypted:
                 print("  [FAIL] Refusing to generate a new key for a channel that already holds encrypted data.")
@@ -296,6 +297,30 @@ def cmd_setup(args):
         _catch_up(cfg)
     print(f"Start the drive from the menu ({launcher()}, option 1), or run: {launcher()} start")
     return 0
+
+
+def _key_for_password(passphrase, api, channel_id, latest):
+    """The key a password stands for. For a new drive: scrypt. For a drive already in the channel
+    (`latest` = its newest checkpoint message): whichever method opens it (older drives used PBKDF2)."""
+    candidates = password_keys(passphrase, channel_id)
+    if latest is None:
+        return candidates[0][1].hex()
+    print("  Checking the password against your drive...")
+    for _, key in candidates:
+        ring = KeyRing(key)
+        try:
+            DiscordBackend(api, channel_id, crypto=ring).load_index_message(latest)
+            return key.hex()
+        except AuthenticationError:
+            continue
+        except Exception as e:
+            print(f"  [WARNING] Could not check the password right now ({e}). Try again when Discord is reachable.")
+            return None
+        finally:
+            ring.close()
+    print("  [FAIL] That password doesn't open the drive in this channel.")
+    print(f"         Request the key from another device instead, or use '{launcher()} setup -k <key>'.")
+    return None
 
 
 def _request_key(backend):
@@ -432,7 +457,10 @@ def cmd_approve_keys(args):
     return 0
 
 
-_SECRET_FIELDS = {"bot_token", "encryption_key", "encryption_salt", "old_encryption_keys"}
+_SECRET_FIELDS = {"bot_token", "encryption_key", "encryption_salt", "old_encryption_keys", "extra_bot_tokens",
+                  "web_token"}
+_LIST_COMMANDS = {"extra_bot_tokens": "bots add <token>", "hidden_folders": "hide <folder>",
+                  "old_encryption_keys": "add-old-key"}
 
 
 def cmd_config(args):
@@ -455,8 +483,10 @@ def cmd_config(args):
         value = getattr(cfg, args.key)
         print("(set)" if args.key in _SECRET_FIELDS and value else value)
         return 0
-    if args.key in ("bot_token", "channel_id", "encryption_key", "encryption_salt", "encryption_enabled",
-                    "old_encryption_keys"):
+    if args.key in _LIST_COMMANDS:
+        print(f"[ERROR] Use '{launcher()} {_LIST_COMMANDS[args.key]}' to change {args.key}.")
+        return 1
+    if args.key in ("bot_token", "channel_id", "encryption_key", "encryption_salt", "encryption_enabled", "web_token"):
         print("[ERROR] Use 'setup' to change the bot token, channel or encryption.")
         return 1
     kind, raw = types[args.key], args.value.strip()
@@ -515,22 +545,31 @@ def cmd_verify(args):
         total = sum(c["size"] for _, chunks, _ in files for c in chunks)
         print(f"Checking {len(files)} file(s), {total / 2**20:.1f} MiB under {vpath} (downloads everything once)...")
 
+        from .heal import Healer
+        healer = Healer(cfg, idx, j.backend, crypto=crypto)
+        repaired = []
+
         def check(chunk):
+            problem = None
             try:
                 data, _ = j.backend.download(chunk["message_id"], chunk.get("url"))
-                if data.startswith(b"DENC"):
-                    if not crypto:
-                        return "encrypted, but encryption is off on this device"
-                    data = crypto.decrypt(data)
+                data = codec.decode(data, crypto, chunk.get("sha256"))
                 if chunk.get("sha256") and hashlib.sha256(data).hexdigest() != chunk["sha256"]:
-                    return "checksum mismatch (damaged)"
-                return None
+                    problem = "checksum mismatch (damaged)"
             except AuthenticationError:
-                return "cannot decrypt: encrypted with a different key, or damaged"
+                problem = "cannot decrypt: encrypted with a different key, or damaged"
             except DiscordError as e:
-                return "missing from Discord" if e.status == 404 else f"download failed ({e})"
+                if e.status != 404:
+                    return f"download failed ({e})"
+                problem = "missing from Discord"
             except Exception as e:
                 return f"download failed ({e})"
+            if problem is None:
+                return None
+            if healer.recover(chunk["message_id"]) is not None:
+                repaired.append(chunk["message_id"])
+                return None
+            return problem
 
         bad = 0
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -546,6 +585,11 @@ def cmd_verify(args):
                     print(f"  [OK]  {path}")
                 if i % 25 == 0:
                     print(f"  ... {i}/{len(files)} checked")
+        healer.drain()
+        if repaired:
+            if not is_mounted(cfg.mount_point):
+                j.flush()       # a running drive publishes the repairs itself
+            print(f"\n[OK] {len(repaired)} missing or damaged piece(s) were rebuilt from spare pieces and uploaded again.")
         if bad:
             print(f"\n{bad} of {len(files)} file(s) cannot be read. Older versions may still work: "
                   f"{launcher()} versions <path>")
@@ -674,8 +718,9 @@ def cmd_cancel_uploads(args):
             path = idx.path_of(n["id"])
             rec = idx.kv_get(f"upload:{n['id']}")
             if rec:
+                from .uploader import Uploader
                 try:
-                    idx.trash_add([c["message_id"] for c in json.loads(rec).get("chunks") or []])
+                    idx.release(Uploader.record_mids(json.loads(rec)))
                 except ValueError:
                     pass
                 idx.kv_delete(f"upload:{n['id']}")
@@ -725,10 +770,12 @@ def cmd_autostart(args):
     on = action == "on"
     if sys.platform == "win32":
         import winreg
+        from .runtime import FROZEN, shell_command
         vbs = os.path.join(root, "discorddrive", "scripts", "windows", "mount_hidden.vbs")
+        start = shell_command("mount", "-b") if FROZEN else f'wscript.exe "{vbs}"'
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
             if on:
-                winreg.SetValueEx(k, "DiscordDrive", 0, winreg.REG_SZ, f'wscript.exe "{vbs}"')
+                winreg.SetValueEx(k, "DiscordDrive", 0, winreg.REG_SZ, start)
             else:
                 try:
                     winreg.DeleteValue(k, "DiscordDrive")
@@ -835,6 +882,13 @@ def cmd_status(args):
             row("Discord", f"connected as {bot.get('username')}, channel #{ch.get('name')}")
         except Exception as e:
             row("Discord", f"NOT REACHABLE ({e})")
+        if cfg.extra_bot_tokens:
+            row("Upload bots", f"{1 + len(cfg.extra_bot_tokens)} (uploads are spread over all of them)")
+    if cfg.web_enabled:
+        row("Web dashboard", f"http://127.0.0.1:{cfg.web_port}/" + (" (also on your network)" if cfg.web_lan else "")
+            + f"  - '{launcher()} web' shows the sign-in link")
+    if cfg.hidden_folders:
+        row("Hidden here", ", ".join(cfg.hidden_folders))
 
     # --- index ----------------------------------------------------------
     db_path = os.path.join(data_dir, "index.db")
@@ -858,6 +912,14 @@ def cmd_status(args):
             row("Old versions", "off")
         if stats["trash"]:
             row("Being deleted", f"{stats['trash']:,} old pieces, removed from Discord in the background")
+        if cfg.parity_enabled:
+            pct = 100.0 * stats["protected_chunks"] / stats["chunks"] if stats["chunks"] else 100.0
+            row("Self-healing", f"ON: {pct:.1f}% of pieces have spare pieces ({_human(stats['spare_bytes'])} extra)")
+        else:
+            row("Self-healing", "OFF (spare pieces are turned off)")
+        row("Snapshots", f"{stats['snapshots']:,}" + (f", one every {cfg.snapshot_interval_hours:g} h, kept "
+                                                       f"{cfg.snapshot_keep_days:g} days" if cfg.snapshot_interval_hours
+                                                       else ", automatic snapshots off"))
 
         print("\n--- Syncing ---")
         row("Waiting to upload", f"{stats['unsynced']:,} file(s)")
@@ -931,15 +993,9 @@ def cmd_mount(args):
 
     if args.background:
         print(f"Starting DiscordDrive in background on {mount_point}...")
-        python_exe = sys.executable
-        if sys.platform == "win32":
-            pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
-            python_exe = pythonw_exe if os.path.exists(pythonw_exe) else python_exe
+        from .runtime import command
         # Global flags (-v) must come before the subcommand.
-        sub_args = [python_exe, "-m", "discorddrive"]
-        if args.verbose:
-            sub_args.append("-v")
-        sub_args += ["mount", "-m", mount_point]
+        sub_args = command(*(["-v"] if args.verbose else []), "mount", "-m", mount_point, windowless=True)
         if getattr(args, "allow_other", False):
             sub_args.append("--allow-other")
         if getattr(args, "cache", None):
@@ -1105,7 +1161,9 @@ def _open_journal(cfg):
     """(index, journal, crypto) for CLI commands that talk to the channel."""
     db_path = os.path.join(cfg.resolved_data_dir, "index.db")
     crypto = get_crypto_from_cfg(cfg)
-    backend = DiscordBackend(DiscordAPI(cfg.bot_token, timeout=60, retries=3), cfg.channel_id, crypto=crypto)
+    extra = [DiscordAPI(t, timeout=60, retries=3) for t in cfg.extra_bot_tokens or [] if t and t != cfg.bot_token]
+    backend = DiscordBackend(DiscordAPI(cfg.bot_token, timeout=60, retries=3), cfg.channel_id, crypto=crypto,
+                             extra_apis=extra)
     idx = Index(db_path)
     idx.keep_versions = bool(cfg.keep_versions)
     j = Journal(cfg, idx, backend, crypto=crypto, staging_dir=os.path.join(cfg.resolved_data_dir, "staging"))
@@ -1205,11 +1263,8 @@ def _resolve_file(idx, cfg, path):
 
 
 def _put_op_for_version(idx, v, uid, parent_uid, name):
-    chunks = idx.version_chunks(v["id"])
-    return {"t": "put", "u": uid, "p": parent_uid, "n": name, "s": v["size"],
-            "m": v["mtime"] or time.time(),
-            "c": [[c["message_id"], c["size"], c["sha256"]] for c in chunks],
-            "r": 1}   # an explicit restore: allowed even though the file was deleted
+    from .actions import version_put_op
+    return version_put_op(idx, v, uid, parent_uid, name)
 
 
 def _publish(j, ops, what):
@@ -1311,6 +1366,307 @@ def cmd_undelete(args):
         _close(idx, crypto)
 
 
+# --------------------------------------------------------------------- extra bots
+def _bot_name(token):
+    try:
+        me = DiscordAPI(token, timeout=20, retries=2).get_me()
+        return me.get("username") or "?", me.get("id")
+    except Exception as e:
+        return f"not reachable ({e})", None
+
+
+def cmd_bots(args):
+    """Extra bots in the same channel: each one adds upload speed."""
+    cfg = Config.load()
+    action = args.action or "list"
+    if action == "list":
+        if not cfg.is_configured():
+            print(f"[ERROR] Run '{launcher()} setup' first.")
+            return 1
+        print(f"  Main bot:     {_bot_name(cfg.bot_token)[0]}")
+        for i, t in enumerate(cfg.extra_bot_tokens or [], 1):
+            print(f"  Extra bot {i}:  {_bot_name(t)[0]}")
+        n = 1 + len(cfg.extra_bot_tokens or [])
+        print(f"\nUploading with {n} bot(s). Add one with: {launcher()} bots add")
+        return 0
+    if action == "remove":
+        try:
+            i = int(args.token or 0)
+            removed = cfg.extra_bot_tokens.pop(i - 1)
+        except (ValueError, IndexError):
+            print(f"[ERROR] Give the number of the extra bot to remove (see '{launcher()} bots').")
+            return 1
+        cfg.save()
+        print(f"[OK] Removed extra bot {i} ({_bot_name(removed)[0]}). Restart the drive for it to take effect.")
+        return 0
+    token = (args.token or "").strip()
+    if not token:
+        try:
+            import getpass
+            token = getpass.getpass("Token of the extra bot (input is hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return 1
+    if token.lower().startswith("bot "):
+        token = token[4:].strip()
+    if not token:
+        print("[!] Nothing entered.")
+        return 1
+    print("Checking the bot...")
+    api = DiscordAPI(token, timeout=30, retries=2)
+    try:
+        me = api.get_me()
+        api.get_channel(cfg.channel_id)
+    except DiscordError as e:
+        print(f"  [FAIL] {e}")
+        print("         Invite this bot to your server with the same link as the main bot (Step 1 of the")
+        print("         README, with this bot's Client ID), and give it access to the drive channel.")
+        return 1
+    ids = {_bot_name(t)[1] for t in [cfg.bot_token] + list(cfg.extra_bot_tokens or [])}
+    if me.get("id") in ids:
+        print("  [FAIL] That bot is already in use. Each extra bot has to be a different bot (a new application).")
+        return 1
+    try:
+        msg = api.send_message(cfg.channel_id, "DiscordDrive: checking a new bot (removed right away)")
+        api.delete_message(cfg.channel_id, msg["id"])
+    except DiscordError as e:
+        print(f"  [FAIL] The bot can't post in the drive channel: {e}")
+        return 1
+    cfg.extra_bot_tokens = list(cfg.extra_bot_tokens or []) + [token]
+    cfg.save()
+    print(f"[SUCCESS] Added {me.get('username')}. Uploads now use {1 + len(cfg.extra_bot_tokens)} bots.")
+    if is_mounted(cfg.mount_point):
+        print("Restart the drive (stop, then start) to use it.")
+    return 0
+
+
+# --------------------------------------------------------------------- snapshots
+def _snapshot_by_number(idx, n):
+    snaps = idx.snapshots()
+    if not 1 <= n <= len(snaps):
+        print(f"[ERROR] There are {len(snaps)} snapshot(s); pick a number from '{launcher()} snapshots'.")
+        return None
+    return snaps[n - 1]
+
+
+def cmd_snapshots(args):
+    """List snapshots, take one now, or delete one."""
+    setup_logging(args.verbose, log_to_file=args.action == "create")
+    cfg = Config.load()
+    action = args.action or "list"
+    if action == "create":
+        idx, j, crypto = _open_journal(cfg)
+        try:
+            print("Taking a snapshot of the whole drive...")
+            running = is_mounted(cfg.mount_point)
+            if not running:
+                j.flush()
+                j.poll()
+            ops = idx.snapshot_ops(args.label or "Manual", float(cfg.snapshot_keep_days or 0))
+            for op in ops:
+                j.post_ops([op])
+            if not running:
+                j.poll()
+            files = sum(1 for op in ops for e in op["e"] if not e[1])
+            print(f"[SUCCESS] Snapshot taken: {files:,} file(s). Kept for {cfg.snapshot_keep_days:g} days."
+                  if cfg.snapshot_keep_days else f"[SUCCESS] Snapshot taken: {files:,} file(s).")
+            return 0
+        finally:
+            _close(idx, crypto)
+    idx = Index(os.path.join(cfg.resolved_data_dir, "index.db"))
+    try:
+        snaps = idx.snapshots()
+        if action == "delete":
+            snap = _snapshot_by_number(idx, int(args.label or 0))
+            if snap is None:
+                return 1
+            idx.delete_snapshot(snap["id"])
+            print(f"[OK] Snapshot of {_fmt_time(snap['at'])} deleted (on every device once the drive syncs).")
+            return 0
+        if not snaps:
+            print("No snapshots yet." + (f" One is taken automatically every {cfg.snapshot_interval_hours:g} hours."
+                                         if cfg.snapshot_interval_hours else ""))
+            print(f"Take one now with: {launcher()} snapshots create")
+            return 0
+        for i, sn in enumerate(snaps, 1):
+            keep = f"kept until {_fmt_time(sn['keep_until'])}" if sn["keep_until"] else "kept"
+            print(f"  {i:>3}  {_fmt_time(sn['at'])}  {sn['files']:>7,} files  {_fmt_size(sn['bytes']):>10}  "
+                  f"{(sn['label'] or ''):<10} {keep}")
+        print(f"\nRestore with: {launcher()} snapshot-restore <number> [folder] [--in-place]")
+        return 0
+    finally:
+        idx.close()
+
+
+def cmd_snapshot_restore(args):
+    """Bring back a folder (or everything) as it was in a snapshot."""
+    from .actions import default_restore_folder, snapshot_restore_ops
+    setup_logging(args.verbose)
+    cfg = Config.load()
+    idx, j, crypto = _open_journal(cfg)
+    try:
+        snap = _snapshot_by_number(idx, args.number)
+        if snap is None:
+            return 1
+        prefix = normalize_virtual_path(args.path or "/", cfg.mount_point)
+        target = normalize_virtual_path(args.to, cfg.mount_point) if args.to else default_restore_folder(snap)
+        ops, files = snapshot_restore_ops(idx, snap["id"], prefix, target, in_place=args.in_place)
+        if not ops:
+            print(f"[ERROR] The snapshot has nothing under {prefix}.")
+            return 1
+        for i in range(0, len(ops), 300):
+            j.post_ops(ops[i:i + 300])
+        where = "to their original places (what is there now is kept as an older version)" if args.in_place \
+            else f"into {target}"
+        print(f"[SUCCESS] {files:,} file(s) from the snapshot of {_fmt_time(snap['at'])} restored {where}.")
+        print("They appear on every running device within a few seconds.")
+        return 0
+    finally:
+        _close(idx, crypto)
+
+
+# --------------------------------------------------------------------- health
+def cmd_health(args):
+    """How well the drive is protected; optionally check (and repair) every piece now."""
+    setup_logging(args.verbose, log_to_file=bool(args.check or args.protect))
+    cfg = Config.load()
+    idx, j, crypto = _open_journal(cfg)
+    try:
+        from .heal import Healer
+        st = idx.stats(max_age=0)
+        pct = 100.0 * st["protected_chunks"] / st["chunks"] if st["chunks"] else 100.0
+        print("--- Self-healing ---")
+        if cfg.parity_enabled:
+            print(f"{'Spare pieces:':20}ON: {cfg.parity_pieces} per group of {cfg.parity_group} pieces "
+                  f"(any {cfg.parity_pieces} lost pieces of a group can be rebuilt)")
+        else:
+            print(f"{'Spare pieces:':20}OFF - pieces Discord loses can't be rebuilt")
+        print(f"{'Protected:':20}{pct:.1f}% of pieces ({st['protected_chunks']:,} of {st['chunks']:,})")
+        print(f"{'Stored spare:':20}{st['spare_pieces']:,} pieces, {_human(st['spare_bytes'])}")
+        try:
+            sc = json.loads(idx.kv_get("scrub") or "{}")
+        except ValueError:
+            sc = {}
+        if sc.get("last_pass"):
+            print(f"{'Last full check:':20}{_fmt_time(sc['last_pass'])}")
+        elif sc.get("checked"):
+            print(f"{'Checking:':20}{sc.get('done', 0):,} of {sc.get('total', 0):,} pieces so far")
+        else:
+            print(f"{'Checking:':20}not started yet (runs in the background while the drive is running)")
+        if sc.get("missing"):
+            print(f"{'Found missing:':20}{sc['missing']:,} (rebuilt: {sc.get('repaired', 0):,}, "
+                  f"lost: {sc.get('lost', 0):,})")
+        print(f"{'Snapshots:':20}{st['snapshots']:,}")
+        healer = Healer(cfg, idx, j.backend, crypto=crypto)
+        if args.protect:
+            from .uploader import parity_shape
+            k, _ = parity_shape(cfg, 10)
+            if not k:
+                print("\n[ERROR] Spare pieces are turned off (parity_enabled).")
+                return 1
+            print("\nAdding spare pieces to files uploaded without them (downloads each file once)...")
+            done, skipped = 0, set()
+            while True:
+                work = idx.unprotected_slices(k, limit=1, skip=skipped)
+                if not work:
+                    break
+                nid, slices = work[0]
+                for members in slices:
+                    if not healer.protect(members, parity_shape(cfg, len(members))[1]):
+                        print(f"  [BAD] {idx.path_of(nid)}: part of it can't be read; skipped "
+                              f"('{launcher()} verify' shows more)")
+                        skipped.add(nid)
+                        break
+                else:
+                    done += 1
+                    print(f"  [OK]  {idx.path_of(nid)}")
+            if not is_mounted(cfg.mount_point):
+                j.flush()
+            print(f"[SUCCESS] {done} file(s) protected.")
+        if args.check:
+            mids = idx.referenced_mids()
+            print(f"\nChecking all {len(mids):,} pieces on Discord...")
+            missing = rebuilt = lost = 0
+            for i, mid in enumerate(mids, 1):
+                if j.backend.message_info(mid) is None and idx.is_referenced(mid):
+                    missing += 1
+                    if healer.recover(mid) is not None:
+                        rebuilt += 1
+                    else:
+                        lost += 1
+                if i % 500 == 0:
+                    print(f"  ... {i:,} of {len(mids):,} checked")
+            healer.drain()
+            if not is_mounted(cfg.mount_point):
+                j.flush()
+            if not missing:
+                print(f"[OK] All {len(mids):,} pieces are on Discord.")
+            else:
+                print(f"[!] {missing} piece(s) were missing: {rebuilt} rebuilt and uploaded again, {lost} lost.")
+                return 1 if lost else 0
+        return 0
+    finally:
+        _close(idx, crypto)
+
+
+# --------------------------------------------------------------------- web, hidden folders
+def cmd_web(args):
+    """Print (and open) the link to the web dashboard."""
+    cfg = Config.load()
+    if not cfg.web_enabled:
+        print(f"[!] The web dashboard is off. Turn it on with: {launcher()} config web_enabled true")
+        return 1
+    if not cfg.web_token:
+        import secrets as _secrets
+        cfg.web_token = _secrets.token_urlsafe(24)
+        cfg.save()
+    url = f"http://127.0.0.1:{cfg.web_port}/login?t={cfg.web_token}"
+    running = is_mounted(cfg.mount_point)
+    print(f"Web dashboard:  {url}")
+    if cfg.web_lan:
+        from .web import lan_addresses
+        for ip in lan_addresses():
+            print(f"On your phone:  http://{ip}:{cfg.web_port}/login?t={cfg.web_token}")
+    else:
+        print(f"(To open it on your phone too: {launcher()} config web_lan true, then restart the drive.)")
+    print("The link signs a browser in: keep it to yourself.")
+    if not running:
+        print(f"[!] The drive isn't running: start it first ({launcher()} start).")
+        return 0
+    if args.open:
+        import webbrowser
+        webbrowser.open(url)
+    return 0
+
+
+def cmd_hide(args):
+    """Hide a folder on this device only (or show it again)."""
+    cfg = Config.load()
+    path = normalize_virtual_path(args.path, cfg.mount_point).rstrip("/") or "/"
+    if path == "/":
+        print("[ERROR] Pick a folder, not the whole drive.")
+        return 1
+    hidden = list(cfg.hidden_folders or [])
+    lower = [h.lower() for h in hidden]
+    if args.command == "unhide":
+        if path.lower() not in lower:
+            print(f"[!] {path} isn't hidden. Hidden here: {', '.join(hidden) or 'nothing'}")
+            return 1
+        hidden.pop(lower.index(path.lower()))
+        msg = f"[OK] {path} is shown on this device again."
+    else:
+        if path.lower() in lower:
+            print(f"[OK] {path} is already hidden on this device.")
+            return 0
+        hidden.append(path)
+        msg = f"[OK] {path} is hidden on this device. It stays on the drive and on your other devices."
+    cfg.hidden_folders = hidden
+    cfg.save()
+    print(msg)
+    if is_mounted(cfg.mount_point):
+        print("Restart the drive (stop, then start) for this to take effect.")
+    return 0
+
+
 def cmd_offline(args):
     """Marks a file or folder as available offline and prefetches all chunks."""
     setup_logging(args.verbose)
@@ -1399,28 +1755,30 @@ def cmd_context_menu(args):
         return 1
     import winreg
 
+    from .runtime import FROZEN, shell_command
     launch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "windows", "launch.cmd")
+    run = shell_command() if FROZEN else f'"{launch}"'
 
     reg_entries = [
         (
             r"Software\Classes\*\shell\DiscordDrive_Offline",
             "DiscordDrive: Make available offline",
-            f'"{launch}" offline "%1"',
+            f'{run} offline "%1"',
         ),
         (
             r"Software\Classes\*\shell\DiscordDrive_FreeSpace",
             "DiscordDrive: Free up space",
-            f'"{launch}" free-space "%1"',
+            f'{run} free-space "%1"',
         ),
         (
             r"Software\Classes\Directory\shell\DiscordDrive_Offline",
             "DiscordDrive: Make available offline",
-            f'"{launch}" offline "%1"',
+            f'{run} offline "%1"',
         ),
         (
             r"Software\Classes\Directory\shell\DiscordDrive_FreeSpace",
             "DiscordDrive: Free up space",
-            f'"{launch}" free-space "%1"',
+            f'{run} free-space "%1"',
         ),
     ]
 
@@ -1511,6 +1869,28 @@ def main():
 
     # stop
     subparsers.add_parser("stop", help="Stop the background DiscordDrive daemon and unmount")
+
+    p_bots = subparsers.add_parser("bots", help="Extra bots for faster uploads: list, add [token], remove <n>")
+    p_bots.add_argument("action", nargs="?", choices=["list", "add", "remove"])
+    p_bots.add_argument("token", nargs="?", help="Bot token (add) or number (remove)")
+    p_snaps = subparsers.add_parser("snapshots", help="Snapshots of the whole drive: list, create [label], delete <n>")
+    p_snaps.add_argument("action", nargs="?", choices=["list", "create", "delete"])
+    p_snaps.add_argument("label", nargs="?", help="Label (create) or number (delete)")
+    p_sr = subparsers.add_parser("snapshot-restore", help="Restore a folder (or everything) from a snapshot")
+    p_sr.add_argument("number", type=int, help="Snapshot number from 'snapshots'")
+    p_sr.add_argument("path", nargs="?", default="/", help="Folder or file in the snapshot (default: everything)")
+    p_sr.add_argument("--to", help="Folder to restore into (default: 'Restored <date>')")
+    p_sr.add_argument("--in-place", action="store_true",
+                      help="Put files back where they were (current content is kept as a version)")
+    p_health = subparsers.add_parser("health", help="Self-healing status; --check every piece now, --protect old files")
+    p_health.add_argument("--check", action="store_true", help="Check every piece is on Discord and repair what isn't")
+    p_health.add_argument("--protect", action="store_true", help="Add spare pieces to files uploaded without them")
+    p_web = subparsers.add_parser("web", help="Show the link to the web dashboard")
+    p_web.add_argument("--open", action="store_true", help="Also open it in the browser")
+    p_hide = subparsers.add_parser("hide", help="Don't show a folder on this device")
+    p_hide.add_argument("path")
+    p_unhide = subparsers.add_parser("unhide", help="Show a hidden folder on this device again")
+    p_unhide.add_argument("path")
 
     # clear-cache
     p_clear = subparsers.add_parser("clear-cache", aliases=["clearcache"], help="Clear all locally cached chunks")
@@ -1607,6 +1987,18 @@ def main():
         return cmd_free_space(args)
     elif args.command == "context-menu":
         return cmd_context_menu(args)
+    elif args.command == "bots":
+        return cmd_bots(args)
+    elif args.command == "snapshots":
+        return cmd_snapshots(args)
+    elif args.command == "snapshot-restore":
+        return cmd_snapshot_restore(args)
+    elif args.command == "health":
+        return cmd_health(args)
+    elif args.command == "web":
+        return cmd_web(args)
+    elif args.command in ("hide", "unhide"):
+        return cmd_hide(args)
     else:
         parser.print_help()
         return 0

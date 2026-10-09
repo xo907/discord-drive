@@ -12,6 +12,7 @@ import threading
 import time
 
 from .config import Config, default_data_dir, format_size
+from .runtime import FROZEN, command
 from .ui import ANSI, BOLD, GRAY, GREEN, RED, RESET, YELLOW, banner
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -150,12 +151,13 @@ class LiveLine:
 def cli(*args, stdin_text=None):
     """Run a DiscordDrive command in a fresh process; its output appears on the current page,
     in the same theme (DISCORDDRIVE_EMBEDDED tells it the page already has a banner and title)."""
-    cmd = [sys.executable, "-m", "discorddrive", *args]
+    cmd = command(*args)
     env = dict(os.environ, DISCORDDRIVE_EMBEDDED="1")
+    cwd = None if FROZEN else ROOT
     sys.stdout.flush()   # the page header must appear before the command's own output
     if stdin_text is None:
-        return subprocess.call(cmd, cwd=ROOT, env=env)
-    return subprocess.run(cmd, cwd=ROOT, env=env, input=stdin_text, text=True).returncode
+        return subprocess.call(cmd, cwd=cwd, env=env)
+    return subprocess.run(cmd, cwd=cwd, env=env, input=stdin_text, text=True).returncode
 
 
 def is_mounted(cfg):
@@ -235,7 +237,7 @@ def start_drive():
         done(f"Already running on {cfg.mount_point}.")
         return
     step(f"Starting DiscordDrive on {cfg.mount_point}")
-    if not WINDOWS:
+    if not WINDOWS or FROZEN:
         cli("mount", "-b")
         return
     # Windows: start hidden (no console window stays open) through the VBScript helper.
@@ -264,9 +266,11 @@ def stop_drive():
 
 
 def update():
-    if not os.path.isdir(os.path.join(ROOT, ".git")):
+    if FROZEN or not os.path.isdir(os.path.join(ROOT, ".git")):
         warn("This copy wasn't downloaded with git, so it can't update itself.")
-        info("Download the latest version from https://github.com/xo907/discord-drive")
+        info("Download the latest version from https://github.com/xo907/discord-drive/releases")
+        if not WINDOWS:
+            info("(With the .deb package: download the new one and install it with sudo apt install ./<file>.deb)")
         return False
     if not shutil.which("git"):
         warn("git is not installed." + (" Install it: winget install -e --id Git.Git --source winget"
@@ -299,6 +303,11 @@ SETTINGS = [
     ("max_file_size", "Max file size", "e.g. 100M, 2G, or 0 for no limit"),
     ("version_retention_days", "Keep old versions for (days)", "0 = forever"),
     ("mount_point", "Drive letter / mount folder", "e.g. Z: on Windows, /mnt/discord on Linux"),
+    ("parity_enabled", "Self-healing (spare pieces)", "true = lost pieces can be rebuilt (recommended), false = off"),
+    ("snapshot_interval_hours", "Automatic snapshot every (hours)", "e.g. 24, or 0 to turn them off"),
+    ("snapshot_keep_days", "Keep snapshots for (days)", "e.g. 14"),
+    ("web_lan", "Web dashboard on your network (phone)", "true = phones and computers at home can open it, "
+                                                         "false = only this computer"),
 ]
 
 
@@ -318,21 +327,32 @@ def settings_menu():
                    for i, (k, label, _) in enumerate(SETTINGS, 1)]
         from .cli import autostart_enabled
         auto = autostart_enabled()
+        n = len(SETTINGS)
+        bots, hidden = 1 + len(cfg.extra_bot_tokens or []), cfg.hidden_folders or []
+        k_bots, k_hidden, k_auto, k_all = (str(n + i) for i in range(1, 5))
         options += [(None, None),
-                    ("9", f"Start automatically when this computer starts: {BOLD}{'ON' if auto else 'OFF'}{RESET}"),
-                    ("8", "Show every setting")]
+                    (k_bots, f"Bots for uploading (more = faster): {BOLD}{bots}{RESET}"),
+                    (k_hidden, f"Folders hidden on this device: {BOLD}{len(hidden) or 'none'}{RESET}"),
+                    (k_auto, f"Start automatically when this computer starts: {BOLD}{'ON' if auto else 'OFF'}{RESET}"),
+                    (k_all, "Show every setting")]
         pick = choose("Choose a setting to change", options)
         if pick is None:
             return
-        if pick == "9":
+        if pick == k_auto:
             page(MAIN, "Settings", "Start automatically")
             cli("autostart", "off" if auto else "on")
             back("Settings")
             continue
-        if pick == "8":
+        if pick == k_all:
             page(MAIN, "Settings", "Every setting")
             cli("config")
             back("Settings")
+            continue
+        if pick == k_bots:
+            bots_page()
+            continue
+        if pick == k_hidden:
+            hidden_page()
             continue
         if not pick.isdigit() or not 1 <= int(pick) <= len(SETTINGS):
             continue
@@ -353,6 +373,49 @@ def settings_menu():
         back("Settings")
 
 
+def bots_page():
+    page(MAIN, "Settings", "Bots for uploading")
+    info("Discord limits how fast one bot may post. Each extra bot (a new application in the")
+    info("Developer Portal, invited to your server like the first one) adds upload speed.")
+    print()
+    cli("bots")
+    print()
+    pick = choose("What would you like to do?", [("1", "Add a bot"), ("2", "Remove a bot")])
+    if pick == "1":
+        print()
+        cli("bots", "add")
+    elif pick == "2":
+        n = ask("Number of the extra bot to remove")
+        if n:
+            print()
+            cli("bots", "remove", n)
+    else:
+        return
+    back("Settings")
+
+
+def hidden_page():
+    page(MAIN, "Settings", "Hidden folders")
+    info("A hidden folder isn't shown on this device. It stays on the drive and on your other devices,")
+    info("e.g. hide /Movies on the Raspberry Pi.")
+    print()
+    cfg = Config.load()
+    for h in cfg.hidden_folders or []:
+        print(f"    {h}")
+    if not cfg.hidden_folders:
+        info("Nothing is hidden here.")
+    print()
+    pick = choose("What would you like to do?", [("1", "Hide a folder"), ("2", "Show a hidden folder again")])
+    if pick in ("1", "2"):
+        p = ask("Folder (e.g. Z:\\Movies or /Movies)")
+        if p:
+            print()
+            cli("hide" if pick == "1" else "unhide", p)
+    else:
+        return
+    back("Settings")
+
+
 # ----------------------------------------------------------- files page
 def files_menu():
     title = "Files: versions, recovery and offline"
@@ -367,6 +430,10 @@ def files_menu():
             ("5", "Make a file or folder available offline"),
             ("6", "Free up space used by a file or folder"),
             ("7", "Clear the whole read cache"),
+            (None, None),
+            ("8", "Snapshots of the whole drive"),
+            ("9", "Restore a folder from a snapshot"),
+            ("10", "Take a snapshot now"),
         ])
         if pick is None:
             return
@@ -416,6 +483,22 @@ def files_menu():
         elif pick == "7":
             page(MAIN, title, "Clear the read cache")
             cli("clear-cache")
+        elif pick == "8":
+            page(MAIN, title, "Snapshots")
+            cli("snapshots")
+        elif pick == "9":
+            page(MAIN, title, "Restore from a snapshot")
+            cli("snapshots")
+            print()
+            n = ask("Snapshot number (Enter = cancel)")
+            if n:
+                folder = ask("Folder to bring back (Enter = everything)", "/")
+                info("It is copied into a new folder named after the snapshot; nothing you have now changes.")
+                print()
+                cli("snapshot-restore", n, folder)
+        elif pick == "10":
+            page(MAIN, title, "Take a snapshot")
+            cli("snapshots", "create")
         else:
             continue
         back(title)
@@ -437,6 +520,10 @@ def tools_menu():
             ("7", "Save an index checkpoint now"),
             ("10", "Request the key from another device"),
             ("11", "Cancel stuck uploads"),
+            (None, None),
+            ("12", "Self-healing status"),
+            ("13", "Check every piece on Discord now and repair what's missing"),
+            ("14", "Add spare pieces to files uploaded before self-healing"),
             (None, None),
         ]
         if WINDOWS:
@@ -499,6 +586,16 @@ def tools_menu():
                 start_drive()
         elif pick == "7":
             cli("backup")
+        elif pick == "12":
+            cli("health")
+        elif pick == "13":
+            info("Asks Discord about every piece once; with many files this takes a while.")
+            print()
+            cli("health", "--check")
+        elif pick == "14":
+            info("A running drive does this by itself in the background; this does it all now.")
+            print()
+            cli("health", "--protect")
         elif pick == "11":
             cfg = Config.load()
             running = is_mounted(cfg)
@@ -572,9 +669,11 @@ MAIN_OPTIONS = [
     ("8", "Copy files onto the drive (help)"),
     ("9", "Tools and troubleshooting"),
     ("10", "Approve a new device (send it the key)"),
+    ("11", "Web dashboard (browse, preview and share files; works on your phone)"),
 ]
 PAGE_TITLES = {"1": "Start the drive", "2": "Stop the drive", "3": "Status", "4": "Update DiscordDrive",
-               "5": "Setup", "8": "Copy files onto the drive", "10": "Approve a new device"}
+               "5": "Setup", "8": "Copy files onto the drive", "10": "Approve a new device",
+               "11": "Web dashboard"}
 
 
 def main():
@@ -623,6 +722,11 @@ def main():
             info("Use this when you set up DiscordDrive on another device and it asks for the key.")
             print()
             cli("approve-keys")
+        elif pick == "11":
+            if not is_mounted(cfg):
+                warn("The dashboard runs inside the drive: start the drive first (option 1).")
+            else:
+                cli("web", "--open")
         back()
 
 

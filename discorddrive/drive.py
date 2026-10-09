@@ -17,6 +17,7 @@ from .crypto import KeyRing, generate_key
 from .discord_api import DiscordAPI
 from .fs import DiscordDriveFS
 from .fuse_loader import find_winfsp_dll, fuse, unmount, FUSE_ERROR
+from .heal import Healer, Maintenance
 from .index import Index
 from .journal import Journal
 from .uploader import Uploader
@@ -37,6 +38,9 @@ class DiscordDrive:
         self.fs = None
         self.uploader = None
         self.journal = None
+        self.healer = None
+        self.maintenance = None
+        self.web = None
         self._stop_event = threading.Event()
         self._stop_lock = threading.Lock()
         self._stopped = False
@@ -59,7 +63,10 @@ class DiscordDrive:
                     f"DiscordDrive is not configured yet. Run '{launcher()} setup' or provide bot_token and channel_id."
                 )
             self.api = DiscordAPI(self.cfg.bot_token)
-            self.backend = DiscordBackend(self.api, self.cfg.channel_id)
+            extra = [DiscordAPI(t) for t in (self.cfg.extra_bot_tokens or []) if t and t != self.cfg.bot_token]
+            self.backend = DiscordBackend(self.api, self.cfg.channel_id, extra_apis=extra)
+            if extra:
+                log.info("Uploading with %d bots.", 1 + len(extra))
 
         if self.cfg.encryption_enabled:
             if not self.cfg.encryption_key:
@@ -108,6 +115,11 @@ class DiscordDrive:
         self.fs.uploader = self.uploader
         self.uploader.journal = self.journal
         self.journal.fs = self.fs
+        self.healer = Healer(self.cfg, self.index, self.backend, crypto=self.crypto, cache=self.cache,
+                             wake=self.journal.wake)
+        self.cache.healer = self.healer
+        self.maintenance = Maintenance(self.cfg, self.index, self.backend, self.healer, uploader=self.uploader,
+                                       journal=self.journal, cache=self.cache, device_id=self.cfg.device_id)
 
         # Recover any pending staging files from previous runs
         self.fs.recover()
@@ -145,14 +157,49 @@ class DiscordDrive:
             self.uploader.start()
         if self.journal:
             self.journal.start()
+            threading.Thread(target=self._catch_up, name="JournalCatchUp", daemon=True).start()
+        if self.healer:
+            self.healer.start()
+        if self.maintenance:
+            self.maintenance.start()
+        if getattr(self.cfg, "web_enabled", False) and not self.local_test_dir:
+            self.start_web()
+
+    def start_web(self, port=None):
+        from .web import WebServer
+        if not self.cfg.web_token:
+            self.cfg.web_token = secrets.token_urlsafe(24)
+            if not self.local_test_dir:
+                saved = Config.load()
+                saved.web_token = self.cfg.web_token
+                saved.save()
+        try:
+            self.web = WebServer(self, port=self.cfg.web_port if port is None else port).start()
+            log.info("Web dashboard: %s", self.web.local_url())
+        except OSError as e:
+            log.warning("Web dashboard not started (port %s: %s)", self.cfg.web_port, e)
+        return self.web
+
+    def _catch_up(self):
+        try:
+            self.journal.catch_up(stop=self._stop_event.is_set)
+        except Exception as e:
+            log.debug("Journal catch-up failed (retried on the next start): %s", e)
 
     def stop_background_services(self):
         with self._stop_lock:
             if self._stopped:
                 return
             self._stopped = True
+        self._stop_event.set()
+        if self.web:
+            self.web.stop()
+        if self.maintenance:
+            self.maintenance.stop()
         if self.uploader:
             self.uploader.stop()
+        if self.healer:
+            self.healer.stop()
         if self.journal:
             self.journal.stop()  # publishes the last changes and saves a checkpoint
         if self.cache:

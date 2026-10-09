@@ -101,6 +101,22 @@ class Config:
     encryption_salt: str = ""          # 32-char hex string
     old_encryption_keys: list = field(default_factory=list)  # earlier keys, kept to read older data
     allow_other: bool = False          # Allow other users/services to access mount on Linux
+    extra_bot_tokens: list = field(default_factory=list)  # more bots in the same channel = faster uploads
+    compression: bool = True           # compress pieces that shrink (lossless, before encryption)
+    dedup: bool = True                 # store identical pieces once
+    parity_enabled: bool = True        # spare pieces, so lost pieces can be rebuilt (self-healing)
+    parity_group: int = 10             # data pieces per group...
+    parity_pieces: int = 2             # ...and spare pieces per group (groups under 4 pieces get 1)
+    scrub_enabled: bool = True         # check in the background that every piece is still on Discord
+    scrub_days: float = 7.0            # how long one full check of every piece takes
+    protect_existing: bool = True      # add spare pieces to files uploaded before self-healing existed
+    snapshot_interval_hours: float = 24.0  # automatic snapshot of the whole drive (0 = off)
+    snapshot_keep_days: float = 14.0   # how long snapshots are kept
+    hidden_folders: list = field(default_factory=list)  # folders this device doesn't show
+    web_enabled: bool = True           # the web dashboard (http://127.0.0.1:<web_port>)
+    web_port: int = 8765
+    web_lan: bool = False              # also reachable from other devices on your network (phone)
+    web_token: str = ""                # sign-in secret for the web dashboard (generated)
 
     @property
     def resolved_data_dir(self) -> str:

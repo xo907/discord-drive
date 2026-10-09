@@ -199,11 +199,40 @@ class DiscordDriveFS(Operations):
             self._staging_usage = (0.0, 0)
             why = reason()
 
+    def _hidden(self, path):
+        """Folders this device doesn't show (hidden_folders): they stay on the drive and on
+        other devices, they are just not listed or reachable here."""
+        hidden = getattr(self.cfg, "hidden_folders", None)
+        if not hidden:
+            return False
+        p = "/" + path.replace("\\", "/").strip("/").lower()
+        for h in hidden:
+            h = "/" + str(h).replace("\\", "/").strip("/").lower()
+            if h != "/" and (p == h or p.startswith(h + "/")):
+                return True
+        return False
+
     def _get(self, path):
+        if self._hidden(path):
+            raise FuseOSError(errno.ENOENT)
         n = self.index.resolve(path)
         if n is None:
             raise FuseOSError(errno.ENOENT)
         return n
+
+    def read_file(self, nid, offset, size):
+        """Read part of a file by node id, from its local copy if there is one (web dashboard)."""
+        p = self.staging_path(nid)
+        with self.lock:
+            on = self.open_nodes.get(nid)
+        if on is not None or os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
+            except FileNotFoundError:
+                pass
+        return self._read_remote(nid, offset, size)
 
     def _attrs(self, n):
         is_dir = bool(n["is_dir"])
@@ -324,18 +353,21 @@ class DiscordDriveFS(Operations):
             on = self.open_nodes.get(nid)
             return on is not None and on.dirty
 
-    def commit_upload(self, nid, version, uploaded):
+    def commit_upload(self, nid, version, uploaded, parity=None):
         """Swap in freshly uploaded chunks unless the file changed during upload."""
+        mids = [u["message_id"] for u in uploaded]
+        for _, shards in (parity or {}).get("g") or []:
+            mids += [s[0] for s in shards]
         with self.lock:
             node = self.index.get(nid)
             on = self.open_nodes.get(nid)
             if node is None or node["version"] != version or (on is not None and on.dirty):
-                self.index.trash_add([u["message_id"] for u in uploaded])
+                self.index.release(mids)     # reused pieces still belong to other files
                 if node is None and on is None:
                     self._remove_staging(nid)
                 return False
-            if not self.index.replace_chunks(nid, uploaded, version):
-                self.index.trash_add([u["message_id"] for u in uploaded])
+            if not self.index.replace_chunks(nid, uploaded, version, parity):
+                self.index.release(mids)
                 return False
             self._chunk_maps.pop(nid, None)
             if on is None:
@@ -405,11 +437,20 @@ class DiscordDriveFS(Operations):
         if not n["is_dir"]:
             raise FuseOSError(errno.ENOTDIR)
         out = [(".", None, 0), ("..", None, 0)]
+        base = path.replace("\\", "/").rstrip("/")
         for c in self.index.children(n["id"]):
+            if self._hidden(f"{base}/{c['name']}"):
+                continue
             out.append((c["name"], self._attrs(c), 0))
         return out
 
+    def _refuse_hidden(self, path):
+        """New items can't be created inside a folder this device hides (they would be invisible)."""
+        if self._hidden(path):
+            raise FuseOSError(errno.EACCES)
+
     def mkdir(self, path, mode):
+        self._refuse_hidden(path)
         ppath, name = split_path(path)
         parent = self._get(ppath)
         if not parent["is_dir"]:
@@ -431,6 +472,7 @@ class DiscordDriveFS(Operations):
         return 0
 
     def create(self, path, mode, fi=None):
+        self._refuse_hidden(path)
         ppath, name = split_path(path)
         self._wait_for_staging_space()
         with self.lock:
@@ -587,6 +629,7 @@ class DiscordDriveFS(Operations):
         return 0
 
     def rename(self, old, new):
+        self._refuse_hidden(new)
         n = self._get(old)
         nparent_path, nname = split_path(new)
         with self.lock:

@@ -77,14 +77,36 @@ def _is_index_msg(m) -> bool:
     return (m.get("content") or "").startswith(INDEX_MARKER) and bool(m.get("attachments"))
 
 
+def snowflake_time(mid) -> float:
+    """Unix time a Discord message id ("snowflake") was created."""
+    return ((int(mid) >> 22) + 1420070400000) / 1000.0
+
+
 class DiscordBackend:
-    def __init__(self, api: DiscordAPI, channel_id: str, crypto=None):
+    """Stores pieces in one channel. Extra bots (`extra_apis`) share the uploading: Discord limits
+    how fast each bot may post, so N bots post up to N times as fast. All bots must be in the
+    channel; any of them can read and delete every piece."""
+
+    def __init__(self, api: DiscordAPI, channel_id: str, crypto=None, extra_apis=()):
         self.api = api
         self.channel_id = str(channel_id)
         self.crypto = crypto
+        self.apis = [api, *extra_apis]
+        self._next = 0
+        self._rr_lock = threading.Lock()
+
+    @property
+    def upload_slots(self) -> int:
+        return len(self.apis)
+
+    def _pick(self) -> DiscordAPI:
+        with self._rr_lock:
+            api = self.apis[self._next % len(self.apis)]
+            self._next += 1
+        return api
 
     def upload(self, filename: str, data: bytes, content: str = "") -> StoredChunk:
-        msg = self.api.send_file(self.channel_id, filename, data, content)
+        msg = self._pick().send_file(self.channel_id, filename, data, content)
         att = msg["attachments"][0]
         return StoredChunk(msg["id"], att["id"], att["url"])
 
@@ -97,12 +119,29 @@ class DiscordBackend:
                 if e.status not in (401, 403, 404, 410):
                     raise
                 log.debug("CDN link for %s rejected (%s); refreshing", message_id, e.status)
-        msg = self.api.get_message(self.channel_id, message_id)
+        msg = self._pick().get_message(self.channel_id, message_id)
         atts = msg.get("attachments") or []
         if not atts:
             raise DiscordError(404, f"message {message_id} has no attachment")
         new_url = atts[0]["url"]
         return self.api.download_url(new_url), new_url
+
+    def message_info(self, message_id: str):
+        """{'filename', 'url', 'attachment_id'} of a stored piece, or None if it is gone from Discord."""
+        try:
+            msg = self._pick().get_message(self.channel_id, message_id)
+        except DiscordError as e:
+            if e.status == 404:
+                return None
+            raise
+        atts = msg.get("attachments") or []
+        if not atts:
+            return None
+        return {"filename": atts[0].get("filename", ""), "url": atts[0].get("url"), "attachment_id": atts[0].get("id")}
+
+    @staticmethod
+    def time_of(mid) -> float:
+        return snowflake_time(mid)
 
     def delete(self, message_id: str) -> None:
         try:
@@ -195,6 +234,8 @@ class DiscordBackend:
 class LocalBackend:
     """Fake Discord: every 'message' is a file in `root`. For tests only."""
 
+    upload_slots = 1
+
     def __init__(self, root: str, max_attachment: int = 10 * 1024 * 1024, latency: float = 0.0, crypto=None):
         self.root = root
         self.max_attachment = max_attachment
@@ -203,6 +244,8 @@ class LocalBackend:
         os.makedirs(root, exist_ok=True)
         self._lock = threading.Lock()
         self._last = 0
+        self.uploads = 0          # counters, for tests
+        self.uploaded_bytes = 0
 
     def _new_id(self) -> str:
         # Several LocalBackend instances (simulated devices) may share `root`:
@@ -236,6 +279,9 @@ class LocalBackend:
             f.write(data)
         with open(self._p(mid, "json"), "w", encoding="utf-8") as f:
             json.dump({"filename": filename, "content": content}, f)
+        with self._lock:
+            self.uploads += 1
+            self.uploaded_bytes += len(data)
         return StoredChunk(mid, mid, f"local://{mid}")
 
     def download(self, message_id, url):
@@ -245,6 +291,20 @@ class LocalBackend:
                 return f.read(), None
         except FileNotFoundError:
             raise DiscordError(404, f"Unknown message {message_id}") from None
+
+    def message_info(self, message_id):
+        if not os.path.exists(self._p(message_id, "bin")):
+            return None
+        try:
+            with open(self._p(message_id, "json"), encoding="utf-8") as f:
+                name = json.load(f).get("filename", "")
+        except (OSError, ValueError):
+            name = ""
+        return {"filename": name, "url": f"local://{message_id}", "attachment_id": message_id}
+
+    @staticmethod
+    def time_of(mid) -> float:
+        return int(mid) / 1e9
 
     def delete(self, message_id):
         for ext in ("bin", "json"):

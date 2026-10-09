@@ -38,6 +38,29 @@ def derive_key(passphrase: str, salt: bytes = None, iterations: int = 200_000) -
     return key, salt
 
 
+SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 17, 8, 1    # 128 MiB of memory per guess
+
+
+def derive_key_scrypt(passphrase: str, salt: bytes) -> bytes:
+    """Derives a 256-bit key with scrypt, which is memory-hard: each password guess costs an
+    attacker 128 MiB of memory as well as time, so guessing on GPUs is far slower than with PBKDF2."""
+    return hashlib.scrypt(passphrase.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P,
+                          maxmem=256 * 2 ** 20, dklen=KEY_SIZE)
+
+
+def password_keys(passphrase: str, channel_id: str):
+    """Keys a password can stand for, newest method first: [(method, key)].
+
+    Drives set up with this version use scrypt; drives set up before it used PBKDF2. Setup tries
+    each against the drive in the channel and keeps the one that opens it."""
+    salt = channel_salt(channel_id)
+    out = []
+    if hasattr(hashlib, "scrypt"):
+        out.append(("scrypt", derive_key_scrypt(passphrase, salt)))
+    out.append(("pbkdf2", derive_key(passphrase, salt)[0]))
+    return out
+
+
 def channel_salt(channel_id: str) -> bytes:
     """Deterministic per-channel salt, so the same passphrase yields the same key on every machine."""
     return hashlib.sha256(f"DiscordDrive:{channel_id}".encode("utf-8")).digest()[:16]

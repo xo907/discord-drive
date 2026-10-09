@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>DiscordDrive</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <a class="brand" href="#/files/">
+      <img src="/logo.svg" alt="" width="22" height="22">
+      <span>DiscordDrive</span>
+    </a>
+    <label class="search">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg>
+      <input id="q" type="search" placeholder="Search files" autocomplete="off" spellcheck="false" aria-label="Search files">
+    </label>
+    <a class="sync" id="sync" href="#/health" title="Drive status">
+      <span class="dot" id="sync-dot"></span><span id="sync-text">Connecting</span>
+    </a>
+  </header>
+
+  <nav class="side" id="nav" aria-label="Sections">
+    <a href="#/files/" data-nav="files">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.5a1.5 1.5 0 0 1 1.5-1.5h3.6l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.7A1.5 1.5 0 0 1 16 16.5H4a1.5 1.5 0 0 1-1.5-1.5z"/></svg>
+      <span>Files</span>
+    </a>
+    <a href="#/deleted" data-nav="deleted">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4.5h4V6M5.5 6l.7 9.6a1 1 0 0 0 1 .9h5.6a1 1 0 0 0 1-.9L14.5 6"/></svg>
+      <span>Deleted</span>
+    </a>
+    <a href="#/snapshots" data-nav="snapshots">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.6"/></svg>
+      <span>Snapshots</span>
+    </a>
+    <a href="#/health" data-nav="health">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8 4 5v4.6c0 3.4 2.5 6.2 6 7.6 3.5-1.4 6-4.2 6-7.6V5z"/><path d="m7.4 10 1.8 1.8 3.6-3.6"/></svg>
+      <span>Health</span>
+    </a>
+    <div class="usage" id="usage"></div>
+  </nav>
+
+  <main id="main" tabindex="-1"></main>
+</div>
+
+<aside class="sheet" id="sheet" aria-hidden="true">
+  <header class="sheet-head">
+    <h2 id="sheet-title"></h2>
+    <button class="icon-btn" id="sheet-close" aria-label="Close">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg>
+    </button>
+  </header>
+  <div class="sheet-body" id="sheet-body"></div>
+</aside>
+<div class="scrim" id="scrim"></div>
+
+<dialog id="dialog">
+  <form method="dialog" id="dialog-form">
+    <h3 id="dialog-title"></h3>
+    <p id="dialog-text"></p>
+    <input id="dialog-input" autocomplete="off" spellcheck="false">
+    <div class="dialog-actions">
+      <button value="cancel" class="btn ghost" type="submit">Cancel</button>
+      <button value="ok" class="btn" id="dialog-ok" type="submit">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="tray" id="tray" aria-live="polite"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="drop" id="drop"><div>Drop to upload into <b id="drop-to"></b></div></div>
+<input type="file" id="pick" multiple hidden>
+<script src="/app.js"></script>
+</body>
+</html>

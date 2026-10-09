@@ -1,0 +1,66 @@
+name: Release
+
+# Push a tag like v0.2.0 to build the installers and attach them to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test
+        run: python -m unittest discover -s tests
+      - name: Build DiscordDrive.exe
+        shell: pwsh
+        run: packaging\build_exe.ps1
+      - name: Check it starts
+        run: dist\DiscordDrive.exe --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/DiscordDrive.exe
+
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: |
+          python3 -m pip install cryptography
+          python3 -m unittest discover -s tests
+      - name: Build the .deb
+        run: bash packaging/build_deb.sh
+      - name: Check it installs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ./dist/*.deb
+          discorddrive --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows-exe, deb]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "DiscordDrive $GITHUB_REF_NAME" \
+            --notes "Windows: DiscordDrive.exe (also install WinFsp from https://winfsp.dev/rel/). Debian / Ubuntu / Raspberry Pi OS: sudo apt install ./discorddrive_*.deb"

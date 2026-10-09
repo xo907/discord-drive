@@ -16,6 +16,10 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
+from . import codec
+from .crypto import AuthenticationError
+from .discord_api import DiscordError
+
 log = logging.getLogger("discorddrive.cache")
 
 
@@ -42,6 +46,7 @@ class ChunkCache:
         self._mem = OrderedDict()  # message_id -> bytes (memory mode)
         self._mem_total = 0
         self._pinned = (0.0, set())
+        self.healer = None                          # rebuilds pieces missing from Discord (heal.py)
         self.pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="download")
         entries = []
         for name in os.listdir(directory):
@@ -161,14 +166,22 @@ class ChunkCache:
         try:
             last_err = None
             for attempt in range(3):
-                data, new_url = self.backend.download(mid, chunk.get("url"))
+                try:
+                    data, new_url = self.backend.download(mid, chunk.get("url"))
+                except DiscordError as e:
+                    if e.status not in (403, 404):
+                        raise
+                    last_err = e        # gone from Discord: rebuild it from its spare pieces
+                    break
                 if new_url:
                     chunk["url"] = new_url
                     self.index.update_chunk_url(mid, new_url)
-
-                # Decrypt if chunk was encrypted with AES-256-GCM
-                if self.crypto and data.startswith(b"DENC"):
-                    data = self.crypto.decrypt(data)
+                try:
+                    data = codec.decode(data, self.crypto, chunk.get("sha256"))
+                except AuthenticationError as e:
+                    last_err = e
+                    log.warning("Could not decrypt piece %s: %s", mid, e)
+                    break
 
                 sha = chunk.get("sha256")
                 if sha and hashlib.sha256(data).hexdigest() != sha:
@@ -176,10 +189,29 @@ class ChunkCache:
                     log.warning("%s (attempt %d)", last_err, attempt + 1)
                     continue
                 return self.put(mid, data, persist=persist)
+            if self.healer is not None:
+                data = self.healer.recover(mid)
+                if data is not None:
+                    return self.put(mid, data, persist=persist)
             raise last_err
         finally:
             with self._lock:
                 self._inflight.pop(mid, None)
+
+    def peek(self, mid):
+        """A cached piece's bytes, without downloading (None if it isn't cached)."""
+        with self._lock:
+            data = self._mem.get(mid)
+            if data is not None:
+                return data
+            cached = mid in self._lru
+        if cached:
+            try:
+                with open(self._path(mid), "rb") as f:
+                    return f.read()
+            except OSError:
+                return None
+        return None
 
     def is_chunk_cached(self, message_id: str) -> bool:
         with self._lock:

@@ -20,6 +20,7 @@ import logging
 import os
 import posixpath
 import secrets
+import socket
 import threading
 import time
 
@@ -30,6 +31,16 @@ log = logging.getLogger("discorddrive.journal")
 OP_PREFIX = "DDOP1 "
 OP_INLINE_MAX = 1900       # Discord message content limit is 2000 characters
 GC_INTERVAL = 3600.0
+HEARTBEAT = 12 * 3600.0    # a device that posted nothing for this long says it is still around
+CATCH_UP_DAYS = 14         # after an upgrade, re-read this much history for what older versions skipped
+FEATURES = "2"             # kv "features": this index has applied the journal with the current op set
+
+
+def _hostname():
+    try:
+        return socket.gethostname()[:40]
+    except Exception:
+        return ""
 
 
 class Journal:
@@ -55,11 +66,11 @@ class Journal:
 
     # ------------------------------------------------------------ encoding
     def _encode(self, ops) -> bytes:
-        raw = gzip.compress(json.dumps({"v": 1, "d": self.device, "ops": ops},
+        raw = gzip.compress(json.dumps({"v": 1, "d": self.device, "h": _hostname(), "ops": ops},
                                        separators=(",", ":")).encode("utf-8"), 6)
         return self.crypto.encrypt(raw) if self.crypto else raw
 
-    def _decode(self, raw: bytes):
+    def _decode_env(self, raw: bytes):
         if raw.startswith(b"DENC"):
             if not self.crypto:
                 raise ValueError("journal entry is encrypted but no encryption key is configured")
@@ -68,7 +79,26 @@ class Journal:
         ops = env.get("ops")
         if not isinstance(ops, list):
             raise ValueError("malformed journal entry")
-        return ops
+        dev = str(env.get("d") or "")
+        for op in ops:
+            if isinstance(op, dict) and op.get("t") == "snap":
+                op["_d"] = dev
+        return env
+
+    def _decode(self, raw: bytes):
+        return self._decode_env(raw)["ops"]
+
+    def _read_entry(self, m):
+        """(envelope, ops) of a journal message, or (None, []) if it can't be read."""
+        payload = (m.get("content") or "")[len(OP_PREFIX):].strip()
+        # Network errors propagate (retried on the next poll); bad data is skipped.
+        raw = self.backend.fetch_attachment(m) if payload == "@" else None
+        try:
+            env = self._decode_env(raw if raw is not None else base64.b64decode(payload))
+            return env, env["ops"]
+        except Exception as e:
+            log.error("Skipping unreadable journal entry %s: %s", m["id"], e)
+            return None, []
 
     def post_ops(self, ops) -> str:
         """Publish operations directly (used for the outbox and by CLI commands)."""
@@ -79,6 +109,10 @@ class Journal:
         else:
             mid = self.backend.upload(f"ops_{secrets.token_hex(6)}.bin", raw, content=OP_PREFIX + "@").message_id
         self._last_posted = max(self._last_posted, int(mid))
+        try:
+            self.index.kv_set("last_post", str(time.time()))
+        except Exception:
+            pass
         return mid
 
     # ------------------------------------------------------- flush & poll
@@ -102,23 +136,76 @@ class Journal:
             msgs = self.backend.messages_after(cursor)
             if not msgs:
                 break
+            seen = {}
             for m in msgs:
                 content = m.get("content") or ""
                 if content.startswith(OP_PREFIX):
-                    payload = content[len(OP_PREFIX):].strip()
-                    # Network errors propagate (retried on the next poll); bad data is skipped.
-                    raw = self.backend.fetch_attachment(m) if payload == "@" else None
-                    try:
-                        ops = self._decode(raw if raw is not None else base64.b64decode(payload))
-                    except Exception as e:
-                        log.error("Skipping unreadable journal entry %s: %s", m["id"], e)
-                        ops = []
+                    env, ops = self._read_entry(m)
+                    if env is not None and env.get("d"):
+                        seen[str(env["d"])] = (self._time_of(m["id"]), str(env.get("h") or ""))
                     changed_total += self._apply(ops, m["id"])
                 cursor = m["id"]
             self.index.kv_set("journal_cursor", cursor)
+            self.index.note_devices(seen)
             if len(msgs) < 100:
                 break
         return changed_total
+
+    def _time_of(self, mid):
+        try:
+            return self.backend.time_of(mid)
+        except Exception:
+            return time.time()
+
+    def catch_up(self, days=CATCH_UP_DAYS, stop=None):
+        """After upgrading from a version without spare pieces / repairs / snapshots, re-read the
+        recent journal and apply just those parts (everything else was applied the first time)."""
+        if self.index.kv_get("features") == FEATURES:
+            return 0
+        end = int(self.index.kv_get("journal_cursor") or "0")
+        cursor = self.backend.id_for_time(time.time() - days * 86400)
+        applied = 0
+        log.info("Reading the last %d days of the change journal for spare pieces and repairs...", days)
+        while int(cursor) < end:
+            if stop is not None and stop():
+                return applied
+            msgs = self.backend.messages_after(cursor)
+            if not msgs:
+                break
+            for m in msgs:
+                if int(m["id"]) > end:
+                    msgs = []          # past where the normal sync had got to: done
+                    break
+                if (m.get("content") or "").startswith(OP_PREFIX):
+                    _, ops = self._read_entry(m)
+                    if any(isinstance(o, dict) and (o.get("t") in self.index.EXTRA_OPS or o.get("x")) for o in ops):
+                        fs = self.fs
+                        if fs is not None:
+                            with fs.lock:
+                                fs.on_remote_change(self.index.apply_ops(ops, None, extras_only=True))
+                        else:
+                            self.index.apply_ops(ops, None, extras_only=True)
+                        applied += 1
+                cursor = m["id"]
+            if len(msgs) < 100:
+                break
+        self.index.kv_set("features", FEATURES)
+        log.info("Journal catch-up done (%d entries had something new).", applied)
+        return applied
+
+    def create_snapshot(self, label="", keep_days=14.0):
+        """Record the whole drive as it is now (posted in parts; every device applies them)."""
+        with self._sync_lock:
+            self.flush()
+            self.poll()
+            ops = self.index.snapshot_ops(label, keep_days)
+            for op in ops:
+                self.post_ops([op])
+            self.index.kv_set("snapshot_posted", str(time.time()))
+            self.poll()
+        files = sum(1 for op in ops for e in op["e"] if not e[1])
+        log.info("Snapshot taken: %d file(s)%s.", files, f" ({label})" if label else "")
+        return ops[0]["i"]
 
     def _apply(self, ops, mid) -> int:
         fs = self.fs
@@ -183,6 +270,9 @@ class Journal:
         if changed:
             log.info("Applied %d change(s) from other devices", changed)
         now = time.time()
+        if now - float(self.index.kv_get("last_post") or 0) >= HEARTBEAT:
+            with self._sync_lock:
+                self.post_ops([{"t": "hb"}])
         if now - self._last_checkpoint_time >= max(60.0, float(self.cfg.index_backup_interval or 600)):
             with self._sync_lock:
                 self.checkpoint()

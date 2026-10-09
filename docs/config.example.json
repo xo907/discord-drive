@@ -26,5 +26,21 @@
   "encryption_key": "",
   "encryption_salt": "",
   "old_encryption_keys": [],
-  "allow_other": false
+  "allow_other": false,
+  "extra_bot_tokens": [],
+  "compression": true,
+  "dedup": true,
+  "parity_enabled": true,
+  "parity_group": 10,
+  "parity_pieces": 2,
+  "scrub_enabled": true,
+  "scrub_days": 7.0,
+  "protect_existing": true,
+  "snapshot_interval_hours": 24.0,
+  "snapshot_keep_days": 14.0,
+  "hidden_folders": [],
+  "web_enabled": true,
+  "web_port": 8765,
+  "web_lan": false,
+  "web_token": ""
 }

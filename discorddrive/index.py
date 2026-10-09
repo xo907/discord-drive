@@ -86,7 +86,63 @@ CREATE TABLE IF NOT EXISTS version_chunks(
     PRIMARY KEY(version_id, idx)
 );
 CREATE INDEX IF NOT EXISTS version_chunks_message ON version_chunks(message_id);
+CREATE INDEX IF NOT EXISTS chunks_sha ON chunks(sha256);
+CREATE INDEX IF NOT EXISTS version_chunks_sha ON version_chunks(sha256);
+-- Spare pieces: a group of data pieces (members, in order) and its Reed-Solomon parity pieces.
+CREATE TABLE IF NOT EXISTS parity_groups(gid TEXT PRIMARY KEY, created REAL);
+CREATE TABLE IF NOT EXISTS parity_members(
+    gid        TEXT NOT NULL,
+    pos        INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    sha256     TEXT,
+    PRIMARY KEY(gid, pos)
+);
+CREATE INDEX IF NOT EXISTS parity_members_message ON parity_members(message_id);
+CREATE TABLE IF NOT EXISTS parity_shards(
+    gid        TEXT NOT NULL,
+    j          INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    sha256     TEXT,
+    PRIMARY KEY(gid, j)
+);
+CREATE INDEX IF NOT EXISTS parity_shards_message ON parity_shards(message_id);
+-- Snapshots: the whole tree as it was at one moment; their pieces are kept until they expire.
+CREATE TABLE IF NOT EXISTS snapshots(
+    id         TEXT PRIMARY KEY,
+    at         REAL NOT NULL,
+    label      TEXT,
+    device     TEXT,
+    keep_until REAL,
+    parts      INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS snapshot_parts(snap_id TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(snap_id, n));
+CREATE TABLE IF NOT EXISTS snapshot_entries(
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    snap_id TEXT NOT NULL,
+    path    TEXT NOT NULL,
+    is_dir  INTEGER NOT NULL,
+    size    INTEGER NOT NULL DEFAULT 0,
+    mtime   REAL
+);
+CREATE INDEX IF NOT EXISTS snapshot_entries_snap ON snapshot_entries(snap_id);
+CREATE TABLE IF NOT EXISTS snapshot_chunks(
+    entry_id   INTEGER NOT NULL,
+    snap_id    TEXT NOT NULL,
+    idx        INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    size       INTEGER NOT NULL,
+    sha256     TEXT
+);
+CREATE INDEX IF NOT EXISTS snapshot_chunks_entry ON snapshot_chunks(entry_id);
+CREATE INDEX IF NOT EXISTS snapshot_chunks_snap ON snapshot_chunks(snap_id);
+CREATE INDEX IF NOT EXISTS snapshot_chunks_message ON snapshot_chunks(message_id);
 """
+
+# Tables that point at stored pieces; a "fix" (a piece re-uploaded after Discord lost it) updates them all.
+_PIECE_TABLES = ("chunks", "version_chunks", "snapshot_chunks", "parity_members", "parity_shards")
+TRASH_GRACE = 600.0   # seconds a released piece waits before it is deleted from Discord
 
 _UPDATABLE = {"size", "mtime", "ctime", "atime", "version", "state", "is_pinned"}
 
@@ -368,8 +424,11 @@ class Index:
     def get_chunks(self, nid):
         return self._all("SELECT * FROM chunks WHERE node_id=? ORDER BY idx", (nid,))
 
-    def replace_chunks(self, nid, chunks, version):
-        """Atomically swap a file's chunk list and publish it. Returns False if the file changed meanwhile."""
+    def replace_chunks(self, nid, chunks, version, parity=None):
+        """Atomically swap a file's chunk list and publish it. Returns False if the file changed meanwhile.
+
+        parity: {"k": group size, "g": [[gid, [[message_id, size, sha256], ...]], ...]}, one entry
+        per group of `k` consecutive chunks, or None for a file without spare pieces."""
         with self.tx() as db:
             row = db.execute("SELECT * FROM nodes WHERE id=?", (nid,)).fetchone()
             if row is None or row["version"] != version:
@@ -386,18 +445,61 @@ class Index:
                 [(nid, c["idx"], c["message_id"], c["attachment_id"], c["url"], c["size"], c["sha256"]) for c in chunks],
             )
             db.execute("UPDATE nodes SET state='synced', size=?, jstate=MAX(jstate, 1) WHERE id=?", (size, nid))
+            triples = [(c["message_id"], c["size"], c["sha256"]) for c in chunks]
+            self._add_parity(db, triples, parity)
             if old and vid is None:
                 self._release(db, [c[0] for c in old if c[0] not in new_mids])
-            self._queue(db, {
+            op = {
                 "t": "put", "u": row["uid"], "p": self._uid(db, row["parent"]), "n": row["name"],
                 "s": size, "m": row["mtime"],
-                "c": [[c["message_id"], c["size"], c["sha256"]] for c in chunks],
-            })
+                "c": [list(t) for t in triples],
+            }
+            if parity:
+                op["x"] = parity
+            self._queue(db, op)
         return True
 
     def update_chunk_url(self, message_id, url):
         with self.lock:
             self.db.execute("UPDATE chunks SET url=? WHERE message_id=?", (url, message_id))
+
+    # --------------------------------------------------- piece references
+    @staticmethod
+    def _data_used(db, mid):
+        """Does a file, an old version or a snapshot still need this piece?"""
+        return db.execute(
+            "SELECT 1 FROM chunks WHERE message_id=? UNION ALL "
+            "SELECT 1 FROM version_chunks WHERE message_id=? UNION ALL "
+            "SELECT 1 FROM snapshot_chunks WHERE message_id=? LIMIT 1", (mid, mid, mid)).fetchone() is not None
+
+    @classmethod
+    def _used(cls, db, mid):
+        return cls._data_used(db, mid) or db.execute(
+            "SELECT 1 FROM parity_shards WHERE message_id=? LIMIT 1", (mid,)).fetchone() is not None
+
+    def is_referenced(self, mid):
+        with self.lock:
+            return self._used(self.db, mid)
+
+    def release(self, mids):
+        """Trash pieces (uploaded but not used after all) unless something else uses them."""
+        mids = [m for m in mids if m]
+        if mids:
+            with self.tx() as db:
+                self._release(db, mids)
+
+    def find_dedup(self, sha256, size):
+        """A stored piece with exactly this content, if the drive already has one."""
+        row = self._one(
+            "SELECT message_id FROM chunks WHERE sha256=? AND size=? UNION ALL "
+            "SELECT message_id FROM version_chunks WHERE sha256=? AND size=? LIMIT 1",
+            (sha256, size, sha256, size))
+        return row["message_id"] if row else None
+
+    def queue_op(self, op):
+        """Publish an operation through the journal (e.g. a repaired piece)."""
+        with self.tx() as db:
+            self._queue(db, op)
 
     # ---------------------------------------------------------------- trash
     def trash_add(self, mids):
@@ -405,23 +507,152 @@ class Index:
         with self.lock:
             self.db.executemany("INSERT OR IGNORE INTO trash(message_id, added) VALUES(?, ?)", [(m, now) for m in mids])
 
-    def trash_batch(self, n=10):
-        return [r["message_id"] for r in self._all("SELECT message_id FROM trash ORDER BY added LIMIT ?", (n,))]
+    def trash_batch(self, n=10, grace=None):
+        """Trashed pieces that have waited out the grace period (oldest first)."""
+        cutoff = time.time() - (TRASH_GRACE if grace is None else grace)
+        return [r["message_id"] for r in
+                self._all("SELECT message_id FROM trash WHERE added <= ? ORDER BY added LIMIT ?", (cutoff, n))]
 
     def trash_remove(self, mid):
         with self.lock:
             self.db.execute("DELETE FROM trash WHERE message_id=?", (mid,))
 
-    @staticmethod
-    def _release(db, mids):
-        """Trash messages that nothing (current files or versions) references any more."""
+    @classmethod
+    def _release(cls, db, mids):
+        """Trash pieces that nothing (files, versions, snapshots) references any more, and the
+        spare pieces of groups that no longer protect anything."""
         now = time.time()
+        gids = set()
         for mid in mids:
-            used = db.execute(
-                "SELECT 1 FROM chunks WHERE message_id=? UNION ALL "
-                "SELECT 1 FROM version_chunks WHERE message_id=? LIMIT 1", (mid, mid)).fetchone()
-            if not used:
+            if not cls._used(db, mid):
                 db.execute("INSERT OR IGNORE INTO trash(message_id, added) VALUES(?, ?)", (mid, now))
+            gids.update(r[0] for r in db.execute("SELECT gid FROM parity_members WHERE message_id=?", (mid,)))
+        cls._gc_groups(db, gids)
+
+    # ---------------------------------------------------------- spare pieces
+    @staticmethod
+    def _parity_group_shape(n, k):
+        return [(g, min(g + k, n)) for g in range(0, n, k)]
+
+    @classmethod
+    def _add_parity(cls, db, triples, parity):
+        """Record the spare pieces described by a put operation's "x" field. Returns their group ids."""
+        if not parity or not triples:
+            return []
+        k = int(parity.get("k") or 0)
+        groups = parity.get("g") or []
+        if k <= 0 or len(groups) != len(cls._parity_group_shape(len(triples), k)):
+            log.warning("Ignoring spare pieces that don't match their file")
+            return []
+        gids = []
+        for (start, end), (gid, shards) in zip(cls._parity_group_shape(len(triples), k), groups):
+            cls._insert_group(db, str(gid), triples[start:end], shards)
+            gids.append(str(gid))
+        return gids
+
+    @staticmethod
+    def _insert_group(db, gid, members, shards):
+        if db.execute("INSERT OR IGNORE INTO parity_groups(gid, created) VALUES(?, ?)", (gid, time.time())).rowcount:
+            db.executemany("INSERT INTO parity_members(gid, pos, message_id, size, sha256) VALUES(?,?,?,?,?)",
+                           [(gid, i, str(m[0]), int(m[1]), m[2]) for i, m in enumerate(members)])
+            db.executemany("INSERT INTO parity_shards(gid, j, message_id, size, sha256) VALUES(?,?,?,?,?)",
+                           [(gid, j, str(s[0]), int(s[1]), s[2]) for j, s in enumerate(shards)])
+
+    @classmethod
+    def _gc_groups(cls, db, gids):
+        """Drop groups none of whose data pieces are used any more, trashing their spare pieces."""
+        now = time.time()
+        for gid in gids:
+            members = [r[0] for r in db.execute("SELECT message_id FROM parity_members WHERE gid=?", (gid,))]
+            if any(cls._data_used(db, m) for m in members):
+                continue
+            shards = [r[0] for r in db.execute("SELECT message_id FROM parity_shards WHERE gid=?", (gid,))]
+            for t in ("parity_groups", "parity_members", "parity_shards"):
+                db.execute(f"DELETE FROM {t} WHERE gid=?", (gid,))
+            for mid in shards:
+                if not cls._used(db, mid):
+                    db.execute("INSERT OR IGNORE INTO trash(message_id, added) VALUES(?, ?)", (mid, now))
+
+    def add_parity_group(self, gid, members, shards):
+        """Record spare pieces for already stored pieces, and publish them."""
+        with self.tx() as db:
+            self._insert_group(db, gid, members, shards)
+            self._queue(db, {"t": "par", "g": gid, "m": members, "p": shards})
+            self._gc_groups(db, [gid])
+
+    def find_group(self, member_mids):
+        """An existing group with exactly these data pieces in this order: [gid, shards] or None
+        (a copy of a file reuses its spare pieces along with its pieces)."""
+        if not member_mids:
+            return None
+        with self.lock:
+            for (gid,) in self.db.execute("SELECT gid FROM parity_members WHERE message_id=? AND pos=0",
+                                          (member_mids[0],)).fetchall():
+                mids = [r[0] for r in self.db.execute(
+                    "SELECT message_id FROM parity_members WHERE gid=? ORDER BY pos", (gid,))]
+                if mids == list(member_mids):
+                    shards = [list(r) for r in self.db.execute(
+                        "SELECT message_id, size, sha256 FROM parity_shards WHERE gid=? ORDER BY j", (gid,))]
+                    return [gid, shards]
+        return None
+
+    def parity_groups_for(self, mid):
+        """Every group that can rebuild piece `mid`: [{gid, members: [(mid, size, sha)], shards: [...]}]."""
+        with self.lock:
+            out = []
+            for (gid,) in self.db.execute(
+                    "SELECT DISTINCT gid FROM parity_members WHERE message_id=? UNION "
+                    "SELECT DISTINCT gid FROM parity_shards WHERE message_id=?", (mid, mid)).fetchall():
+                members = [tuple(r) for r in self.db.execute(
+                    "SELECT message_id, size, sha256 FROM parity_members WHERE gid=? ORDER BY pos", (gid,))]
+                shards = [tuple(r) for r in self.db.execute(
+                    "SELECT message_id, size, sha256 FROM parity_shards WHERE gid=? ORDER BY j", (gid,))]
+                out.append({"gid": gid, "members": members, "shards": shards})
+            return out
+
+    def piece_info(self, mid):
+        """(kind, size, sha256) of a stored piece: kind is 'data' or 'parity'; None if unknown."""
+        with self.lock:
+            for table in ("chunks", "version_chunks", "snapshot_chunks"):
+                row = self.db.execute(f"SELECT size, sha256 FROM {table} WHERE message_id=? LIMIT 1", (mid,)).fetchone()
+                if row:
+                    return "data", row[0], row[1]
+            row = self.db.execute("SELECT size, sha256 FROM parity_shards WHERE message_id=? LIMIT 1", (mid,)).fetchone()
+            return ("parity", row[0], row[1]) if row else None
+
+    def referenced_mids(self):
+        """Every stored piece the drive needs (for the background check), in upload order."""
+        with self.lock:
+            mids = {r[0] for r in self.db.execute(
+                "SELECT message_id FROM chunks UNION SELECT message_id FROM version_chunks UNION "
+                "SELECT message_id FROM snapshot_chunks UNION SELECT message_id FROM parity_shards")}
+        return sorted(mids, key=lambda m: (len(m), m))
+
+    def unprotected_slices(self, k, limit=1, skip=()):
+        """Files with groups of `k` chunks that have no spare pieces yet:
+        [(nid, [[(mid, size, sha), ...] per unprotected group])], at most `limit` files, not those in `skip`."""
+        out = []
+        with self.lock:
+            nids = [r[0] for r in self.db.execute(
+                "SELECT DISTINCT c.node_id FROM chunks c JOIN nodes n ON n.id = c.node_id "
+                "WHERE n.state='synced' AND NOT EXISTS "
+                "(SELECT 1 FROM parity_members p WHERE p.message_id = c.message_id) LIMIT ?",
+                (limit * 4 + len(skip),))]
+            for nid in nids:
+                if nid in skip:
+                    continue
+                triples = self._chunk_list(self.db, nid)
+                todo = []
+                for start, end in self._parity_group_shape(len(triples), k):
+                    part = triples[start:end]
+                    if not all(self.db.execute("SELECT 1 FROM parity_members WHERE message_id=? LIMIT 1",
+                                               (m[0],)).fetchone() for m in part):
+                        todo.append(part)
+                if todo:
+                    out.append((nid, todo))
+                if len(out) >= limit:
+                    break
+        return out
 
     # ------------------------------------------------------------- versions
     def _add_version(self, db, row, chunks, reason, size=None, mtime=None):
@@ -490,7 +721,132 @@ class Index:
                 db.execute("DELETE FROM version_chunks WHERE version_id=?", (vid,))
                 db.execute("DELETE FROM versions WHERE id=?", (vid,))
                 self._release(db, mids)
+            for (sid,) in db.execute("SELECT id FROM snapshots WHERE keep_until IS NOT NULL AND keep_until < ?",
+                                     (time.time(),)).fetchall():
+                self._drop_snapshot(db, sid)
         return len(expired)
+
+    # ------------------------------------------------------------ snapshots
+    SNAPSHOT_PART_PIECES = 4000      # pieces per snapshot message (keeps each one well under 10 MiB)
+
+    def snapshot_ops(self, label="", keep_days=14.0, snap_id=None, at=None):
+        """Operations that record the whole tree as it is now (only fully uploaded content)."""
+        snap_id = snap_id or new_uid()
+        at = at or time.time()
+        keep_until = at + keep_days * 86400 if keep_days and keep_days > 0 else None
+        entries = []
+        with self.lock:
+            db = self.db
+            for row in db.execute("SELECT * FROM nodes WHERE id != ? AND jstate >= 1 ORDER BY id", (ROOT_ID,)).fetchall():
+                if row["uid"] == RECOVERED_UID:
+                    continue
+                path = self._path(db, row["id"])
+                if row["is_dir"]:
+                    entries.append([path, 1, 0, row["mtime"], []])
+                    continue
+                chunks = self._chunk_list(db, row["id"])
+                if not chunks and row["size"]:
+                    continue        # never uploaded: nothing to keep
+                entries.append([path, 0, sum(c[1] for c in chunks), row["mtime"], [list(c) for c in chunks]])
+        parts, cur, pieces = [], [], 0
+        for e in entries:
+            if cur and pieces + len(e[4]) + 1 > self.SNAPSHOT_PART_PIECES:
+                parts.append(cur)
+                cur, pieces = [], 0
+            cur.append(e)
+            pieces += len(e[4]) + 1
+        parts.append(cur)
+        return [{"t": "snap", "i": snap_id, "at": at, "l": label or "", "k": keep_until,
+                 "n": n, "N": len(parts), "e": part} for n, part in enumerate(parts)]
+
+    def _op_snap(self, db, op, busy, changed):
+        sid = str(op["i"])
+        keep_until = op.get("k")
+        if keep_until is not None and float(keep_until) < time.time():
+            return       # already expired
+        db.execute("INSERT OR IGNORE INTO snapshots(id, at, label, device, keep_until, parts) VALUES(?,?,?,?,?,?)",
+                   (sid, float(op["at"]), str(op.get("l") or "")[:100], op.get("_d"), keep_until, int(op.get("N", 1))))
+        if not db.execute("INSERT OR IGNORE INTO snapshot_parts(snap_id, n) VALUES(?, ?)",
+                          (sid, int(op.get("n", 0)))).rowcount:
+            return       # this part was applied before
+        for path, is_dir, size, mtime, chunks in op.get("e") or []:
+            eid = db.execute("INSERT INTO snapshot_entries(snap_id, path, is_dir, size, mtime) VALUES(?,?,?,?,?)",
+                             (sid, str(path), 1 if is_dir else 0, int(size), mtime)).lastrowid
+            db.executemany(
+                "INSERT INTO snapshot_chunks(entry_id, snap_id, idx, message_id, size, sha256) VALUES(?,?,?,?,?,?)",
+                [(eid, sid, i, str(c[0]), int(c[1]), c[2]) for i, c in enumerate(chunks)])
+
+    def _drop_snapshot(self, db, sid):
+        mids = [r[0] for r in db.execute("SELECT DISTINCT message_id FROM snapshot_chunks WHERE snap_id=?", (sid,))]
+        for t, col in (("snapshot_chunks", "snap_id"), ("snapshot_entries", "snap_id"),
+                       ("snapshot_parts", "snap_id"), ("snapshots", "id")):
+            db.execute(f"DELETE FROM {t} WHERE {col}=?", (sid,))
+        self._release(db, mids)
+
+    def delete_snapshot(self, sid):
+        with self.tx() as db:
+            self._drop_snapshot(db, sid)
+            self._queue(db, {"t": "unsnap", "i": sid})
+
+    def _op_unsnap(self, db, op, busy, changed):
+        if db.execute("SELECT 1 FROM snapshots WHERE id=?", (str(op["i"]),)).fetchone():
+            self._drop_snapshot(db, str(op["i"]))
+
+    def snapshots(self):
+        """Complete snapshots, newest first."""
+        return self._all(
+            "SELECT s.*, (SELECT COUNT(*) FROM snapshot_entries e WHERE e.snap_id=s.id AND e.is_dir=0) AS files, "
+            "(SELECT COALESCE(SUM(size), 0) FROM snapshot_entries e WHERE e.snap_id=s.id) AS bytes "
+            "FROM snapshots s WHERE (SELECT COUNT(*) FROM snapshot_parts p WHERE p.snap_id=s.id) >= s.parts "
+            "ORDER BY s.at DESC")
+
+    def snapshot_entries(self, sid, prefix="/"):
+        """Entries of a snapshot under `prefix`: [{path, is_dir, size, mtime, chunks: [(mid, size, sha)]}]."""
+        prefix = "/" + prefix.strip("/")
+        p = prefix.lower()
+        out = []
+        with self.lock:
+            for e in self.db.execute("SELECT * FROM snapshot_entries WHERE snap_id=? ORDER BY path", (sid,)).fetchall():
+                path = e["path"]
+                if prefix != "/" and path.lower() != p and not path.lower().startswith(p + "/"):
+                    continue
+                chunks = [tuple(r) for r in self.db.execute(
+                    "SELECT message_id, size, sha256 FROM snapshot_chunks WHERE entry_id=? ORDER BY idx", (e["id"],))]
+                out.append({"path": path, "is_dir": bool(e["is_dir"]), "size": e["size"], "mtime": e["mtime"],
+                            "chunks": chunks})
+        return out
+
+    def last_snapshot_time(self):
+        row = self._one("SELECT MAX(at) AS at FROM snapshots")
+        return (row or {}).get("at") or 0.0
+
+    # -------------------------------------------------------------- devices
+    def note_devices(self, seen):
+        """seen: {device_id: (unix_time, name)} from journal entries that were just read."""
+        if not seen:
+            return
+        try:
+            known = json.loads(self.kv_get("devices") or "{}")
+        except ValueError:
+            known = {}
+        for dev, (t, name) in seen.items():
+            cur = known.get(dev) or {}
+            if t >= cur.get("seen", 0):
+                known[dev] = {"seen": t, "name": name or cur.get("name") or ""}
+        self.kv_set("devices", json.dumps(known, separators=(",", ":")))
+
+    def devices(self):
+        try:
+            return json.loads(self.kv_get("devices") or "{}")
+        except ValueError:
+            return {}
+
+    def is_leader(self, me, window=3 * 86400):
+        """Background chores (checking pieces, protecting old files, automatic snapshots) run on
+        one device: the one with the smallest id among devices seen recently."""
+        cutoff = time.time() - window
+        active = [d for d, v in self.devices().items() if v.get("seen", 0) >= cutoff and d not in ("cli", "unknown")]
+        return not active or me <= min(active)
 
     # --------------------------------------------------------------- outbox
     def outbox_peek(self, n=200):
@@ -563,14 +919,26 @@ class Index:
             return name
         return self._free_name(db, parent, conflict_name(name, uid))
 
-    def apply_ops(self, ops, cursor, busy=None):
+    # Operations a device running an older version skipped: replayed after an upgrade (see Journal.catch_up).
+    EXTRA_OPS = ("par", "fix", "snap", "unsnap")
+
+    def apply_ops(self, ops, cursor, busy=None, extras_only=False):
         """Apply journal operations (from message `cursor`) and advance the cursor.
-        Returns the set of local node ids that changed (including deleted ones)."""
+        Returns the set of local node ids that changed (including deleted ones).
+
+        extras_only: apply only what older versions ignored (spare pieces, repairs, snapshots)
+        and leave the cursor alone."""
         busy = busy or (lambda nid: False)
         changed = set()
         with self.tx() as db:
             for op in ops:
-                fn = getattr(self, "_op_" + str(op.get("t")), None) if isinstance(op, dict) else None
+                t = str(op.get("t")) if isinstance(op, dict) else ""
+                if extras_only:
+                    if t == "put":
+                        t = "put_extras"
+                    elif t not in self.EXTRA_OPS:
+                        continue
+                fn = getattr(self, "_op_" + t, None) if t else None
                 if fn is None:
                     log.warning("Ignoring unknown journal operation: %r", op)
                     continue
@@ -582,8 +950,42 @@ class Index:
                     db.execute("ROLLBACK TO op")
                     db.execute("RELEASE op")
                     log.warning("Skipping journal operation %r: %s", op, e)
-            db.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('journal_cursor', ?)", (str(cursor),))
+            if not extras_only:
+                db.execute("INSERT OR REPLACE INTO kv(key, value) VALUES('journal_cursor', ?)", (str(cursor),))
         return changed
+
+    def _op_hb(self, db, op, busy, changed):
+        """Heartbeat: a device saying it is alive (the journal notes who posted it)."""
+
+    def _op_put_extras(self, db, op, busy, changed):
+        chunks = [(str(c[0]), int(c[1]), c[2]) for c in op["c"]]
+        self._gc_groups(db, self._add_parity(db, chunks, op.get("x")))
+
+    def _op_par(self, db, op, busy, changed):
+        """Spare pieces added to a file that was uploaded without them."""
+        members = [(str(m[0]), int(m[1]), m[2]) for m in op["m"]]
+        self._insert_group(db, str(op["g"]), members, op["p"])
+        self._gc_groups(db, [str(op["g"])])
+
+    def _op_fix(self, db, op, busy, changed):
+        """Piece `o` went missing from Discord and was uploaded again as `n`. Applied in journal
+        order, so when two devices repair the same piece, every device keeps the first repair."""
+        old, new = str(op["o"]), str(op["n"])
+        if old == new:
+            return
+        nodes = {r[0] for r in db.execute("SELECT node_id FROM chunks WHERE message_id=?", (old,))}
+        updated = 0
+        for table in _PIECE_TABLES:
+            updated += db.execute(f"UPDATE {table} SET message_id=? WHERE message_id=?", (new, old)).rowcount
+        if updated:
+            db.execute("UPDATE chunks SET url=NULL, attachment_id=NULL WHERE message_id=?", (new,))
+            db.execute("DELETE FROM trash WHERE message_id=?", (new,))
+            self._release(db, [old])     # in case it wasn't really gone
+            changed.update(nodes)
+            log.info("Repaired piece %s (now stored as %s)", old, new)
+        elif not self._used(db, new):
+            # Another device repaired it first: this copy isn't needed.
+            db.execute("INSERT OR IGNORE INTO trash(message_id, added) VALUES(?, ?)", (new, time.time()))
 
     @staticmethod
     def _dead(db, uid):
@@ -611,6 +1013,12 @@ class Index:
         changed.add(nid)
 
     def _op_put(self, db, op, busy, changed):
+        chunks = [(str(c[0]), int(c[1]), c[2]) for c in op["c"]]
+        gids = self._add_parity(db, chunks, op.get("x"))
+        self._op_put_content(db, op, busy, changed)
+        self._gc_groups(db, gids)    # e.g. a late upload of something deleted elsewhere
+
+    def _op_put_content(self, db, op, busy, changed):
         uid = op["u"]
         chunks = [(str(c[0]), int(c[1]), c[2]) for c in op["c"]]
         size = int(op.get("s", sum(c[1] for c in chunks)))
@@ -747,11 +1155,19 @@ class Index:
             trash = self.db.execute("SELECT COUNT(*) FROM trash").fetchone()[0]
             outbox = self.db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
             v = self.db.execute("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM versions").fetchone()
+            protected = self.db.execute(
+                "SELECT COUNT(*) FROM chunks c WHERE EXISTS "
+                "(SELECT 1 FROM parity_members p WHERE p.message_id = c.message_id)").fetchone()[0]
+            spare = self.db.execute("SELECT COUNT(*), COALESCE(SUM(size), 0) FROM parity_shards").fetchone()
+            snaps = self.db.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+            stored = self.db.execute("SELECT COUNT(DISTINCT message_id) FROM chunks").fetchone()[0]
         s = {
             "files": r[0], "dirs": r[1], "bytes": r[2], "unsynced": r[3],
             "pinned_files": r[4], "pinned_bytes": r[5],
             "chunks": chunks, "trash": trash, "outbox": outbox,
             "versions": v[0], "version_bytes": v[1],
+            "protected_chunks": protected, "spare_pieces": spare[0], "spare_bytes": spare[1],
+            "snapshots": snaps, "unique_chunks": stored,
         }
         self._stats_cache = (time.time(), s)
         return s
@@ -782,6 +1198,13 @@ class Index:
                     return True
                 cur = row[0]
             return False
+
+    def pinned_roots(self):
+        """Pinned files and folders whose parent isn't pinned (each covers everything inside it)."""
+        with self.lock:
+            return [r[0] for r in self.db.execute(
+                "SELECT n.id FROM nodes n LEFT JOIN nodes p ON p.id = n.parent "
+                "WHERE n.is_pinned=1 AND COALESCE(p.is_pinned, 0)=0")]
 
     def get_pinned_message_ids(self) -> set:
         with self.lock:
@@ -834,7 +1257,15 @@ class Index:
             dst.execute("UPDATE nodes SET is_pinned=0")
             dst.execute("DELETE FROM outbox")
             dst.execute("DELETE FROM trash")
-            dst.execute("DELETE FROM kv WHERE key NOT IN ('journal_cursor', 'keyring')")
+            dst.execute("DELETE FROM kv WHERE key NOT IN ('journal_cursor', 'keyring', 'devices')")
+            # Spare pieces of files left out above are published with those files later.
+            dst.execute(
+                "DELETE FROM parity_groups WHERE NOT EXISTS (SELECT 1 FROM parity_members p WHERE p.gid = parity_groups.gid "
+                "AND (p.message_id IN (SELECT message_id FROM chunks) "
+                "OR p.message_id IN (SELECT message_id FROM version_chunks) "
+                "OR p.message_id IN (SELECT message_id FROM snapshot_chunks)))")
+            dst.execute("DELETE FROM parity_members WHERE gid NOT IN (SELECT gid FROM parity_groups)")
+            dst.execute("DELETE FROM parity_shards WHERE gid NOT IN (SELECT gid FROM parity_groups)")
             dst.commit()
             dst.execute("PRAGMA journal_mode=DELETE")
             dst.execute("VACUUM")
