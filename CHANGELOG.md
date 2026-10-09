@@ -3,6 +3,16 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.4.1 (2026-10-09)
+
+- Talks to Discord gently, so it no longer runs into Discord's rate limits: every request is spaced out
+  on our side (per bot, per minute: 30 uploads, 15 deletes, 90 other requests by default), and if
+  Discord still says "slow down", the drive goes slower for a few minutes by itself.
+- New settings (dashboard Settings → Discord, the menu, or `config`): `discord_pace` gentle (default),
+  balanced, fast or off, and `uploads_per_minute`, `deletes_per_minute`, `requests_per_minute`.
+- Rate limits are no longer logged one line each; a short summary appears now and then.
+- Files whose old pieces can't be read are reported once instead of after every start.
+
 ## 0.4.0 (2026-10-09)
 
 - Live progress for every upload: a bar with the percentage, speed and time left, for files sent from

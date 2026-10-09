@@ -102,6 +102,10 @@ class Config:
     old_encryption_keys: list = field(default_factory=list)  # earlier keys, kept to read older data
     allow_other: bool = False          # Allow other users/services to access mount on Linux
     extra_bot_tokens: list = field(default_factory=list)  # more bots in the same channel = faster uploads
+    discord_pace: str = "gentle"       # how fast to talk to Discord: gentle | balanced | fast | off
+    uploads_per_minute: int = 0        # per bot; 0 = from discord_pace (gentle: 30)
+    deletes_per_minute: int = 0        # per bot; 0 = from discord_pace (gentle: 15)
+    requests_per_minute: int = 0       # other requests per bot; 0 = from discord_pace (gentle: 90)
     compression: bool = True           # compress pieces that shrink (lossless, before encryption)
     dedup: bool = True                 # store identical pieces once
     parity_enabled: bool = True        # spare pieces, so lost pieces can be rebuilt (self-healing)

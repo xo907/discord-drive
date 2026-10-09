@@ -62,8 +62,9 @@ class DiscordDrive:
                 raise ValueError(
                     f"DiscordDrive is not configured yet. Run '{launcher()} setup' or provide bot_token and channel_id."
                 )
-            self.api = DiscordAPI(self.cfg.bot_token)
-            extra = [DiscordAPI(t) for t in (self.cfg.extra_bot_tokens or []) if t and t != self.cfg.bot_token]
+            self.api = DiscordAPI(self.cfg.bot_token).configure(self.cfg)
+            extra = [DiscordAPI(t).configure(self.cfg) for t in (self.cfg.extra_bot_tokens or [])
+                     if t and t != self.cfg.bot_token]
             self.backend = DiscordBackend(self.api, self.cfg.channel_id, extra_apis=extra)
             if extra:
                 log.info("Uploading with %d bots.", 1 + len(extra))

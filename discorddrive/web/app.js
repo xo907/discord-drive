@@ -1257,6 +1257,12 @@ const SETTING_ROWS = [
     ["web_public_url", "Address for share links", "Used when you share from this computer itself, e.g. https://drive.example.com. Empty: the first domain name.", "text"],
     ["web_lan", "On your network", "Phones and computers at home (and a reverse proxy on another machine) can open the dashboard.", "bool"],
   ]],
+  ["Discord", [
+    ["discord_pace", "Pace", "How fast to talk to Discord. Gentle stays far below Discord's limits so it never has to slow you down; fast uploads quicker but can hit them.", ["gentle", "balanced", "fast"]],
+    ["uploads_per_minute", "Uploads per minute (per bot)", "0 = from the pace (gentle: 30, about 4.5 MB/s per bot).", "num"],
+    ["deletes_per_minute", "Deletes per minute (per bot)", "Removing old pieces happens in the background. 0 = from the pace (gentle: 15).", "num"],
+    ["requests_per_minute", "Other requests per minute", "Checks, syncing and refreshing links. 0 = from the pace (gentle: 90).", "num"],
+  ]],
   ["Protection", [
     ["parity_enabled", "Self-healing", "Spare pieces let lost pieces be rebuilt.", "bool"],
     ["parity_pieces", "Spare pieces per 10", "How many pieces of a group can be lost (2 is about 20% extra space).", "num"],

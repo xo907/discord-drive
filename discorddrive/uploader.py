@@ -564,7 +564,7 @@ class Uploader:
                 time.sleep(15.0)
                 if not self._running:
                     break
-                self.clean_trash()
+                self.clean_trash(limit=5)
             except Exception as e:
                 log.error("Error during trash cleanup: %s", e)
 

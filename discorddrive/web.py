@@ -788,6 +788,10 @@ class _Handler(BaseHTTPRequestHandler):
     # name -> (type, needs a restart, check)
     SETTINGS = {
         "web_hosts": (list, False, None),
+        "discord_pace": (str, False, lambda v: v in ("gentle", "balanced", "fast", "off")),
+        "uploads_per_minute": (int, False, lambda v: 0 <= v <= 600),
+        "deletes_per_minute": (int, False, lambda v: 0 <= v <= 600),
+        "requests_per_minute": (int, False, lambda v: 0 <= v <= 1200),
         "web_public_url": (str, False, lambda v: not v or v.startswith(("http://", "https://"))),
         "web_lan": (bool, True, None),
         "web_port": (int, True, lambda v: 1 <= v <= 65535),
@@ -836,6 +840,9 @@ class _Handler(BaseHTTPRequestHandler):
         cfg = self.drive.cfg
         for k, v in changes.items():
             setattr(cfg, k, v)
+        if any(k in changes for k in ("discord_pace", "uploads_per_minute", "deletes_per_minute", "requests_per_minute")):
+            for api in getattr(self.drive.backend, "apis", []):
+                api.configure(cfg)               # takes effect right away
         k_restart = [k for k in changes if self.SETTINGS[k][1]]
         if not getattr(self.drive, "local_test_dir", None):
             saved = Config.load()

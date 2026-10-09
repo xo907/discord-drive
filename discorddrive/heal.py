@@ -279,7 +279,10 @@ class Maintenance:
         self._next_snapshot = time.time() + 120
         self._next_offline = time.time() + 30
         self._leader = (0.0, False)
-        self._unreadable = set()      # files protect_step gave up on this session
+        try:                          # files protect_step gave up on (kept across restarts)
+            self._unreadable = set(json.loads(index.kv_get("unprotectable") or "[]"))
+        except ValueError:
+            self._unreadable = set()
 
     def start(self):
         self._thread = threading.Thread(target=self._loop, name="Maintenance", daemon=True)
@@ -383,8 +386,10 @@ class Maintenance:
                 return
             _, m = parity_shape(self.cfg, len(members))
             if not self.healer.protect(members, m):
-                log.warning("Could not add spare pieces to %s: part of it can't be read", self.index.path_of(nid))
+                log.warning("Could not add spare pieces to %s: part of it can't be read. 'verify' shows what is "
+                            "wrong with it; it isn't tried again.", self.index.path_of(nid))
                 self._unreadable.add(nid)
+                self.index.kv_set("unprotectable", json.dumps(sorted(self._unreadable)))
                 return
         log.info("Added spare pieces to %s", self.index.path_of(nid))
         self._next_protect = time.time()

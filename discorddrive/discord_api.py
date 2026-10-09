@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +33,47 @@ def _ram_tmpdir():
 
 
 _TMPDIR = _ram_tmpdir()
+
+
+# Requests per minute, per bot: (posting pieces/messages, deleting messages, everything else).
+# Discord allows more, but staying well below its limits means it never has to tell us to slow down.
+PACES = {
+    "gentle": (30, 15, 90),
+    "balanced": (60, 30, 120),
+    "fast": (120, 90, 300),
+}
+DEFAULT_PACE = "gentle"
+
+
+class Pacer:
+    """Spaces requests of one kind evenly; after Discord says "slow down" it goes slower for a while."""
+
+    def __init__(self, per_minute=0):
+        self._lock = threading.Lock()
+        self._next = 0.0
+        self._factor = 1.0
+        self._slow_until = 0.0
+        self.set(per_minute)
+
+    def set(self, per_minute):
+        self.interval = 60.0 / per_minute if per_minute and per_minute > 0 else 0.0
+
+    def wait(self):
+        if not self.interval:
+            return
+        with self._lock:
+            now = time.monotonic()
+            factor = self._factor if now < self._slow_until else 1.0
+            at = max(now, self._next)
+            self._next = at + self.interval * factor
+        if at > now:
+            time.sleep(at - now)
+
+    def slow_down(self):
+        with self._lock:
+            now = time.monotonic()
+            self._factor = min(4.0, self._factor * 1.5) if now < self._slow_until else 1.5
+            self._slow_until = now + 300
 
 
 class DiscordError(Exception):
@@ -73,6 +115,32 @@ class DiscordAPI:
         self.retries = retries
         self.curl_bin = shutil.which("curl") or shutil.which("curl.exe")
         self.has_curl = bool(self.curl_bin)
+        self.pacers = {"post": Pacer(), "delete": Pacer(), "other": Pacer()}
+        self.rate_limited = 0                # times Discord said "slow down" (shown in the log now and then)
+        self._rl_logged = (time.monotonic(), 0)
+        self.set_pace(DEFAULT_PACE)
+
+    def set_pace(self, pace=DEFAULT_PACE, posts=0, deletes=0, other=0):
+        """How many requests per minute this bot sends: a preset, each number overridable (0 = preset)."""
+        p, d, o = PACES.get((pace or DEFAULT_PACE).lower(), PACES[DEFAULT_PACE]) if pace != "off" else (0, 0, 0)
+        self.pacers["post"].set(posts or p)
+        self.pacers["delete"].set(deletes or d)
+        self.pacers["other"].set(other or o)
+
+    def configure(self, cfg):
+        self.set_pace(getattr(cfg, "discord_pace", DEFAULT_PACE), int(getattr(cfg, "uploads_per_minute", 0) or 0),
+                      int(getattr(cfg, "deletes_per_minute", 0) or 0), int(getattr(cfg, "requests_per_minute", 0) or 0))
+        return self
+
+    @staticmethod
+    def _kind(method, url):
+        if not url.startswith(API_BASE):
+            return None                      # attachment downloads from Discord's CDN aren't limited this way
+        if method == "DELETE":
+            return "delete"
+        if method == "POST" and "/messages" in url:
+            return "post"
+        return "other"
 
     # ------------------------------------------------------------------ core
     def _send_curl(self, method, url, body=None, headers=None, auth=True, multipart_file=None):
@@ -175,7 +243,10 @@ class DiscordAPI:
         retries = retries or self.retries
         delay = 1.0
         last_err = None
+        kind = self._kind(method, url)
         for _ in range(retries):
+            if kind:
+                self.pacers[kind].wait()
             try:
                 if self.has_curl:
                     status, data, resp_hdrs = self._send_curl(
@@ -227,7 +298,9 @@ class DiscordAPI:
                         retry_after = float(resp_hdrs.get("retry-after", "1"))
                     except (TypeError, ValueError):
                         pass
-                log.info("Rate limited (%s %s); waiting %.2fs", method, url.split("?")[0], retry_after)
+                if kind:
+                    self.pacers[kind].slow_down()
+                self._note_rate_limit(method, url, retry_after)
                 time.sleep(retry_after + 0.25)
                 continue
 
@@ -241,6 +314,18 @@ class DiscordAPI:
             raise DiscordError(status, data[:500].decode("utf-8", "replace"))
 
         raise DiscordError(0, f"Giving up on {method} {url.split('?')[0]}: {last_err}")
+
+    def _note_rate_limit(self, method, url, retry_after):
+        """One line now and then instead of one per rate limit (details at debug level)."""
+        self.rate_limited += 1
+        log.debug("Rate limited (%s %s); waiting %.2fs", method, url.split("?")[0], retry_after)
+        since, count = self._rl_logged
+        if retry_after >= 5:
+            log.warning("Discord asked to wait %.0f s; waiting, then slowing down for a while.", retry_after)
+        elif time.monotonic() - since > 600:
+            log.info("Discord asked DiscordDrive to slow down %d time(s) in the last %d minutes; going slower for a while. "
+                     "(Settings: Discord pace.)", self.rate_limited - count, max(1, int((time.monotonic() - since) / 60)))
+            self._rl_logged = (time.monotonic(), self.rate_limited)
 
     def request(self, method, path, json_body=None):
         body = None

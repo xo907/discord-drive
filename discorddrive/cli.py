@@ -512,6 +512,9 @@ def cmd_config(args):
     except ValueError as e:
         print(f"[ERROR] Invalid value for {args.key}: {e}")
         return 1
+    if args.key == "discord_pace" and value not in ("gentle", "balanced", "fast", "off"):
+        print("[ERROR] discord_pace must be gentle, balanced, fast or off.")
+        return 1
     if args.key == "cache_mode" and value not in ("disk", "memory"):
         print("[ERROR] cache_mode must be 'disk' or 'memory'.")
         return 1
@@ -1168,9 +1171,10 @@ def _open_journal(cfg):
     """(index, journal, crypto) for CLI commands that talk to the channel."""
     db_path = os.path.join(cfg.resolved_data_dir, "index.db")
     crypto = get_crypto_from_cfg(cfg)
-    extra = [DiscordAPI(t, timeout=60, retries=3) for t in cfg.extra_bot_tokens or [] if t and t != cfg.bot_token]
-    backend = DiscordBackend(DiscordAPI(cfg.bot_token, timeout=60, retries=3), cfg.channel_id, crypto=crypto,
-                             extra_apis=extra)
+    extra = [DiscordAPI(t, timeout=60, retries=3).configure(cfg) for t in cfg.extra_bot_tokens or []
+             if t and t != cfg.bot_token]
+    backend = DiscordBackend(DiscordAPI(cfg.bot_token, timeout=60, retries=3).configure(cfg), cfg.channel_id,
+                             crypto=crypto, extra_apis=extra)
     idx = Index(db_path)
     idx.keep_versions = bool(cfg.keep_versions)
     j = Journal(cfg, idx, backend, crypto=crypto, staging_dir=os.path.join(cfg.resolved_data_dir, "staging"))
