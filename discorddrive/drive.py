@@ -122,6 +122,8 @@ class DiscordDrive:
         self.healer = Healer(self.cfg, self.index, self.backend, crypto=self.crypto, cache=self.cache,
                              wake=self.journal.wake)
         self.cache.healer = self.healer
+        from .heal import Checker
+        self.checker = Checker(self.index, self.backend, self.crypto, self.healer)
         self.maintenance = Maintenance(self.cfg, self.index, self.backend, self.healer, uploader=self.uploader,
                                        journal=self.journal, cache=self.cache, device_id=self.cfg.device_id)
 

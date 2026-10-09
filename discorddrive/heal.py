@@ -160,8 +160,8 @@ class Healer:
                 return None
         with self._lock:
             self.stats["lost"] += 1
-        log.error("Piece %s is missing from Discord and can't be rebuilt (no spare pieces, or too many "
-                  "pieces of its group are gone)", mid)
+        log.error("Piece %s can't be read (gone from Discord, damaged, or encrypted with another key) and can't "
+                  "be rebuilt (no spare pieces, or too many pieces of its group are unreadable)", mid)
         return None
 
     def _remember(self, mid, data):
@@ -254,6 +254,102 @@ class Healer:
         self.index.add_parity_group(secrets.token_hex(8), [list(x) for x in members], out)
         self.wake()
         return True
+
+
+class Checker:
+    """Reads every file under a folder once (like `verify`), in the background, for the dashboard:
+    which files can't be read and why. Pieces that can be rebuilt from spare pieces are repaired."""
+
+    def __init__(self, index, backend, crypto, healer):
+        self.index, self.backend, self.crypto, self.healer = index, backend, crypto, healer
+        self.state = {"running": False}
+        self._stop = threading.Event()
+
+    def start(self, path):
+        if self.state.get("running"):
+            return False
+        self._stop.clear()
+        self.state = {"running": True, "path": path, "files": 0, "checked": 0, "bytes": 0, "total_bytes": 0,
+                      "bad": [], "repaired": 0, "started": time.time(), "finished": None, "current": ""}
+        threading.Thread(target=self._run, args=(path,), name="CheckFiles", daemon=True).start()
+        return True
+
+    def stop(self):
+        self._stop.set()
+
+    def _files(self, path):
+        node = self.index.resolve(path)
+        out, todo = [], [node] if node else []
+        while todo:
+            n = todo.pop()
+            if n["is_dir"]:
+                todo.extend(self.index.children(n["id"]))
+            elif n["state"] == "synced":
+                out.append(n)
+        return sorted(out, key=lambda n: self.index.path_of(n["id"]).lower())
+
+    def _problem(self, chunk):
+        try:
+            payload, _ = self.backend.download(chunk["message_id"], chunk.get("url"))
+            data = codec.decode(payload, self.crypto, chunk.get("sha256"))
+            if chunk.get("sha256") and hashlib.sha256(data).hexdigest() != chunk["sha256"]:
+                problem = "damaged"
+            else:
+                return None
+        except AuthenticationError:
+            problem = "key"
+        except DiscordError as e:
+            if e.status != 404:
+                raise
+            problem = "missing"
+        if self.healer is not None and self.healer.recover(chunk["message_id"]) is not None:
+            self.state["repaired"] += 1
+            return None
+        return problem
+
+    _REASONS = {"key": "Can't be decrypted: made with a different encryption key (or damaged)",
+                "missing": "Part of it is gone from Discord",
+                "damaged": "Part of it is damaged"}
+
+    def _run(self, path):
+        st = self.state
+        try:
+            files = self._files(path)
+            st["files"] = len(files)
+            st["total_bytes"] = sum(n["size"] for n in files)
+            for n in files:
+                if self._stop.is_set():
+                    break
+                fpath = self.index.path_of(n["id"])
+                st["current"] = fpath
+                problems = []
+                for c in self.index.get_chunks(n["id"]):
+                    if self._stop.is_set():
+                        break
+                    try:
+                        p = self._problem(c)
+                    except Exception as e:
+                        p = f"error: {e}"
+                    if p:
+                        problems.append(p)
+                    st["bytes"] += c["size"]
+                if problems:
+                    kind = "key" if "key" in problems else problems[0]
+                    st["bad"].append({"path": fpath, "uid": n["uid"], "size": n["size"], "kind": kind,
+                                      "reason": self._REASONS.get(kind, kind), "pieces": len(problems)})
+                    log.warning("Check: %s can't be read (%s)", fpath, self._REASONS.get(kind, kind))
+                st["checked"] += 1
+            if self.healer is not None:
+                self.healer.drain() if not self.healer._running else None
+            log.info("Check of %s done: %d of %d file(s) can't be read%s", path, len(st["bad"]), st["checked"],
+                     f", {st['repaired']} piece(s) repaired" if st["repaired"] else "")
+        except Exception as e:
+            st["error"] = str(e)
+            log.warning("Checking files stopped: %s", e)
+        finally:
+            st["running"] = False
+            st["current"] = ""
+            st["finished"] = time.time()
 
 
 class Maintenance:

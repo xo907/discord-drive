@@ -270,6 +270,29 @@ class WebTest(helpers.DriveTest):
         log = json.loads(self.req("GET", "/api/changelog")[2])
         self.assertIn(log["version"], log["text"])
 
+    def test_check_and_remove_unreadable(self):
+        import time as _t
+        self.login()
+        self.write(self.d, "/Box/good.bin", os.urandom(200_000))
+        self.write(self.d, "/Box/bad.bin", os.urandom(200_000))
+        self.d.cfg.parity_enabled = False
+        self.upload(self.d)
+        for c in self.d.index.get_chunks(self.d.index.resolve("/Box/bad.bin")["id"]):
+            self.d.backend.delete(c["message_id"])
+        self.assertEqual(self.req("POST", "/api/check/start", {"path": "/Box"})[0], 200)
+        for _ in range(100):
+            st = json.loads(self.req("GET", "/api/check")[2])
+            if not st["running"]:
+                break
+            _t.sleep(0.1)
+        self.assertEqual(st["checked"], 2)
+        self.assertEqual([b["path"] for b in st["bad"]], ["/Box/bad.bin"])
+        self.assertEqual(st["bad"][0]["kind"], "missing")
+        r = json.loads(self.req("POST", "/api/check/remove", {"uids": [st["bad"][0]["uid"]]})[2])
+        self.assertEqual(r["removed"], 1)
+        self.assertIsNone(self.d.index.resolve("/Box/bad.bin"))
+        self.assertIsNotNone(self.d.index.resolve("/Box/good.bin"))
+
     def test_html_files_are_sandboxed(self):
         self.login()
         self.write(self.d, "/page.html", b"<script>alert(1)</script>")

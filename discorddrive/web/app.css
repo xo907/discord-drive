@@ -689,3 +689,16 @@ button.link { padding: 0; border: 0; background: none; color: var(--ink); text-d
   .log-line .ll, .log-line .ln { display: none; }
   .log-box { height: 60vh; }
 }
+
+/* ------------------------------------------------------------------ check files */
+.health-actions { margin: 20px 0 0; }
+.check-scope { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.check-scope input { flex: 1; min-width: 200px; height: 32px; padding: 0 10px; border: 1px solid var(--line);
+                     border-radius: var(--radius); background: var(--panel); outline: none; }
+.check-scope input:focus { box-shadow: 0 0 0 2px var(--ring); }
+.check-scope .btn[hidden] { display: none; }
+.check-progress .meter { margin: 8px 0 0; }
+.check-progress .meter i { background: var(--accent); }
+.check-progress .act-sub { margin-left: 0; }
+.act-sub.faint { color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-hint { max-width: 680px; font-size: 13px; }

@@ -3,6 +3,15 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.5.0 (2026-10-09)
+
+- Check files in the dashboard (Health → Check files, or right-click a folder → Check for problems):
+  reads every file under a folder in the background with live progress, repairs what spare pieces
+  can rebuild, and lists files that can't be read with the reason (another encryption key, gone from
+  Discord, damaged). Select some or all and delete them for good.
+- Clearer message when a piece can't be read: it no longer always says "missing from Discord" (it may
+  have been encrypted with another key).
+
 ## 0.4.1 (2026-10-09)
 
 - Talks to Discord gently, so it no longer runs into Discord's rate limits: every request is spaced out

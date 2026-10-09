@@ -278,6 +278,7 @@ function itemMenu(it) {
     !it.dir && { label: "Duplicate", icon: "copy", run: () => duplicate(it) },
     !it.dir && { label: "Earlier versions", icon: "history", run: () => openItem(it, "versions") },
     { label: "Details", icon: "info", run: () => openItem(it) },
+    { label: "Check for problems", icon: "check", run: () => go("#/check?" + new URLSearchParams({ path: it.path })) },
     route.name === "files" && { label: sel.has(it.path) ? "Deselect" : "Select", icon: "check", run: () => toggleSel(it.path) },
     "-",
     { label: "Delete", icon: "trash", danger: true, run: () => remove(it) },
@@ -291,6 +292,7 @@ function backgroundMenu() {
     { label: "Upload a folder…", icon: "upload", run: () => $("#pick-dir").click() },
     currentDir !== "/" && { label: "Download this folder as ZIP", icon: "download",
                             run: () => download("/api/zip" + q({ path: currentDir }), base(currentDir) + ".zip") },
+    { label: "Check this folder for problems", icon: "check", run: () => go("#/check?" + new URLSearchParams({ path: currentDir })) },
     "-",
     { label: "Refresh", icon: "refresh", run: render },
   ];
@@ -345,7 +347,7 @@ function render() {
   if (route.name !== "files" || route.path !== currentDir) sel.clear();
   const views = { files: renderFiles, search: renderSearch, deleted: renderDeleted, snapshots: renderSnapshots,
                   snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
-                  settings: renderSettings, log: renderLog };
+                  settings: renderSettings, log: renderLog, check: renderCheck };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -1192,6 +1194,8 @@ function renderHealth(quiet) {
            sc.last_pass ? "last full check" : (hl.leader ? "pieces, first check running" : "another device checks"), checkPct),
       stat("Repaired", Number((sc.repaired || 0) + (hl.healer.repaired || 0)).toLocaleString(),
            (sc.lost || hl.healer.lost) ? `${sc.lost || hl.healer.lost} could not be rebuilt` : "nothing lost")),
+    h("div", { class: "health-actions" },
+      h("a", { class: "btn ghost", href: "#/check" }, "Check files for problems…")),
     h("h2", {}, "Storage"),
     h("div", { class: "kv" },
       h("div", {}, "Files"), h("div", {}, `${plural(st.files, "file")} in ${plural(st.dirs, "folder")}`),
@@ -1602,6 +1606,96 @@ async function renderLog() {
   clearInterval(logTimer);
   await tick();
   logTimer = setInterval(tick, 1000);
+}
+
+// ------------------------------------------------------------------ check files
+const fill = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false && k !== ""));
+let checkTimer = null;
+const unreadable = new Set();
+
+async function renderCheck() {
+  const scope = h("input", { value: route.qs.get("path") || "/", spellcheck: "false", "aria-label": "Folder to check" });
+  const pick = h("button", { class: "btn ghost", onclick: async () => {
+    const p = await pickFolder("Check which folder?", scope.value || "/");
+    if (p != null) scope.value = p;
+  } }, "Choose…");
+  const startBtn = h("button", { class: "btn", onclick: async () => {
+    unreadable.clear();
+    if (await attempt(() => api("/api/check/start", { path: scope.value || "/" }))) tick();
+  } }, "Start check");
+  const stopBtn = h("button", { class: "btn ghost", hidden: true, onclick: () => api("/api/check/stop", {}).catch(() => null) }, "Stop");
+  const progress = h("div", { class: "check-progress" });
+  const results = h("div", { class: "check-results" });
+  page(h("h1", {}, "Check files"),
+       h("p", { class: "lede" }, "Reads every file in a folder once, the way opening it would. Pieces that can be rebuilt from spare pieces are repaired on the way; files that can't be read are listed below, so you can delete them."),
+       h("div", { class: "check-scope" }, scope, pick, startBtn, stopBtn),
+       progress, results);
+
+  function draw(st) {
+    const running = !!st.running;
+    startBtn.disabled = running;
+    stopBtn.hidden = !running;
+    if (!st.started) { progress.replaceChildren(); results.replaceChildren(); return; }
+    const pct = st.total_bytes ? Math.min(100, (100 * st.bytes) / st.total_bytes) : (running ? 0 : 100);
+    const elapsed = Math.max(1, (st.finished || st.now) - st.started);
+    const bps = st.bytes / elapsed;
+    fill(progress,
+      h("div", { class: "act-top" }, h("span", { class: "act-name" }, running ? `Checking ${st.path}` : `Checked ${st.path}`),
+        h("span", { class: "act-pct" }, Math.floor(pct) + "%")),
+      h("div", { class: "meter" }, h("i", { style: `width:${pct}%` })),
+      h("div", { class: "act-sub" }, `${Number(st.checked).toLocaleString()} of ${plural(st.files, "file")} · ${size(st.bytes)} of ${size(st.total_bytes)}`
+        + (running && bps ? ` · ${speed(bps)} · ${eta((st.total_bytes - st.bytes) / bps)}` : "")
+        + (st.repaired ? ` · ${plural(st.repaired, "piece")} repaired` : "")
+        + (st.error ? ` · stopped: ${st.error}` : "")),
+      running && st.current ? h("div", { class: "act-sub faint" }, st.current) : null);
+    const bad = st.bad || [];
+    if (!bad.length) {
+      results.replaceChildren(running ? "" : h("div", { class: "empty" }, h("b", {}, "Everything can be read"),
+        st.repaired ? `${plural(st.repaired, "piece")} were rebuilt and uploaded again.` : "No problems found."));
+      return;
+    }
+    for (const uid of [...unreadable]) if (!bad.some((b) => b.uid === uid)) unreadable.delete(uid);
+    const all = checkbox(unreadable.size === bad.length, (on) => { bad.forEach((b) => on ? unreadable.add(b.uid) : unreadable.delete(b.uid)); draw(st); }, "Select all");
+    setBox(all, unreadable.size === bad.length ? true : unreadable.size ? "mixed" : false);
+    const chosen = bad.filter((b) => unreadable.has(b.uid));
+    const keyProblem = bad.some((b) => b.kind === "key");
+    fill(results,
+      h("h2", {}, `${plural(bad.length, "file")} can't be read`),
+      keyProblem ? h("p", { class: "muted check-hint" }, "Files that “can't be decrypted” were saved with a different encryption key. If you still have that key (an old device or config file), add it in the DiscordDrive menu (Tools → Add an older encryption key) and they become readable again. Only delete them if that key is gone.") : null,
+      h("div", { class: "selbar" },
+        h("span", { class: "count" }, chosen.length ? `${plural(chosen.length, "file")} selected · ${size(chosen.reduce((a, b) => a + b.size, 0))}` : "Select files to delete"),
+        h("div", { class: "actions" },
+          h("button", { class: "btn danger small", disabled: !chosen.length, onclick: () => removeUnreadable(chosen, st) }, "Delete for good"))),
+      h("div", { class: "list" },
+        h("div", { class: "row head" }, h("span", { class: "name" }, all, h("span", {}, "File")), h("span", { class: "size" }, "Size"),
+          h("span", { class: "date" }, ""), h("span")),
+        bad.map((b) => {
+          const box = checkbox(unreadable.has(b.uid), (on) => { on ? unreadable.add(b.uid) : unreadable.delete(b.uid); draw(st); }, `Select ${base(b.path)}`);
+          return h("div", { class: "row click pick" + (unreadable.has(b.uid) ? " sel" : ""),
+                            onclick: (e) => { if (e.target.closest("button")) return; unreadable.has(b.uid) ? unreadable.delete(b.uid) : unreadable.add(b.uid); draw(st); } },
+            h("span", { class: "name" }, box, icon(kind(b.path) === "pdf" ? "text" : kind(b.path)),
+              h("span", { style: "min-width:0" }, h("span", { class: "label" }, base(b.path)), h("div", { class: "where" }, `${parent(b.path)} · ${b.reason}`))),
+            h("span", { class: "size" }, size(b.size)), h("span", { class: "date" }), h("span"));
+        })));
+  }
+
+  async function removeUnreadable(list, st) {
+    const ok = await ask({ title: `Delete ${plural(list.length, "unreadable file")} for good?`, ok: "Delete for good", danger: true,
+                           text: "They are removed on every device, and no earlier version is kept (they can't be read anyway)." });
+    if (!ok) return;
+    const r = await attempt(() => api("/api/check/remove", { uids: list.map((b) => b.uid) }));
+    if (r) { toast(`${plural(r.removed, "file")} deleted`); list.forEach((b) => unreadable.delete(b.uid)); tick(); }
+  }
+
+  async function tick() {
+    clearTimeout(checkTimer);
+    if (route.name !== "check") return;
+    const st = await api("/api/check").catch(() => null);
+    if (!st) return;
+    draw(st);
+    if (st.running) checkTimer = setTimeout(tick, 1000);
+  }
+  tick();
 }
 
 // ------------------------------------------------------------------ what's new

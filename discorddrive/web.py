@@ -784,6 +784,40 @@ class _Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "That link no longer exists")
         self._json({"ok": True})
 
+    # ------------------------------------------------------------ checking files
+    def _get_api_check(self):
+        st = dict(self.drive.checker.state)
+        st["now"] = time.time()
+        self._json(st)
+
+    def _post_api_check_start(self):
+        path, node = self._node(self._body_json().get("path") or "/", want_dir=None)
+        if not self.drive.checker.start(path):
+            raise ApiError(409, "A check is already running")
+        self._json({"ok": True})
+
+    def _post_api_check_stop(self):
+        self.drive.checker.stop()
+        self._json({"ok": True})
+
+    def _post_api_check_remove(self):
+        """Delete unreadable files for good (no earlier version is kept of something that can't be read)."""
+        uids = set(map(str, self._body_json().get("uids") or []))
+        idx = self.drive.index
+        removed = 0
+        for uid in uids:
+            node = idx.get_by_uid(uid)
+            if node is not None and not node["is_dir"]:
+                with self.drive.fs.lock:
+                    idx.purge_node(node["id"])
+                    self.drive.fs._chunk_maps.pop(node["id"], None)
+                removed += 1
+        st = self.drive.checker.state
+        if st.get("bad"):
+            st["bad"] = [b for b in st["bad"] if b["uid"] not in uids]
+        self.drive.journal.wake()
+        self._json({"ok": True, "removed": removed})
+
     # ------------------------------------------------------------ settings
     # name -> (type, needs a restart, check)
     SETTINGS = {
