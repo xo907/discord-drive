@@ -1,9 +1,10 @@
 """Share links: a file or a folder for someone else, with an expiry, an optional password and a
 choice whether it may be downloaded or only viewed.
 
-Links are kept in this device's index (they are served by this device's dashboard), keyed by a
-random id. Revoking or changing a link takes effect immediately. The visitor's page shows the
-content itself (photo, video, music, PDF, text) or, for a folder, its files.
+Links are synced between devices through the change journal (like files), so a link made on one
+device works on every device's dashboard: e.g. made on a PC at home and opened through the Raspberry
+Pi that is reachable from the internet. Revoking or changing a link applies everywhere. The visitor's
+page shows the content itself (photo, video, music, PDF, text) or, for a folder, its files.
 """
 
 import json
@@ -13,50 +14,58 @@ import time
 
 from .crypto import check_password, hash_password
 
-KEY = "shares"
+OLD_KEY = "shares"          # links of versions before 0.8 were kept per device in the index's kv table
+VIEWS_EVERY = 60.0          # publish this device's view count of a link at most this often
 
 
 class Shares:
-    def __init__(self, index):
+    def __init__(self, index, device=""):
         self.index = index
+        self.device = device or "local"
         self._lock = threading.Lock()
+        self._views_posted = {}
+        self._migrate()
 
-    def _load(self):
+    def _migrate(self):
+        """Publish links made before they were synced, so the other devices learn them."""
         try:
-            return json.loads(self.index.kv_get(KEY) or "{}")
+            old = json.loads(self.index.kv_get(OLD_KEY) or "{}")
         except ValueError:
-            return {}
-
-    def _save(self, data):
-        self.index.kv_set(KEY, json.dumps(data, separators=(",", ":")))
+            old = {}
+        for sid, rec in old.items():
+            views = rec.pop("v", 0)
+            self.index.share_put(sid, rec)
+            if views:
+                self.index.share_views_set(sid, self.device, views)
+        if old:
+            self.index.kv_delete(OLD_KEY)
 
     def all(self):
-        """Every link that hasn't expired (expired ones are dropped)."""
-        with self._lock:
-            data = self._load()
-            now = time.time()
-            alive = {k: v for k, v in data.items() if not v.get("e") or v["e"] > now}
-            if len(alive) != len(data):
-                self._save(alive)
-            return alive
+        """Every link that hasn't expired (with the views counted on all devices)."""
+        now = time.time()
+        out = {}
+        for sid, rec in self.index.shares_all().items():
+            if rec.get("e") and rec["e"] <= now:
+                continue
+            out[sid] = dict(rec, v=self.index.share_views_total(sid))
+        return out
 
     def get(self, sid):
-        return self.all().get(str(sid or ""))
+        rec = self.index.share_get(str(sid or ""))
+        if rec is None or (rec.get("e") and rec["e"] <= time.time()):
+            return None
+        return rec
 
     def create(self, uid, is_dir, hours=24 * 7, password="", download=True):
         sid = secrets.token_urlsafe(12)
         rec = {"u": uid, "d": bool(is_dir), "c": time.time(), "e": _expiry(hours),
-               "pw": hash_password(password) if password else "", "dl": bool(download), "v": 0}
-        with self._lock:
-            data = self._load()
-            data[sid] = rec
-            self._save(data)
-        return sid, rec
+               "pw": hash_password(password) if password else "", "dl": bool(download)}
+        self.index.share_put(sid, rec)
+        return sid, dict(rec, v=0)
 
     def update(self, sid, hours=None, password=None, download=None):
         with self._lock:
-            data = self._load()
-            rec = data.get(sid)
+            rec = self.index.share_get(sid)
             if rec is None:
                 return None
             if hours is not None:
@@ -65,22 +74,20 @@ class Shares:
                 rec["pw"] = hash_password(password) if password else ""
             if download is not None:
                 rec["dl"] = bool(download)
-            self._save(data)
-            return rec
+            self.index.share_put(sid, rec)
+            return dict(rec, v=self.index.share_views_total(sid))
 
     def revoke(self, sid):
-        with self._lock:
-            data = self._load()
-            found = data.pop(sid, None) is not None
-            self._save(data)
-            return found
+        return self.index.share_drop(sid)
 
     def viewed(self, sid):
+        """Count a view on this device; the count is published now and then (not on every view)."""
         with self._lock:
-            data = self._load()
-            if sid in data:
-                data[sid]["v"] = data[sid].get("v", 0) + 1
-                self._save(data)
+            n = self.index.share_views_local(sid, self.device) + 1
+            publish = time.time() - self._views_posted.get(sid, 0) >= VIEWS_EVERY
+            if publish:
+                self._views_posted[sid] = time.time()
+        self.index.share_views_set(sid, self.device, n, publish=publish)
 
     @staticmethod
     def password_ok(rec, password):

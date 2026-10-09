@@ -357,6 +357,43 @@ class WebTest(helpers.DriveTest):
         self.assertEqual(locked["direct_path"], "")
         self.assertNotEqual(self.req("GET", locked["path"] + "/cat.png", auth=False)[2], png)
 
+    def test_links_work_on_every_device(self):
+        """A link made on the PC is served by the Pi (reachable from the internet), and vice versa."""
+        import http.client as hc
+        self.login()
+        self.write(self.d, "/Pics/sunset.png", b"pixels" * 1000)
+        self.upload(self.d)
+        link = json.loads(self.req("POST", "/api/share", {"path": "/Pics/sunset.png", "hours": 24})[2])
+        pi = self.drive("pi01", web_token="pi-token")
+        self.sync(self.d, pi)
+        pi_web = pi.start_web(port=0)
+        try:
+            def get(path):
+                c = hc.HTTPConnection("127.0.0.1", pi_web.port, timeout=10)
+                c.request("GET", path)
+                r = c.getresponse()
+                return r.status, r.read()
+            self.assertEqual(get(link["direct_path"]), (200, b"pixels" * 1000))
+            self.assertEqual(get(link["path"])[0], 200)
+            self.sync(pi, self.d)
+            self.assertGreaterEqual(self.d.index.share_views_total(link["id"]), 1)   # views counted on the Pi
+            # turning it off on the PC turns it off on the Pi
+            self.req("POST", "/api/shares/revoke", {"id": link["id"]})
+            self.sync(self.d, pi)
+            self.assertEqual(get(link["direct_path"])[0], 404)
+        finally:
+            pi_web.stop()
+
+    def test_old_links_are_published(self):
+        from discorddrive.shares import Shares
+        self.d.index.kv_set("shares", json.dumps({"oldlink": {"u": "x", "d": False, "c": 1, "e": None, "pw": "",
+                                                               "dl": True, "v": 3}}))
+        sh = Shares(self.d.index, "aaaa")
+        self.assertIn("oldlink", sh.all())
+        self.assertEqual(sh.all()["oldlink"]["v"], 3)
+        self.assertIsNone(self.d.index.kv_get("shares"))
+        self.assertTrue(any(op["t"] == "share" for _, op in self.d.index.outbox_peek()))
+
     def test_html_files_are_sandboxed(self):
         self.login()
         self.write(self.d, "/page.html", b"<script>alert(1)</script>")

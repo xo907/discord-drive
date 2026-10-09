@@ -3,6 +3,14 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.8.0 (2026-10-09)
+
+- Share links work on every device: they are synced through the change journal like files. A link
+  made on a PC at home can be opened through another device's dashboard, e.g. a Raspberry Pi that is
+  reachable from the internet (set "Address for share links" on the PC to the Pi's address). Changing
+  or turning off a link applies everywhere, and the view count adds up the views on all devices.
+- Links made with earlier versions are published to the other devices on the first start.
+
 ## 0.7.0 (2026-10-09)
 
 - Direct links for shared files (`/s/<id>/<file name>`): the file itself instead of a page. Post one on

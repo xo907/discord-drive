@@ -138,6 +138,10 @@ CREATE TABLE IF NOT EXISTS snapshot_chunks(
 CREATE INDEX IF NOT EXISTS snapshot_chunks_entry ON snapshot_chunks(entry_id);
 CREATE INDEX IF NOT EXISTS snapshot_chunks_snap ON snapshot_chunks(snap_id);
 CREATE INDEX IF NOT EXISTS snapshot_chunks_message ON snapshot_chunks(message_id);
+-- Share links (synced between devices) and how often each device served them.
+CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, rec TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS share_views(id TEXT NOT NULL, device TEXT NOT NULL, n INTEGER NOT NULL,
+                                       PRIMARY KEY(id, device));
 """
 
 # Tables that point at stored pieces; a "fix" (a piece re-uploaded after Discord lost it) updates them all.
@@ -720,6 +724,66 @@ class Index:
                     n += 1
         return n
 
+    # ------------------------------------------------------------ share links
+    def shares_all(self):
+        with self.lock:
+            out = {}
+            for sid, rec in self.db.execute("SELECT id, rec FROM shares").fetchall():
+                try:
+                    out[sid] = json.loads(rec)
+                except ValueError:
+                    pass
+            return out
+
+    def share_get(self, sid):
+        row = self._one("SELECT rec FROM shares WHERE id=?", (sid,))
+        try:
+            return json.loads(row["rec"]) if row else None
+        except ValueError:
+            return None
+
+    def share_put(self, sid, rec):
+        """Create or change a link here and on every device."""
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO shares(id, rec) VALUES(?, ?)", (sid, json.dumps(rec, separators=(",", ":"))))
+            self._queue(db, {"t": "share", "i": sid, "r": rec})
+
+    def share_drop(self, sid):
+        with self.tx() as db:
+            found = db.execute("DELETE FROM shares WHERE id=?", (sid,)).rowcount > 0
+            db.execute("DELETE FROM share_views WHERE id=?", (sid,))
+            self._queue(db, {"t": "unshare", "i": sid})
+        return found
+
+    def share_views_local(self, sid, device):
+        row = self._one("SELECT n FROM share_views WHERE id=? AND device=?", (sid, device))
+        return row["n"] if row else 0
+
+    def share_views_total(self, sid):
+        row = self._one("SELECT COALESCE(SUM(n), 0) AS n FROM share_views WHERE id=?", (sid,))
+        return row["n"] if row else 0
+
+    def share_views_set(self, sid, device, n, publish=True):
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO share_views(id, device, n) VALUES(?, ?, ?)", (sid, device, int(n)))
+            if publish:
+                self._queue(db, {"t": "sharev", "i": sid, "d": device, "n": int(n)})
+
+    def _op_share(self, db, op, busy, changed):
+        rec = op["r"]
+        if not isinstance(rec, dict) or not rec.get("u"):
+            raise ValueError("malformed share link")
+        db.execute("INSERT OR REPLACE INTO shares(id, rec) VALUES(?, ?)", (str(op["i"]), json.dumps(rec, separators=(",", ":"))))
+
+    def _op_unshare(self, db, op, busy, changed):
+        db.execute("DELETE FROM shares WHERE id=?", (str(op["i"]),))
+        db.execute("DELETE FROM share_views WHERE id=?", (str(op["i"]),))
+
+    def _op_sharev(self, db, op, busy, changed):
+        if db.execute("SELECT 1 FROM shares WHERE id=?", (str(op["i"]),)).fetchone():
+            db.execute("INSERT INTO share_views(id, device, n) VALUES(?, ?, ?) ON CONFLICT(id, device) "
+                       "DO UPDATE SET n=MAX(n, excluded.n)", (str(op["i"]), str(op["d"]), int(op["n"])))
+
     def _op_purge(self, db, op, busy, changed):
         if self._nid(db, op["u"]) is None:
             self._drop_versions(db, op["u"])
@@ -954,7 +1018,7 @@ class Index:
         return self._free_name(db, parent, conflict_name(name, uid))
 
     # Operations a device running an older version skipped: replayed after an upgrade (see Journal.catch_up).
-    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge")
+    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge", "share", "unshare", "sharev")
 
     def apply_ops(self, ops, cursor, busy=None, extras_only=False):
         """Apply journal operations (from message `cursor`) and advance the cursor.

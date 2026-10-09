@@ -97,7 +97,7 @@ class WebServer:
         self._cfg_mtime = None
         self._fail_lock = threading.Lock()
         self._failures = {}       # address -> (count, locked until)
-        self.shares = Shares(drive.index)
+        self.shares = Shares(drive.index, getattr(drive.cfg, "device_id", ""))
         self.contacts_lock = threading.Lock()
         self._book = (None, [])           # (mtime, size) of the address book file, its contacts
 
