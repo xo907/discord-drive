@@ -125,6 +125,8 @@ class Config:
     web_token: str = ""                # secret that signs dashboard sessions and share links (generated)
     web_user: str = ""                 # dashboard sign-in: user name...
     web_password: str = ""             # ...and a scrypt hash of the password (set with 'web-password')
+    sync_jobs: list = field(default_factory=list)  # folders kept in sync with the drive ('sync add', dashboard Sync)
+    sync_remote_edit: bool = False     # let the dashboard on other devices add or change sync folders
 
     @property
     def resolved_data_dir(self) -> str:

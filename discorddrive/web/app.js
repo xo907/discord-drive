@@ -355,7 +355,7 @@ function render() {
   if (route.name !== "files" || route.path !== currentDir) sel.clear();
   const views = { files: renderFiles, search: renderSearch, deleted: renderDeleted, snapshots: renderSnapshots,
                   snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
-                  settings: renderSettings, log: renderLog, check: renderCheck, contacts: renderContacts };
+                  settings: renderSettings, log: renderLog, check: renderCheck, contacts: renderContacts, sync: renderSync };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -637,13 +637,13 @@ function modal(title, ...content) {
   return { dlg, close };
 }
 
-function pickFolder(title, start, moving = []) {
+function pickFolder(title, start, moving = [], okLabel = "Move here") {
   return new Promise((resolve) => {
     let cur = start || "/";
     let chosen = null;
     const list = h("div", { class: "picker-list" });
     const where = h("div", { class: "picker-where" });
-    const here = h("button", { class: "btn", onclick: () => { chosen = cur; m.close(); } }, "Move here");
+    const here = h("button", { class: "btn", onclick: () => { chosen = cur; m.close(); } }, okLabel);
     const m = modal(title, where, list,
       h("div", { class: "modal-actions" },
         h("button", { class: "btn ghost", onclick: async () => {
@@ -1874,7 +1874,7 @@ const unreadable = new Set();
 async function renderCheck() {
   const scope = h("input", { value: route.qs.get("path") || "/", spellcheck: "false", "aria-label": "Folder to check" });
   const pick = h("button", { class: "btn ghost", onclick: async () => {
-    const p = await pickFolder("Check which folder?", scope.value || "/");
+    const p = await pickFolder("Check which folder?", scope.value || "/", [], "Check this folder");
     if (p != null) scope.value = p;
   } }, "Choose…");
   const startBtn = h("button", { class: "btn", onclick: async () => {
@@ -1954,6 +1954,216 @@ async function renderCheck() {
     if (st.running) checkTimer = setTimeout(tick, 1000);
   }
   tick();
+}
+
+// ------------------------------------------------------------------ sync folders
+// Folders on the computer running the drive, kept in step with folders on the drive. The jobs and
+// the copying live in the drive process (sync.py); this page shows them and changes them.
+let syncTimer = null;
+let syncData = null;
+const ARROW = { up: "→", down: "←", both: "⇄" };
+
+function drivePathShown(p) {
+  if (!syncData) return p;
+  return syncData.windows ? syncData.mount.replace(/\\$/, "") + p.replace(/\//g, "\\") : syncData.mount.replace(/\/$/, "") + p;
+}
+
+function syncSummary(r) {
+  const parts = [[r.up, "copied to the drive"], [r.down, "copied here"], [r.deleted_remote, "deleted on the drive"],
+                 [r.deleted_local, "removed here"], [r.moved, "moved off this computer"], [r.conflicts, "kept twice (conflict)"],
+                 [r.errors, "problem"]].filter(([n]) => n);
+  return parts.length ? parts.map(([n, t]) => t === "problem" ? plural(n, "problem") : `${Number(n).toLocaleString()} ${t}`).join(", ")
+                      : "Everything was already in step";
+}
+
+function syncNext(j) {
+  const s = j.status;
+  if (!j.enabled) return "";
+  if (j.trigger === "manual") return "Runs when you start it";
+  if (j.trigger === "live") return s.watching ? "Watching for changes" : "Checking every few seconds";
+  if (!s.next) return "";
+  const sec = s.next - Date.now() / 1000;
+  return sec <= 30 ? "Next run in a moment" : `Next run ${sec < 3600 ? "in " + Math.round(sec / 60) + " min" : when(s.next)}`;
+}
+
+function syncCard(j) {
+  const s = j.status, p = s.progress, last = s.last || {};
+  const running = s.state === "running";
+  const state = !j.enabled ? ["Paused", ""] : running ? ["Syncing", "busy"] : s.state === "error" ? ["Problem", "warn"]
+              : s.last_run ? ["Up to date", "ok"] : ["Waiting", ""];
+  const menu = () => [
+    running ? { label: "Stop", icon: "close", run: () => syncAction("stop", j, "Stopping") }
+            : { label: "Sync now", icon: "refresh", run: () => syncAction("run", j, "Syncing") },
+    { label: j.enabled ? "Pause" : "Resume", icon: j.enabled ? "minus" : "restore",
+      run: () => syncAction("pause", j, j.enabled ? "Paused" : "Resumed", { paused: j.enabled }) },
+    { label: "Open the drive folder", icon: "enter", run: () => go("#/files" + enc(j.remote)) },
+    syncData.can_edit && { label: "Change…", icon: "settings", run: () => syncForm(j) },
+    (s.history || []).length && { label: "Recent runs", icon: "history", run: () => syncHistory(j) },
+    syncData.can_edit && "-",
+    syncData.can_edit && { label: "Stop syncing this folder", icon: "trash", danger: true, run: async () => {
+      if (await ask({ title: `Stop syncing “${j.name}”?`, ok: "Stop syncing", danger: true,
+                      text: "Nothing is deleted: the files stay on this computer and on the drive." })
+          && await attempt(() => api("/api/sync/remove", { id: j.id }), "No longer synced")) renderSync();
+    } },
+  ];
+  let line;
+  if (running && p) {
+    const pct = p.total_bytes ? Math.min(100, (p.bytes / p.total_bytes) * 100) : p.total ? (p.done / p.total) * 100 : 0;
+    line = [h("div", { class: "sync-line" }, p.total ? `${Number(p.done).toLocaleString()} of ${plural(p.total, "file")}` : "Comparing folders…",
+              p.total_bytes ? ` · ${size(p.bytes)} of ${size(p.total_bytes)}` : "",
+              p.file && h("span", { class: "sync-file" }, ` · ${p.action === "down" ? "←" : "→"} ${p.file}`)),
+            h("div", { class: "meter" }, h("i", { style: `width:${pct.toFixed(1)}%` }))];
+  } else if (s.error) {
+    line = h("div", { class: "sync-line warn" }, s.error);
+  } else if (s.last_run) {
+    line = h("div", { class: "sync-line" }, `${ago(s.last_run)}: ${syncSummary(last)}`,
+             last.waiting ? ` · ${plural(last.waiting, "file")} still uploading to Discord` : "",
+             last.busy ? ` · ${plural(last.busy, "file")} in use, next pass` : "");
+  } else {
+    line = h("div", { class: "sync-line" }, "Not run yet");
+  }
+  const card = h("div", { class: "sync-card" + (j.enabled ? "" : " off") },
+    h("div", { class: "sync-head" },
+      h("span", { class: "sync-dir", title: j.label }, ARROW[j.direction]),
+      h("div", { class: "sync-title" },
+        h("div", { class: "t" }, h("span", { class: "label" }, j.name), h("span", { class: "tag" }, j.label), h("span", { class: "tag" }, j.when)),
+        h("div", { class: "sync-paths" },
+          h("code", { title: j.local }, j.local), h("span", { class: "a" }, ARROW[j.direction]),
+          h("a", { href: "#/files" + enc(j.remote), title: "Open on the drive" }, h("code", {}, drivePathShown(j.remote))))),
+      h("span", { class: "sync-state" }, h("span", { class: "dot " + state[1] }), state[0]),
+      running ? h("button", { class: "btn ghost small", onclick: () => syncAction("stop", j, "Stopping") }, "Stop")
+              : h("button", { class: "btn ghost small", onclick: () => syncAction("run", j, "Syncing") }, "Sync now"),
+      menuButton(menu, j.name, j.label)),
+    line,
+    h("div", { class: "sync-foot" }, syncNext(j)),
+    (s.problems || []).length ? h("details", { class: "sync-problems" },
+      h("summary", {}, plural(s.problems.length, "note")), h("ul", {}, s.problems.map((t) => h("li", {}, t)))) : null);
+  bindMenu(card, menu, j.name, j.label, (e) => !!e.target.closest("button, a, summary"));
+  return card;
+}
+
+async function syncAction(what, j, ok, extra = {}) {
+  const r = await attempt(() => api("/api/sync/" + what, { id: j.id, ...extra }));
+  if (r) { toast(r.queued ? "Starts after the folder syncing now" : ok); setTimeout(renderSync, 400); }
+}
+
+function syncHistory(j) {
+  modal(`Recent runs · ${j.name}`, h("div", { class: "list rows-simple" }, (j.status.history || []).map((r) =>
+    h("div", { class: "row", style: "grid-template-columns:150px minmax(0,1fr)" },
+      h("span", { class: "date", style: "text-align:left" }, fmtFull.format(new Date(r.at * 1000))),
+      h("span", { class: r.error ? "warn-text" : "" }, r.error || syncSummary(r) + (r.bytes ? ` · ${size(r.bytes)}` : ""))))));
+}
+
+async function renderSync(quiet) {
+  clearTimeout(syncTimer);
+  if (route.name !== "sync") return;
+  const data = await api("/api/sync").catch((e) => { if (!quiet) toast(e.message); return null; });
+  if (route.name !== "sync") return;
+  if (data) syncData = data;
+  if (!syncData) { page(h("h1", {}, "Sync"), h("p", { class: "lede" }, "Connecting to the drive…")); return; }
+  const d = syncData;
+  if (!(quiet && (ctxEl || document.querySelector("dialog.modal[open]")))) {
+    keepScroll = !!quiet;
+    try {
+      page(h("div", { class: "bar" }, h("h1", { style: "margin:0" }, "Sync"),
+             d.can_edit && h("div", { class: "actions" }, h("button", { class: "btn", onclick: () => syncForm(null) }, icon("plus"), "Add a folder"))),
+           h("p", { class: "lede" }, `Folders on ${d.host} kept in step with folders on the drive: backups, mirrors and two-way sync. `
+             + "Copies keep each file's date, so nothing is copied twice, and files still being written wait until they are finished."),
+           !d.can_edit && h("div", { class: "notice" }, `Adding or changing folders works on ${d.host} itself (or with `, h("code", {}, "sync add"),
+             " in its terminal), because it reads and writes files outside the drive. Syncing now and pausing work from here."),
+           d.jobs.length ? h("div", { class: "sync-list" }, d.jobs.map(syncCard))
+             : h("div", { class: "empty" }, h("b", {}, "No folders synced yet"),
+                 d.can_edit ? "Add one, e.g. your Downloads folder, and it is backed up to the drive by itself." : "Add one on the computer running the drive."),
+           d.local && h("div", { class: "settings", style: "margin-top:40px" }, h("div", { class: "set-row" },
+             h("div", { class: "set-text" }, h("div", { class: "t" }, "Let other devices choose folders here"),
+               h("div", { class: "s" }, `Off: only ${d.host} itself can add or change synced folders. On: anyone signed in to this dashboard from elsewhere can make it copy any folder of this computer.`)),
+             h("div", { class: "set-ctl" }, switchEl(d.remote_edit, async (on) => {
+               if (await attempt(() => api("/api/sync/remote-edit", { on }), on ? "Other devices can now change synced folders" : "Only this computer can change synced folders")) d.remote_edit = on;
+             }, "Let other devices choose folders here")))));
+    } finally { keepScroll = false; }
+  }
+  syncTimer = setTimeout(() => renderSync(true), d.running ? 1500 : 5000);
+}
+
+/** Choose a folder on the computer running the drive. */
+function pickLocalFolder(start) {
+  return new Promise((resolve) => {
+    let cur = start || "", chosen = null;
+    const list = h("div", { class: "picker-list" });
+    const where = h("input", { class: "picker-path", spellcheck: "false", placeholder: "Type a path, or pick below",
+                               onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); load(where.value.trim()); } } });
+    const here = h("button", { class: "btn", onclick: () => { chosen = cur; m.close(); } }, "Use this folder");
+    const m = modal("Folder on " + (syncData ? syncData.host : "this computer"), where, list, h("div", { class: "modal-actions" }, here));
+    m.dlg.addEventListener("close", () => resolve(chosen));
+    async function load(path) {
+      const data = await api("/api/sync/browse" + q({ path })).catch((e) => { toast(e.message); return null; });
+      if (!data) return;
+      cur = data.path;
+      where.value = data.path;
+      here.disabled = !data.path;
+      const rows = [];
+      if (data.parent != null) rows.push(h("button", { class: "picker-row", onclick: () => load(data.parent) }, icon("back"), h("span", {}, "Up one level")));
+      for (const d of data.dirs) rows.push(h("button", { class: "picker-row", onclick: () => load(d.path) }, icon("folder", "folder"), h("span", {}, d.name), icon("enter")));
+      if (!data.dirs.length) rows.push(h("div", { class: "muted picker-empty" }, "No folders in here"));
+      list.replaceChildren(...rows);
+    }
+    load(cur);
+  });
+}
+
+function syncForm(j) {
+  const d = syncData;
+  const v = j ? { ...j, exclude: (j.exclude || []).join(", ") }
+              : { name: "", local: "", remote: "", mode: "backup", trigger: "live", every: 60, at: "03:00", exclude: "" };
+  const inp = (key, attrs = {}) => h("input", { value: v[key] ?? "", spellcheck: "false", autocomplete: "off", ...attrs,
+                                                 oninput: (e) => { v[key] = e.target.value; } });
+  const local = inp("local", { placeholder: d.windows ? "C:\\Users\\you\\Downloads" : "/home/you/Documents" });
+  const remote = inp("remote", { placeholder: d.windows ? `${d.mount}\\Downloads` : "/Downloads" });
+  if (v.remote) remote.value = drivePathShown(v.remote);
+  const pickRow = (input, onPick) => h("div", { class: "pick-row" }, input, h("button", { class: "btn ghost", type: "button", onclick: onPick }, "Browse…"));
+  const modes = h("div", { class: "modes", role: "radiogroup" }, d.modes.map((mo) => {
+    const b = h("button", { type: "button", role: "radio", class: "mode", "aria-checked": String(v.mode === mo.id),
+                            onclick: () => { v.mode = mo.id; for (const x of modes.children) x.setAttribute("aria-checked", String(x === b)); } },
+      h("span", { class: "mode-a" }, ARROW[mo.direction]),
+      h("span", {}, h("span", { class: "t" }, mo.label), h("span", { class: "s" }, mo.text)));
+    return b;
+  }));
+  const unit = h("select", {}, h("option", { value: "1" }, "minutes"), h("option", { value: "60", selected: v.every % 60 === 0 }, "hours"));
+  const every = h("input", { type: "number", min: "1", value: String(v.every % 60 === 0 ? v.every / 60 : v.every), class: "every" });
+  const at = h("input", { type: "time", value: v.at, class: "at" });
+  const extra = h("div", { class: "when-extra" });
+  const showExtra = () => extra.replaceChildren(
+    v.trigger === "interval" ? h("div", { class: "pick-row" }, h("span", { class: "muted" }, "Every"), every, unit) :
+    v.trigger === "daily" ? h("div", { class: "pick-row" }, h("span", { class: "muted" }, "At"), at) :
+    h("div", { class: "hint" }, v.trigger === "live" ? "Starts a few seconds after something changes; a full check also runs every so often."
+                                                     : "Only when you press Sync now (or run it from the terminal)."));
+  const seg = h("div", { class: "seg", role: "radiogroup" }, d.triggers.map((t) =>
+    h("button", { type: "button", role: "radio", "aria-checked": String(v.trigger === t.id), onclick: (e) => {
+      v.trigger = t.id; for (const b of seg.children) b.setAttribute("aria-checked", String(b === e.currentTarget)); showExtra();
+    } }, { live: "Live", interval: "Every…", daily: "Daily", manual: "Manual" }[t.id])));
+  showExtra();
+  const save = h("button", { class: "btn", type: "button", onclick: async () => {
+    const job = { ...v, local: local.value.trim(), remote: remote.value.trim(), exclude: v.exclude,
+                  every: Math.max(1, Math.round(Number(every.value || 1) * Number(unit.value))), at: at.value || "03:00" };
+    if (j) job.id = j.id;
+    save.disabled = true;
+    const r = await attempt(() => api("/api/sync/save", { job }));
+    save.disabled = false;
+    if (r) { m.close(); toast(j ? "Saved" : "Added. The first sync starts now."); renderSync(); }
+  } }, j ? "Save" : "Add and sync");
+  const m = modal(j ? `Change “${j.name}”` : "Sync a folder",
+    field(`Folder on ${d.host}`, pickRow(local, async () => { const p = await pickLocalFolder(local.value.trim() || d.home); if (p) { local.value = p; v.local = p; } })),
+    field("Folder on the drive", pickRow(remote, async () => {
+      const p = await pickFolder("Folder on the drive", (remote.value.trim().replace(/^[A-Za-z]:/, "").replace(/\\/g, "/")) || "/", [], "Use this folder");
+      if (p) { remote.value = drivePathShown(p); v.remote = p; }
+    }), "It is created if it isn't there yet."),
+    field("What to do", modes),
+    field("When", h("div", {}, seg, extra)),
+    field("Skip these", inp("exclude", { placeholder: "e.g. *.iso, Temp/" }),
+          `Names or paths inside the folder, separated by commas. Always skipped: unfinished downloads and temporary files (${d.default_exclude.slice(0, 5).join(", ")}…).`),
+    field("Name", inp("name", { placeholder: "Optional, e.g. Downloads" })),
+    h("div", { class: "modal-actions" }, save));
+  m.dlg.classList.add("wide");
 }
 
 // ------------------------------------------------------------------ what's new

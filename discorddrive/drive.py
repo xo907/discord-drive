@@ -41,6 +41,7 @@ class DiscordDrive:
         self.healer = None
         self.maintenance = None
         self.web = None
+        self.sync = None
         self._stop_event = threading.Event()
         self._stop_lock = threading.Lock()
         self._stopped = False
@@ -127,6 +128,9 @@ class DiscordDrive:
         self.maintenance = Maintenance(self.cfg, self.index, self.backend, self.healer, uploader=self.uploader,
                                        journal=self.journal, cache=self.cache, device_id=self.cfg.device_id)
 
+        from .sync import SyncManager
+        self.sync = SyncManager(self)
+
         # Recover any pending staging files from previous runs
         self.fs.recover()
 
@@ -168,6 +172,8 @@ class DiscordDrive:
             self.healer.start()
         if self.maintenance:
             self.maintenance.start()
+        if self.sync:
+            self.sync.start()
         if getattr(self.cfg, "web_enabled", False) and not self.local_test_dir:
             self.start_web()
 
@@ -200,6 +206,8 @@ class DiscordDrive:
         self._stop_event.set()
         if self.web:
             self.web.stop()
+        if self.sync:
+            self.sync.stop()
         if self.maintenance:
             self.maintenance.stop()
         if self.uploader:

@@ -117,6 +117,7 @@ Everything is in the menu: **`run.bat`** on Windows (double-click it), **`./run.
 | 9 | Tools: check files, logs, encryption keys, rebuild the file list, Explorer menu, autostart |
 | 10 | Approve a new device: send it the key when it asks |
 | 11 | Web dashboard: browse, preview, upload and share files in your browser (also on your phone) |
+| 12 | Sync and back up folders: keep e.g. your Downloads backed up to the drive by itself |
 
 Every option is also a direct command, handy for scripts and remote servers:
 `run.bat status`, `./run.sh start`, `./run.sh stop`, `./run.sh config max_file_size 2G`, and so on
@@ -191,6 +192,8 @@ other devices**:
 - **Compression and de-duplication** before encryption; extra bots and parallel uploads for speed.
 - **Web dashboard** for your browser and phone, with expiring share links.
 - **Snapshots** of the whole drive, restorable folder by folder.
+- **Sync and back up folders** on your computer: backup, mirror, two-way sync, move, or a local copy
+  of a drive folder; live, every N minutes, daily or by hand ([more](#sync-and-back-up-folders)).
 - **Real drive / mount.** Uses [WinFsp](https://winfsp.dev/) on Windows and libfuse on Linux,
   so any application can use it.
 - **Streaming and seeking.** Byte-range reads, read-ahead, and an on-disk LRU chunk cache.
@@ -301,6 +304,8 @@ snapshot-restore <n> [path] [--to p] [--in-place]
                                      Bring back a folder (or everything) from snapshot n
 bots [add [token]|remove <n>]        Extra bots for faster uploads
 hide <folder> / unhide <folder>      Don't show a folder on this device (it stays everywhere else)
+sync [list|add|edit|remove|run|stop|pause|resume|status|modes]
+                                     Folders kept in sync with the drive (see "Sync and back up folders")
 ```
 
 Paths can be given as `Z:\Folder\file.mp4`, `/mnt/discord/Folder/file.mp4`, or `/Folder/file.mp4`.
@@ -386,6 +391,9 @@ devices).
 - **Contacts**: an encrypted address book (one vCard file, `/Contacts/Contacts.vcf`, synced and
   versioned). Import vCard (.vcf) or Google / Outlook CSV exports from your phone, iCloud, Google
   or Outlook; create and edit contacts; export them again as .vcf.
+- **Sync**: folders on the computer running the drive kept in step with folders on the drive (backup,
+  mirror, two-way, move, download), with live progress, Sync now, pause and recent runs. See
+  [Sync and back up folders](#sync-and-back-up-folders).
 - **Sharing**: choose how long a link works (1 hour to never), an optional password, and whether
   people may download or only view. The page shows photos, video, music, PDFs and text, and whole
   folders can be shared. The **Shared** tab lists your links, their views, and turns them off.
@@ -415,6 +423,51 @@ and every extra bot adds the same again:
    checks the bot can post in the channel, and saves it). Restart the drive.
 
 Each device can use its own set of extra bots; any bot in the channel can read every piece.
+
+## Sync and back up folders
+
+Keep a folder on this computer in step with a folder on the drive, e.g. `C:\Users\you\Downloads`
+backed up to `Z:\Downloads` by itself. Set it up in the dashboard (**Sync → Add a folder**, with a
+folder browser for both sides), in the menu (**12**), or with the `sync` command:
+
+```powershell
+run.bat sync add C:\Users\you\Downloads Z:\Downloads --mode backup
+```
+```bash
+./run.sh sync add ~/Pictures /Photos --mode two-way --every 30
+```
+
+**What it does** (`--mode`):
+
+| Mode | Direction | What happens |
+|---|---|---|
+| `backup` (default) | computer → drive | New and changed files are copied. Files you delete here stay on the drive. |
+| `mirror` | computer → drive | The drive folder becomes an exact copy: deleting here deletes there too (it stays under **Deleted**, so it can be brought back). |
+| `two-way` | both ways | Changes and deletions on either side are copied to the other. A file changed on both sides since the last sync is kept twice (`name (conflict <computer> <date>).ext`). |
+| `move` | computer → drive | Files are copied, then deleted here once they are safely stored in Discord. Frees space, e.g. for Downloads. |
+| `download` | drive → computer | A local copy of a drive folder (e.g. on an external disk). Nothing is deleted here. |
+| `download-mirror` | drive → computer | An exact local copy. Files deleted on the drive are moved to a holding folder (`<data dir>\sync\trash`, kept 30 days), never deleted outright. |
+
+**When it runs** (`--when`): `live` (default: a few seconds after something changes; Windows tells
+the drive at once, elsewhere and for changes on the drive it checks every few seconds),
+`interval` (`--every 30` minutes), `daily` (`--at 03:00`) or `manual` (only `sync run` or **Sync now**).
+
+- Copies keep each file's modification time, so a file is copied once, not on every pass. A file that
+  is still being written (changed in the last 5 seconds, or locked by the program writing it) waits for
+  the next pass; unfinished downloads (`*.crdownload`, `*.part`, ...) and temporary files are never
+  copied. Skip more with `--exclude "*.iso,Temp/"`.
+- Safety: a folder that isn't there (a disk that isn't connected) changes nothing, and if one side is
+  suddenly empty, nothing is deleted on the other. Mirror and two-way sync need a folder on the
+  drive, not the whole drive.
+- `sync list`, `sync status <n>` (result, problems, recent runs), `sync run <n>` (shows progress),
+  `sync stop <n>`, `sync pause <n>` / `resume`, `sync edit <n> --mode ... --when ...`, `sync remove <n>`
+  (nothing is deleted), `sync modes`.
+- Syncing runs inside the drive, so the drive has to be running. The folders belong to the device they
+  are on (they are kept in its config file); what they copy onto the drive appears on all your devices.
+- For safety, folders on a computer can only be chosen or changed in the dashboard **on that computer
+  itself**, because that means reading and writing files outside the drive. Syncing now and pausing
+  work from everywhere. To allow it from other devices too, turn on "Let other devices choose folders
+  here" at the bottom of Sync (on that computer), or `config sync_remote_edit true`.
 
 ## Snapshots
 

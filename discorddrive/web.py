@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
 from .actions import default_restore_folder, snapshot_restore_ops, undelete_ops, version_put_op
-from .config import Config, config_path
+from .config import Config, config_path, launcher as _launcher
 from .crypto import check_password, hash_password
 from .index import ROOT_ID, new_uid
 from .shares import Shares
@@ -935,6 +935,141 @@ class _Handler(BaseHTTPRequestHandler):
             st["bad"] = [b for b in st["bad"] if b["uid"] not in uids]
         self.drive.journal.wake()
         self._json({"ok": True, "removed": removed})
+
+    # ------------------------------------------------------------ sync folders
+    # Choosing folders on this computer (and what is done with them) reads and writes files outside the
+    # drive, so it is only allowed from this computer itself, unless `sync_remote_edit` is on. Running,
+    # stopping and pausing a pair works from everywhere.
+    def _sync_can_edit(self):
+        return self._local_request() or bool(getattr(self.drive.cfg, "sync_remote_edit", False))
+
+    def _sync_mgr(self, edit=False):
+        if self.drive.sync is None:
+            raise ApiError(503, "Syncing isn't available")
+        if edit and not self._sync_can_edit():
+            raise ApiError(403, "For safety, folders on this computer can only be chosen on this computer itself "
+                                f"(open http://127.0.0.1:{self.app.port}/ there, or use '{_launcher()} sync'). "
+                                "It can allow other devices under Sync.")
+        return self.drive.sync
+
+    def _sync_job(self, m, jid):
+        job = m.job(str(jid or ""))
+        if job is None:
+            raise ApiError(404, "That folder is no longer synced")
+        return job
+
+    def _sync_store(self, m, jobs):
+        from . import sync
+        sync.save_jobs(jobs, self.drive)
+        m.reload(jobs)
+
+    def _get_api_sync(self):
+        from . import sync
+        m = self._sync_mgr()
+        cfg = self.drive.cfg
+        self._json({"jobs": m.snapshot(), "running": m.running, "can_edit": self._sync_can_edit(),
+                    "local": self._local_request(), "remote_edit": bool(cfg.sync_remote_edit),
+                    "host": socket.gethostname(), "mount": cfg.mount_point, "windows": os.name == "nt",
+                    "home": os.path.expanduser("~") if self._sync_can_edit() else "",
+                    "modes": [{"id": k, "label": v[0], "direction": v[1], "text": v[2]} for k, v in sync.MODES.items()],
+                    "triggers": [{"id": k, "label": v} for k, v in sync.TRIGGERS.items()],
+                    "default_exclude": sync.DEFAULT_EXCLUDE})
+
+    def _post_api_sync_save(self):
+        from . import sync
+        m = self._sync_mgr(edit=True)
+        body = self._body_json().get("job") or {}
+        jobs = [dict(j) for j in m.jobs]
+        old = self._sync_job(m, body["id"]) if body.get("id") else None
+        try:
+            job = sync.normalize_job({**(old or {}), **body}, self.drive.cfg, jobs)
+        except sync.SyncError as e:
+            raise ApiError(400, str(e)) from None
+        if old is not None:
+            jobs = [job if j["id"] == job["id"] else j for j in jobs]
+        else:
+            jobs.append(job)
+        self._sync_store(m, jobs)
+        if old is None and job["trigger"] != "manual":
+            m.run_now(job["id"])
+        self._json({"ok": True, "job": job})
+
+    def _post_api_sync_remove(self):
+        m = self._sync_mgr(edit=True)
+        job = self._sync_job(m, self._body_json().get("id"))
+        m.cancel(job["id"])
+        self._sync_store(m, [j for j in m.jobs if j["id"] != job["id"]])
+        self._json({"ok": True})
+
+    def _post_api_sync_pause(self):
+        m = self._sync_mgr()
+        body = self._body_json()
+        job = self._sync_job(m, body.get("id"))
+        on = not bool(body.get("paused"))
+        if not on:
+            m.cancel(job["id"])
+        self._sync_store(m, [dict(j, enabled=on) if j["id"] == job["id"] else j for j in m.jobs])
+        self._json({"ok": True})
+
+    def _post_api_sync_run(self):
+        m = self._sync_mgr()
+        job = self._sync_job(m, self._body_json().get("id"))
+        m.run_now(job["id"])
+        self._json({"ok": True, "queued": m.running not in (None, job["id"])})
+
+    def _post_api_sync_stop(self):
+        m = self._sync_mgr()
+        m.cancel(self._sync_job(m, self._body_json().get("id"))["id"])
+        self._json({"ok": True})
+
+    def _post_api_sync_remote_edit(self):
+        if not self._local_request():
+            raise ApiError(403, "Only this computer itself can change this")
+        on = bool(self._body_json().get("on"))
+        self.drive.cfg.sync_remote_edit = on
+        if not getattr(self.drive, "local_test_dir", None):
+            saved = Config.load()
+            saved.sync_remote_edit = on
+            saved.save()
+        self._json({"ok": True})
+
+    def _get_api_sync_browse(self):
+        """Folders on this computer, for choosing one to sync."""
+        from .sync import _is_link
+        self._sync_mgr(edit=True)
+        path = (self._query().get("path") or "").strip()
+        mount = (self.drive.cfg.mount_point or "")[:2].upper()
+        roots = []
+        if os.name == "nt":
+            for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                if f"{c}:" != mount and os.path.isdir(f"{c}:\\"):
+                    roots.append({"name": f"{c}:", "path": f"{c}:\\"})
+        else:
+            roots = [{"name": "Home", "path": os.path.expanduser("~")}, {"name": "/", "path": "/"}]
+            for media in ("/media", "/mnt"):
+                if os.path.isdir(media):
+                    roots.append({"name": media, "path": media})
+        if not path:
+            return self._json({"path": "", "parent": None, "dirs": roots, "roots": roots})
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isdir(path):
+            raise ApiError(404, f"Folder not found: {path}")
+        dirs = []
+        try:
+            with os.scandir(path) as it:
+                for e in it:
+                    try:
+                        if e.is_dir() and not e.name.startswith((".", "$")) and not _is_link(e):
+                            dirs.append({"name": e.name, "path": e.path})
+                    except OSError:
+                        continue
+        except OSError as e:
+            raise ApiError(403, f"Can't open {path}: {e.strerror or e}") from None
+        dirs.sort(key=lambda d: d["name"].lower())
+        up = os.path.dirname(path.rstrip("\\/")) if path.rstrip("\\/") else None
+        if os.name == "nt" and len(path.rstrip("\\")) == 2:
+            up = ""                                                     # a disk: back to the list of disks
+        self._json({"path": path, "parent": up if up != path else None, "dirs": dirs[:2000], "roots": roots})
 
     # ------------------------------------------------------------ settings
     # name -> (type, needs a restart, check)

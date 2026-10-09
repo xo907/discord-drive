@@ -771,3 +771,61 @@ button.link { padding: 0; border: 0; background: none; color: var(--ink); text-d
 
 .share-kind { margin: 14px 0 6px; font-size: 13px; font-weight: 500; }
 .share-kind:first-child { margin-top: 0; }
+
+/* ------------------------------------------------------------------ sync folders */
+.notice { padding: 12px 14px; margin: -8px 0 24px; border: 1px solid var(--line); border-radius: var(--radius);
+          color: var(--muted); font-size: 13px; background: var(--panel); }
+.sync-list { display: flex; flex-direction: column; gap: 10px; }
+.sync-card { padding: 14px 14px 12px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.sync-card.off { opacity: .7; }
+.sync-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sync-dir { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 8px;
+            background: var(--hover); font-size: 17px; color: var(--muted); }
+.sync-title { flex: 1; min-width: 0; }
+.sync-title .t { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; }
+.sync-title .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-title .tag { font-weight: 400; }
+.sync-paths { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 3px; font-size: 12px; color: var(--muted); }
+.sync-paths code { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sync-paths a { min-width: 0; max-width: 50%; display: flex; flex: none; }
+.sync-paths a:hover code { color: var(--ink); text-decoration: underline; }
+.sync-paths .a { flex: none; color: var(--faint); }
+.sync-state { display: flex; align-items: center; gap: 6px; flex: none; font-size: 12px; color: var(--muted); }
+.sync-line { margin: 12px 0 0 46px; font-size: 13px; overflow-wrap: anywhere; }
+.sync-line.warn, .warn-text { color: var(--warn); }
+.sync-file { color: var(--muted); }
+.sync-card .meter { margin-left: 46px; }
+.sync-foot { margin: 4px 0 0 46px; font-size: 12px; color: var(--faint); }
+.sync-foot:empty { display: none; }
+.sync-problems { margin: 8px 0 0 46px; font-size: 12px; color: var(--muted); }
+.sync-problems summary { cursor: pointer; color: var(--warn); }
+.sync-problems ul { margin: 6px 0 0; padding-left: 18px; max-height: 180px; overflow-y: auto; overflow-wrap: anywhere; }
+dialog.modal.wide { width: min(600px, calc(100% - 24px)); }
+.pick-row { display: flex; align-items: center; gap: 8px; }
+.pick-row input { flex: 1; min-width: 0; margin-bottom: 0; }
+dialog .picker-path, .when-extra input { margin-bottom: 0; }
+.pick-row .btn { flex: none; }
+.modal-body select, .when-extra input { height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius);
+                                        background: var(--bg); color: var(--ink); outline: none; }
+.when-extra { margin-top: 10px; }
+.when-extra input.every { width: 90px; flex: none; }
+.when-extra input.at { width: 130px; flex: none; }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mode { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius);
+        background: var(--bg); text-align: left; }
+.mode:hover { background: var(--hover); }
+.mode[aria-checked="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); background: var(--panel); }
+.mode .mode-a { flex: none; width: 18px; font-size: 15px; line-height: 20px; color: var(--muted); text-align: center; }
+.mode .t { display: block; font-weight: 500; font-size: 13px; }
+.mode .s { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.picker-path { width: 100%; height: 34px; padding: 0 10px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: var(--radius);
+               background: var(--bg); font: 12.5px var(--mono); outline: none; }
+dialog .picker-path { margin-bottom: 10px; }
+.picker-path:focus { box-shadow: 0 0 0 2px var(--ring); }
+@media (max-width: 760px) {
+  .modes { grid-template-columns: 1fr; }
+  .sync-head { flex-wrap: wrap; }
+  .sync-title { flex-basis: calc(100% - 46px); }
+  .sync-state { margin-left: 46px; margin-right: auto; }
+  .sync-line, .sync-foot, .sync-problems, .sync-card .meter { margin-left: 0; }
+}

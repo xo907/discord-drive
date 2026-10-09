@@ -4,6 +4,7 @@ import http.client
 import io
 import json
 import os
+import time
 import urllib.parse
 import zipfile
 
@@ -427,6 +428,50 @@ class WebTest(helpers.DriveTest):
         for key in ("version", "stats", "health", "devices", "uploads"):
             self.assertIn(key, st)
         self.assertTrue(any(d["me"] for d in st["devices"]))
+
+    def test_sync_folders(self):
+        self.login()
+        here = os.path.join(self.tmp, "Downloads")
+        os.makedirs(here)
+        with open(os.path.join(here, "report.pdf"), "wb") as f:
+            f.write(b"%PDF report")
+        os.utime(os.path.join(here, "report.pdf"), (1e9, 1e9))
+        info = json.loads(self.req("GET", "/api/sync")[2])
+        self.assertTrue(info["can_edit"])
+        self.assertEqual(len(info["modes"]), 6)
+        listing = json.loads(self.req("GET", "/api/sync/browse?" + urllib.parse.urlencode({"path": self.tmp}))[2])
+        self.assertIn("Downloads", [d["name"] for d in listing["dirs"]])
+
+        status, _, body = self.req("POST", "/api/sync/save", {"job": {"local": here, "remote": "/", "mode": "mirror"}})
+        self.assertEqual(status, 400, body)                                  # mirroring onto the whole drive
+        self.d.sync.start()                                                  # the scheduler: runs a new job at once
+        status, _, body = self.req("POST", "/api/sync/save", {"job": {"local": here, "remote": "/Downloads", "mode": "backup"}})
+        self.assertEqual(status, 200, body)
+        jid = json.loads(body)["job"]["id"]
+        for _ in range(100):
+            if self.d.index.resolve("/Downloads/report.pdf") is not None and self.d.sync.running is None:
+                break
+            time.sleep(0.1)
+        self.assertEqual(self.read(self.d, "/Downloads/report.pdf"), b"%PDF report")
+        job = json.loads(self.req("GET", "/api/sync")[2])["jobs"][0]
+        self.assertEqual((job["status"]["state"], job["status"]["last"]["up"]), ("idle", 1))
+
+        self.assertEqual(self.req("POST", "/api/sync/pause", {"id": jid, "paused": True})[0], 200)
+        self.assertFalse(self.d.cfg.sync_jobs[0]["enabled"])
+        self.assertEqual(self.req("POST", "/api/sync/run", {"id": jid})[0], 200)
+
+        # From another device (through a domain name) folders here can't be chosen, unless allowed here.
+        self.d.cfg.web_hosts = ["drive.example.com"]
+        remote = {"Host": "drive.example.com"}
+        self.assertFalse(json.loads(self.req("GET", "/api/sync", headers=remote)[2])["can_edit"])
+        self.assertEqual(self.req("GET", "/api/sync/browse?path=%2F", headers=remote)[0], 403)
+        self.assertEqual(self.req("POST", "/api/sync/save", {"job": {"id": jid, "local": self.tmp}}, headers=remote)[0], 403)
+        self.assertEqual(self.req("POST", "/api/sync/remote-edit", {"on": True}, headers=remote)[0], 403)
+        self.assertEqual(self.req("POST", "/api/sync/pause", {"id": jid, "paused": False}, headers=remote)[0], 200)
+        self.assertEqual(self.req("POST", "/api/sync/remote-edit", {"on": True})[0], 200)
+        self.assertEqual(self.req("POST", "/api/sync/remove", {"id": jid}, headers=remote)[0], 200)
+        self.assertEqual(self.d.cfg.sync_jobs, [])
+        self.assertIsNotNone(self.d.index.resolve("/Downloads/report.pdf"))  # removing a pair deletes nothing
 
 
 if __name__ == "__main__":

@@ -459,7 +459,7 @@ def cmd_approve_keys(args):
 
 _SECRET_FIELDS = {"bot_token", "encryption_key", "encryption_salt", "old_encryption_keys", "extra_bot_tokens",
                   "web_token", "web_password"}
-_LIST_COMMANDS = {"extra_bot_tokens": "bots add <token>", "hidden_folders": "hide <folder>",
+_LIST_COMMANDS = {"extra_bot_tokens": "bots add <token>", "hidden_folders": "hide <folder>", "sync_jobs": "sync add",
                   "old_encryption_keys": "add-old-key", "web_user": "web-password",
                   "web_password": "web-password"}
 
@@ -474,6 +474,8 @@ def cmd_config(args):
             value = getattr(cfg, name)
             shown = (f"({len(value)} key(s))" if isinstance(value, list) else "(set)") \
                 if name in _SECRET_FIELDS and value else value
+            if name == "sync_jobs":
+                shown = f"{len(value)} folder(s), see 'sync list'"
             print(f"{name:24} {shown}")
         print(f"\nConfig file: {config_path()}  (restart the drive after changing settings)")
         return 0
@@ -1621,6 +1623,260 @@ def cmd_health(args):
         _close(idx, crypto)
 
 
+# --------------------------------------------------------------------- sync and backup folders
+def _shown_remote(cfg, remote):
+    """'/Downloads' as people see it here: Z:\\Downloads on Windows, /mnt/discord/Downloads on Linux."""
+    if sys.platform == "win32":
+        return cfg.mount_point.rstrip("\\") + remote.replace("/", "\\")
+    return cfg.mount_point.rstrip("/") + (remote if remote != "/" else "/")
+
+
+def _ago(t):
+    if not t:
+        return "never"
+    s = time.time() - t
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return f"{int(s // 60)} min ago"
+    if s < 86400:
+        return f"{int(s // 3600)} h ago"
+    return _fmt_time(t)
+
+
+def _sync_summary(res):
+    parts = [(res.get("up"), "copied to the drive"), (res.get("down"), "copied here"),
+             (res.get("deleted_remote"), "deleted on the drive"), (res.get("deleted_local"), "removed here"),
+             (res.get("moved"), "moved off this computer"), (res.get("conflicts"), "conflict(s) kept twice"),
+             (res.get("errors"), "problem(s)")]
+    text = ", ".join(f"{n:,} {what}" for n, what in parts if n)
+    return text or "nothing to do, everything was in step"
+
+
+def _pick_job(jobs, which):
+    """A job by its number in 'sync list', its id or its name."""
+    if not which:
+        print("[ERROR] Which folder? Give its number from 'sync list'.")
+        return None
+    w = str(which).strip()
+    if w.isdigit() and 1 <= int(w) <= len(jobs):
+        return jobs[int(w) - 1]
+    for j in jobs:
+        if w in (j["id"], j["name"]) or w.lower() == j["name"].lower():
+            return j
+    print(f"[ERROR] No synced folder '{w}'. See '{launcher()} sync list'.")
+    return None
+
+
+def _job_options(args, base):
+    job = dict(base)
+    for key, attr in (("mode", "mode"), ("trigger", "when"), ("every", "every"), ("at", "at"), ("name", "name")):
+        if getattr(args, attr, None) is not None:
+            job[key] = getattr(args, attr)
+    if args.local_folder:
+        job["local"] = args.local_folder
+    if args.drive_folder:
+        job["remote"] = args.drive_folder
+    if args.exclude is not None:
+        job["exclude"] = [x.strip() for e in args.exclude for x in e.split(",") if x.strip()]
+    if args.when is None and args.every is not None:
+        job["trigger"] = "interval"
+    if args.when is None and args.at is not None:
+        job["trigger"] = "daily"
+    return job
+
+
+def _sync_detail(cfg, sync, job, n):
+    s = sync.read_status(cfg).get("jobs", {}).get(job["id"]) or {}
+    print(f"--- {n}) {job['name']} ---")
+    print(f"{'Mode:':16}{sync.MODES[job['mode']][0]} ({job['mode']}): {sync.MODES[job['mode']][2]}")
+    print(f"{'This computer:':16}{job['local']}")
+    print(f"{'Drive:':16}{_shown_remote(cfg, job['remote'])}")
+    print(f"{'When:':16}{sync.when_text(job)}{'' if job['enabled'] else ' (PAUSED)'}")
+    if job["exclude"]:
+        print(f"{'Skips:':16}{', '.join(job['exclude'])}")
+    print(f"{'Last run:':16}{_ago(s.get('last_run'))}" + (f" (took {s['duration']:.0f} s)" if s.get("duration") else ""))
+    if s.get("state") == "running" and s.get("progress"):
+        p = s["progress"]
+        print(f"{'Now:':16}{p.get('done', 0):,} of {p.get('total', 0):,} files, "
+              f"{_human(p.get('bytes', 0))} of {_human(p.get('total_bytes', 0))}  {p.get('file', '')}")
+    if s.get("error"):
+        print(f"[!] {s['error']}")
+    elif s.get("last"):
+        r = s["last"]
+        print(f"{'Result:':16}{_sync_summary(r)}")
+        print(f"{'Files:':16}{r.get('files', 0):,} here, {r.get('remote_files', 0):,} on the drive"
+              + (f", {r['waiting']:,} still uploading to Discord" if r.get("waiting") else "")
+              + (f", {r['busy']:,} busy (being written; next pass)" if r.get("busy") else ""))
+    for p in (s.get("problems") or [])[:20]:
+        print(f"  [!] {p}")
+    if s.get("history"):
+        print()
+        print("--- Recent runs ---")
+        for h in s["history"]:
+            print(f"  {_fmt_time(h['at'])}  {h.get('error') or _sync_summary(h)}")
+
+
+def _sync_follow(cfg, sync, job, n, asked):
+    """Show the progress of a run the drive was asked to do, until it is finished."""
+    last_line, started, s = "", False, {}
+    try:
+        while True:
+            time.sleep(0.5)
+            s = sync.read_status(cfg).get("jobs", {}).get(job["id"]) or {}
+            if s.get("state") == "running" and (s.get("started") or 0) >= asked - 1:
+                started = True
+                p = s.get("progress") or {}
+                line = (f"  {p.get('done', 0):,} of {p.get('total', 0):,} files, {_human(p.get('bytes', 0))}"
+                        f" of {_human(p.get('total_bytes', 0))}  {p.get('file', '')}")
+                if line != last_line:
+                    print(line)
+                    last_line = line
+            elif (s.get("last_run") or 0) >= asked:
+                break
+            elif not started and time.time() - asked > 30:
+                print(f"[!] The drive hasn't started it yet (busy with another folder?). "
+                      f"Follow it with: {launcher()} sync status {n}")
+                return 0
+    except KeyboardInterrupt:
+        print(f"\nIt keeps running in the drive. Follow it with: {launcher()} sync status {n}")
+        return 0
+    if s.get("error"):
+        print(f"[ERROR] {s['error']}")
+        return 1
+    r = s.get("last") or {}
+    print(f"[OK] {_sync_summary(r)}.")
+    if r.get("waiting"):
+        print(f"     {r['waiting']:,} file(s) are still uploading to Discord in the background.")
+    for p in (s.get("problems") or [])[:10]:
+        print(f"  [!] {p}")
+    return 0
+
+
+def _sync_modes(sync):
+    print("--- What a synced folder does (--mode) ---")
+    for key, (label, _, text) in sync.MODES.items():
+        print(f"  {key:16} {label}: {text}")
+    print()
+    print("--- When it runs (--when) ---")
+    print(f"  {'live':16} As soon as something changes (default)")
+    print(f"  {'interval':16} Every N minutes: --every 30 (or --every 120 for every 2 hours)")
+    print(f"  {'daily':16} Once a day: --at 03:00")
+    print(f"  {'manual':16} Only when you start it: {launcher()} sync run <n>")
+    print()
+    print(f"Always skipped: {', '.join(sync.DEFAULT_EXCLUDE)}")
+    print('Skip more with --exclude "*.iso,Temp/" (names, or paths inside the folder).')
+
+
+def _sync_list(cfg, sync, jobs, running):
+    st = sync.read_status(cfg).get("jobs", {})
+    if not jobs:
+        print("No folders are synced yet. For example:")
+        ex = "C:\\Users\\me\\Downloads Z:\\Downloads" if sys.platform == "win32" else "~/Documents /Documents"
+        print(f"  {launcher()} sync add {ex} --mode backup")
+        print(f"See '{launcher()} sync modes' for every option.")
+        return 0
+    for i, j in enumerate(jobs, 1):
+        s = st.get(j["id"]) or {}
+        arrow = {"up": "->", "down": "<-", "both": "<->"}[sync.MODES[j["mode"]][1]]
+        state = "PAUSED" if not j["enabled"] else {"running": "RUNNING", "error": "PROBLEM"}.get(s.get("state"), "ON")
+        print(f"  {i}) {j['name']}  [{sync.MODES[j['mode']][0]}, {sync.when_text(j)}]  {state}")
+        print(f"     {j['local']}  {arrow}  {_shown_remote(cfg, j['remote'])}")
+        if s.get("state") == "running" and s.get("progress"):
+            p = s["progress"]
+            print(f"     Now: {p.get('done', 0):,} of {p.get('total', 0):,} files"
+                  + (f" ({p['file']})" if p.get("file") else ""))
+        elif s.get("last_run"):
+            print(f"     Last run {_ago(s['last_run'])}: {s.get('error') or _sync_summary(s.get('last') or {})}")
+        else:
+            print("     Not run yet.")
+    print()
+    if not running:
+        print(f"[!] The drive isn't running, so nothing syncs right now. Start it: {launcher()} start")
+    else:
+        print(f"Details: {launcher()} sync status <n>    Run now: {launcher()} sync run <n>")
+    return 0
+
+
+def cmd_sync(args):
+    """Folders kept in sync with the drive: list, add, edit, remove, run, stop, pause, resume, status, modes."""
+    from . import sync
+    cfg = Config.load()
+    jobs = sync.load_jobs(cfg)
+    action = args.action or "list"
+    running = is_mounted(cfg.mount_point)
+    if action == "modes":
+        _sync_modes(sync)
+        return 0
+    if action == "list":
+        return _sync_list(cfg, sync, jobs, running)
+    if action == "add":
+        if not args.target or not args.second:
+            print(f"[ERROR] Usage: {launcher()} sync add <folder on this computer> <folder on the drive> "
+                  "[--mode ...] [--when ...]   (see 'sync modes')")
+            return 1
+        try:
+            job = sync.normalize_job(_job_options(args, dict(local=args.target, remote=args.second)), cfg, jobs)
+        except sync.SyncError as e:
+            print(f"[ERROR] {e}")
+            return 1
+        jobs.append(job)
+        sync.save_jobs(jobs)
+        print(f"[OK] Added {len(jobs)}) {job['name']}: {sync.MODES[job['mode']][0]}, {sync.when_text(job)}")
+        print(f"     {job['local']}  ->  {_shown_remote(cfg, job['remote'])}" if sync.MODES[job["mode"]][1] != "down"
+              else f"     {_shown_remote(cfg, job['remote'])}  ->  {job['local']}")
+        print(f"     {sync.MODES[job['mode']][2]}")
+        if not running:
+            print(f"[!] It starts once the drive is running ({launcher()} start).")
+        elif job["trigger"] == "manual":
+            print(f"Run it with: {launcher()} sync run {len(jobs)}")
+        else:
+            print("The drive picks it up within a few seconds.")
+        return 0
+
+    job = _pick_job(jobs, args.target)
+    if job is None:
+        return 1
+    n = jobs.index(job) + 1
+    if action == "edit":
+        try:
+            new = sync.normalize_job(_job_options(args, job), cfg, jobs)
+        except sync.SyncError as e:
+            print(f"[ERROR] {e}")
+            return 1
+        jobs[n - 1] = new
+        sync.save_jobs(jobs)
+        print(f"[OK] {n}) {new['name']}: {sync.MODES[new['mode']][0]}, {sync.when_text(new)}")
+        return 0
+    if action == "remove":
+        jobs.pop(n - 1)
+        sync.save_jobs(jobs)
+        print(f"[OK] Stopped syncing {job['name']}. Nothing was deleted: the files stay here and on the drive.")
+        return 0
+    if action in ("pause", "resume"):
+        job["enabled"] = action == "resume"
+        sync.save_jobs(jobs)
+        print(f"[OK] {job['name']} is {'paused' if action == 'pause' else 'on again'}.")
+        return 0
+    if action == "status":
+        _sync_detail(cfg, sync, job, n)
+        return 0
+    # run / stop
+    if not running:
+        print(f"[ERROR] The drive isn't running; syncing happens inside it. Start it first: {launcher()} start")
+        return 1
+    asked = time.time()
+    sync.request_run(cfg, job["id"], cancel=action == "stop")
+    if action == "stop":
+        print(f"[OK] Asked {job['name']} to stop. Files copied so far stay copied.")
+        return 0
+    print(f"Syncing {job['name']}...")
+    if args.no_wait:
+        print(f"Follow it with: {launcher()} sync status {n}")
+        return 0
+    return _sync_follow(cfg, sync, job, n, asked)
+
+
 # --------------------------------------------------------------------- web, hidden folders
 def cmd_web(args):
     """Print (and open) the address of the web dashboard."""
@@ -1965,6 +2221,25 @@ def main():
     p_purge.add_argument("path", help="Original path of the deleted file (or a folder with --all)")
     p_purge.add_argument("--all", action="store_true", help="Every deleted file under that folder")
     p_purge.add_argument("--yes", action="store_true", help="Don't ask for confirmation")
+    p_sync = subparsers.add_parser(
+        "sync", help="Keep folders on this computer in sync with the drive (backup, mirror, two-way, ...)",
+        description="Folders on this computer kept in sync with folders on the drive, e.g. "
+                    "'sync add C:\\Users\\me\\Downloads Z:\\Downloads --mode backup', 'sync list', 'sync run 1'. "
+                    "'sync modes' explains every mode and trigger.")
+    p_sync.add_argument("action", nargs="?", choices=["list", "add", "edit", "remove", "run", "stop", "pause",
+                                                      "resume", "status", "modes"])
+    p_sync.add_argument("target", nargs="?", help="add: the folder on this computer; otherwise its number from 'sync list'")
+    p_sync.add_argument("second", nargs="?", help="add: the folder on the drive (e.g. Z:\\Downloads or /Downloads)")
+    p_sync.add_argument("--mode", choices=["backup", "mirror", "two-way", "move", "download", "download-mirror"],
+                        help="What is copied which way (default: backup)")
+    p_sync.add_argument("--when", choices=["live", "interval", "daily", "manual"], help="When it runs (default: live)")
+    p_sync.add_argument("--every", type=int, help="Minutes between runs (implies --when interval)")
+    p_sync.add_argument("--at", help="Time of day, e.g. 03:00 (implies --when daily)")
+    p_sync.add_argument("--exclude", action="append", help='Skip matching files or folders, e.g. "*.iso,Temp/"')
+    p_sync.add_argument("--name", help="A name for it")
+    p_sync.add_argument("--local-folder", help="edit: another folder on this computer")
+    p_sync.add_argument("--drive-folder", help="edit: another folder on the drive")
+    p_sync.add_argument("--no-wait", action="store_true", help="run: don't wait for it to finish")
     p_hide = subparsers.add_parser("hide", help="Don't show a folder on this device")
     p_hide.add_argument("path")
     p_unhide = subparsers.add_parser("unhide", help="Show a hidden folder on this device again")
@@ -2081,6 +2356,8 @@ def main():
         return cmd_purge(args)
     elif args.command in ("hide", "unhide"):
         return cmd_hide(args)
+    elif args.command == "sync":
+        return cmd_sync(args)
     else:
         parser.print_help()
         return 0

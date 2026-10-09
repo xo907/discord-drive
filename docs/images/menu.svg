@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="700" height="518" viewBox="0 0 700 518" role="img" aria-label="The DiscordDrive menu">
-  <rect width="700" height="518" rx="12" fill="#0d1117" stroke="#30363d"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="539" viewBox="0 0 700 539" role="img" aria-label="The DiscordDrive menu">
+  <rect width="700" height="539" rx="12" fill="#0d1117" stroke="#30363d"/>
   <path d="M12 0 h676 a12 12 0 0 1 12 12 v24 h-700 v-24 a12 12 0 0 1 12 -12 z" fill="#161b22"/>
   <circle cx="22" cy="18" r="6" fill="#ff5f57"/><circle cx="42" cy="18" r="6" fill="#febc2e"/><circle cx="62" cy="18" r="6" fill="#28c840"/>
   <text x="350" y="23" fill="#8b949e" font-size="13" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">run.bat</text>
   <g font-family="Consolas, 'SFMono-Regular', 'Liberation Mono', Menlo, monospace" font-size="14" fill="#c9d1d9">
     <text x="22" y="64"><tspan fill="#ffffff" font-weight="700">X </tspan><tspan fill="#f85149" font-weight="700">O</tspan><tspan x="74" fill="#ffffff" font-weight="700">DiscordDrive</tspan><tspan x="190" fill="#8b949e">encrypted drive in your Discord channel</tspan></text>
-    <text x="74" y="84" fill="#8b949e">Made by XO.ST  |  v0.8.0</text>
+    <text x="74" y="84" fill="#8b949e">Made by XO.ST  |  v0.9.0</text>
     <text x="22" y="118">Drive <tspan fill="#ffffff" font-weight="700">Z:</tspan> <tspan fill="#3fb950">RUNNING</tspan><tspan fill="#8b949e">  |  </tspan>1,284 files, 38.4 GB in Discord</text>
     <text x="22" y="152" fill="#ffffff" font-weight="700">Main menu</text>
     <text x="42" y="173"><tspan fill="#f85149">1</tspan><tspan x="66">Start the drive</tspan></text>
@@ -19,9 +19,10 @@
     <text x="42" y="351"><tspan fill="#f85149">9</tspan><tspan x="66">Tools and troubleshooting</tspan></text>
     <text x="42" y="372"><tspan fill="#f85149">10</tspan><tspan x="66">Approve a new device (send it the key)</tspan></text>
     <text x="42" y="393"><tspan fill="#f85149">11</tspan><tspan x="66">Web dashboard (browse, preview and share files; works on your phone)</tspan></text>
-    <text x="42" y="414"><tspan fill="#f85149">0</tspan><tspan x="66">Exit</tspan></text>
-    <text x="22" y="448">Choose an option: <tspan fill="#ffffff">1</tspan></text>
-    <text x="22" y="472"><tspan fill="#f85149">==&gt;</tspan> Starting DiscordDrive on Z:</text>
-    <text x="58" y="492" fill="#3fb950">Running. Open File Explorer: your drive is Z:</text>
+    <text x="42" y="414"><tspan fill="#f85149">12</tspan><tspan x="66">Sync and back up folders (e.g. Downloads -&gt; the drive)</tspan></text>
+    <text x="42" y="435"><tspan fill="#f85149">0</tspan><tspan x="66">Exit</tspan></text>
+    <text x="22" y="469">Choose an option: <tspan fill="#ffffff">1</tspan></text>
+    <text x="22" y="493"><tspan fill="#f85149">==&gt;</tspan> Starting DiscordDrive on Z:</text>
+    <text x="58" y="513" fill="#3fb950">Running. Open File Explorer: your drive is Z:</text>
   </g>
 </svg>

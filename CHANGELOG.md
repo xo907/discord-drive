@@ -3,6 +3,26 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.9.0 (2026-10-09)
+
+- Sync and back up folders: keep a folder on this computer in step with a folder on the drive, e.g.
+  C:\Users\you\Downloads backed up to Z:\Downloads by itself. Six ways: back up (new and changed
+  files; deleting here keeps them on the drive), mirror (an exact copy), two-way sync (a file changed
+  on both sides is kept twice), move (deleted here once it is safely in Discord, to free space),
+  download and download mirror (a local copy of a drive folder, e.g. on an external disk).
+- Runs live (a few seconds after something changes; Windows reports changes at once), every N minutes,
+  daily at a set time, or only when started. Copies keep the file's date so nothing is copied twice;
+  files still being written and unfinished downloads (*.crdownload, *.part, ...) wait; more files or
+  folders can be skipped.
+- Safe by default: a missing folder (a disk that isn't connected) changes nothing, a side that is
+  suddenly empty deletes nothing on the other, files a sync removes from this computer are kept aside
+  for 30 days, and files deleted on the drive stay under Deleted.
+- Dashboard: a new Sync tab with folder browsers for this computer and the drive, live progress,
+  Sync now, Stop, Pause, recent runs and problems. Folders can only be chosen on the computer itself,
+  unless it allows other devices.
+- Terminal: menu 12, and `sync list | add | edit | remove | run | stop | pause | resume | status | modes`
+  (e.g. `sync add C:\Users\you\Downloads Z:\Downloads --mode backup --when live`).
+
 ## 0.8.0 (2026-10-09)
 
 - Share links work on every device: they are synced through the change journal like files. A link

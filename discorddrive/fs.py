@@ -71,6 +71,7 @@ class DiscordDriveFS(Operations):
         self._staging_usage = (0.0, 0)  # (timestamp, bytes) cache for _pending_staging_bytes
         self._space_warned = 0.0
         self._size_warned = {}
+        self.change_listeners = []      # called (with self.lock held) after other devices changed something
 
     # ================================================================ helpers
     def staging_path(self, nid):
@@ -387,6 +388,35 @@ class DiscordDriveFS(Operations):
             node = self.index.get(nid)
             if node is None or (not node["is_dir"] and node["state"] == "synced"):
                 self._remove_staging(nid)
+        if nids:
+            for fn in list(self.change_listeners):
+                try:
+                    fn(nids)
+                except Exception as e:
+                    log.debug("change listener failed: %s", e)
+
+    def put_file(self, path, src, mtime=None, piece=1 << 20, stop=None):
+        """Write a whole file from the open binary file `src` (it then uploads like any other) and
+        give it modification time `mtime`. Returns the number of bytes written. `stop()` returning
+        true abandons the copy (the file keeps what was written so far and is fixed by the next copy)."""
+        fh = self.create(path, 0o644)
+        pos = 0
+        try:
+            while True:
+                if stop is not None and stop():
+                    raise InterruptedError("stopped")
+                data = src.read(piece)
+                if not data:
+                    break
+                self.write(path, data, pos, fh)
+                pos += len(data)
+            if mtime is not None:
+                _, _, on = self._handle(fh)
+                with on.lock:
+                    on.mtime = mtime
+        finally:
+            self.release(path, fh)
+        return pos
 
     def recover(self):
         """Called at startup: clean stale staging files and re-queue unfinished uploads."""

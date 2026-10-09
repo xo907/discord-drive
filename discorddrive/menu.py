@@ -527,6 +527,134 @@ def files_menu():
         back(title)
 
 
+# ----------------------------------------------------------- sync page
+def _ask_mode(current=None):
+    from .sync import MODES
+    keys = list(MODES)
+    for i, (key, (label, _, text)) in enumerate(MODES.items(), 1):
+        print(f"   {RED}{i}{RESET}  {BOLD}{label}{RESET}{GRAY} ({key}){RESET}")
+        info(f"   {text}")
+    default = str(keys.index(current) + 1) if current in keys else "1"
+    pick = ask("What should it do?", default)
+    return keys[int(pick) - 1] if pick.isdigit() and 1 <= int(pick) <= len(keys) else None
+
+
+def _ask_when(current=None):
+    """Arguments for 'sync add' / 'sync edit' describing when it runs, or None."""
+    print()
+    print(f"   {RED}1{RESET}  As soon as something changes (live)")
+    print(f"   {RED}2{RESET}  Every few minutes or hours")
+    print(f"   {RED}3{RESET}  Once a day")
+    print(f"   {RED}4{RESET}  Only when I start it")
+    default = {"live": "1", "interval": "2", "daily": "3", "manual": "4"}.get(current, "1")
+    pick = ask("When?", default)
+    if pick == "2":
+        every = ask("Every how many minutes? (e.g. 30, or 120 for two hours)", "60")
+        return ["--when", "interval", "--every", every] if every.isdigit() else None
+    if pick == "3":
+        return ["--when", "daily", "--at", ask("At what time? (24-hour clock)", "03:00")]
+    return {"1": ["--when", "live"], "4": ["--when", "manual"]}.get(pick)
+
+
+def _pick_sync_job():
+    from .sync import load_jobs
+    jobs = load_jobs()
+    if not jobs:
+        warn("No folders are synced yet; add one first.")
+        return None, None
+    cli("sync", "list")
+    print()
+    n = ask("Which folder? (its number above)", "1" if len(jobs) == 1 else "")
+    if not n.isdigit() or not 1 <= int(n) <= len(jobs):
+        return None, None
+    return n, jobs[int(n) - 1]
+
+
+def sync_menu():
+    title = "Sync and back up folders"
+    while True:
+        page(MAIN, title)
+        info("Folders on this computer kept in step with folders on the drive, e.g. your Downloads")
+        info("backed up to the drive by themselves. The web dashboard has the same under Sync.")
+        print()
+        cli("sync", "list")
+        print()
+        pick = choose("What would you like to do?", [
+            ("1", "Add a folder"),
+            ("2", "Sync a folder now"),
+            ("3", "Details and recent runs of a folder"),
+            ("4", "Pause or resume a folder"),
+            ("5", "Change a folder (what it does, when, files to skip)"),
+            ("6", "Stop syncing a folder"),
+            (None, None),
+            ("7", "What each mode does"),
+        ])
+        if pick is None:
+            return
+        cfg = Config.load()
+        if pick == "1":
+            page(MAIN, title, "Add a folder")
+            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            local = ask("Folder on this computer", downloads if os.path.isdir(downloads) else "")
+            if not local:
+                continue
+            name = os.path.basename(local.rstrip("\\/")) or "Backup"
+            sample = f"{cfg.mount_point}\\{name}" if WINDOWS else f"/{name}"
+            remote = ask("Folder on the drive (created if needed)", sample)
+            print()
+            mode = _ask_mode()
+            when = _ask_when() if mode else None
+            if not mode or not when:
+                warn("Nothing added.")
+            else:
+                skip = ask("Files or folders to skip, e.g. *.iso, Temp/ (Enter = none)", "")
+                print()
+                cli("sync", "add", local, remote, "--mode", mode, *when, *(["--exclude", skip] if skip else []))
+        elif pick == "2":
+            page(MAIN, title, "Sync now")
+            n, job = _pick_sync_job()
+            if job:
+                print()
+                cli("sync", "run", n)
+        elif pick == "3":
+            page(MAIN, title, "Details")
+            n, job = _pick_sync_job()
+            if job:
+                print()
+                cli("sync", "status", n)
+        elif pick == "4":
+            page(MAIN, title, "Pause or resume")
+            n, job = _pick_sync_job()
+            if job:
+                print()
+                cli("sync", "pause" if job["enabled"] else "resume", n)
+        elif pick == "5":
+            page(MAIN, title, "Change a folder")
+            n, job = _pick_sync_job()
+            if job:
+                print()
+                mode = _ask_mode(job["mode"])
+                when = _ask_when(job["trigger"]) if mode else None
+                if not mode or not when:
+                    warn("Nothing changed.")
+                else:
+                    skip = ask("Files or folders to skip (- = none)", ", ".join(job["exclude"]) or "-")
+                    print()
+                    cli("sync", "edit", n, "--mode", mode, *when, "--exclude", "" if skip == "-" else skip)
+        elif pick == "6":
+            page(MAIN, title, "Stop syncing")
+            n, job = _pick_sync_job()
+            if job and confirm(f"Stop syncing {job['name']}? (no files are deleted)"):
+                print()
+                cli("sync", "remove", n)
+        elif pick == "7":
+            page(MAIN, title, "Modes")
+            cli("sync", "modes")
+        else:
+            continue
+        back(title)
+
+
 # ----------------------------------------------------------- tools page
 def tools_menu():
     title = "Tools and troubleshooting"
@@ -693,6 +821,7 @@ MAIN_OPTIONS = [
     ("9", "Tools and troubleshooting"),
     ("10", "Approve a new device (send it the key)"),
     ("11", "Web dashboard (browse, preview and share files; works on your phone)"),
+    ("12", "Sync and back up folders (e.g. Downloads -> the drive)"),
 ]
 PAGE_TITLES = {"1": "Start the drive", "2": "Stop the drive", "3": "Status", "4": "Update DiscordDrive",
                "5": "Setup", "8": "Copy files onto the drive", "10": "Approve a new device",
@@ -717,6 +846,9 @@ def main():
             continue
         if pick == "9":
             tools_menu()
+            continue
+        if pick == "12":
+            sync_menu()
             continue
         if pick not in PAGE_TITLES:
             continue
