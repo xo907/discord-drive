@@ -215,7 +215,8 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             pass
         name = socket.gethostname().lower()
-        return host in (name, name + ".local", name + ".lan")
+        extra = [str(h).lower().strip() for h in (getattr(self.drive.cfg, "web_hosts", None) or [])]
+        return host in (name, name + ".local", name + ".lan") or host in extra
 
     def _cookie(self):
         for part in (self.headers.get("Cookie") or "").split(";"):

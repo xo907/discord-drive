@@ -484,6 +484,11 @@ def cmd_config(args):
         value = getattr(cfg, args.key)
         print("(set)" if args.key in _SECRET_FIELDS and value else value)
         return 0
+    if args.key == "web_hosts":
+        cfg.web_hosts = [h.strip() for h in args.value.split(",") if h.strip()]
+        cfg.save()
+        print(f"[OK] web_hosts = {', '.join(cfg.web_hosts) or '(none)'}  (restart the drive for it to take effect)")
+        return 0
     if args.key in _LIST_COMMANDS:
         print(f"[ERROR] Use '{launcher()} {_LIST_COMMANDS[args.key]}' to change {args.key}.")
         return 1
