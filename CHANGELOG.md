@@ -3,6 +3,17 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.6.0 (2026-10-09)
+
+- Encrypted contacts: a Contacts tab in the dashboard. All contacts live in one vCard file,
+  /Contacts/Contacts.vcf, on the drive, so they are encrypted, synced to every device and every change
+  keeps the previous version.
+- Import from an iPhone, Android, iCloud, Google Contacts or Outlook: vCard (.vcf, versions 2.1, 3.0
+  and 4.0) and Google / Outlook CSV. Duplicates are skipped. Instructions for each are in the app.
+- Create and edit contacts: name, company, job title, any number of phone numbers, emails, addresses
+  and websites, birthday, notes and a photo. Call, message and email buttons; search; letters;
+  select several to export or delete; export all as one .vcf to load back into a phone.
+
 ## 0.5.0 (2026-10-09)
 
 - Check files in the dashboard (Health → Check files, or right-click a folder → Check for problems):

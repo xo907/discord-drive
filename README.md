@@ -383,6 +383,9 @@ devices).
 - **Notes**: a notes tab. Notes are files in `/Notes` on the drive (encrypted, synced, with earlier
   versions). Typing saves to this computer at once and uploads to Discord when you pause; **Save**
   (Ctrl+S) uploads right away. A note changed on another device updates by itself.
+- **Contacts**: an encrypted address book (one vCard file, `/Contacts/Contacts.vcf`, synced and
+  versioned). Import vCard (.vcf) or Google / Outlook CSV exports from your phone, iCloud, Google
+  or Outlook; create and edit contacts; export them again as .vcf.
 - **Sharing**: choose how long a link works (1 hour to never), an optional password, and whether
   people may download or only view. The page shows photos, video, music, PDFs and text, and whole
   folders can be shared. The **Shared** tab lists your links, their views, and turns them off.

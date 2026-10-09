@@ -59,6 +59,14 @@ const ICONS = {
   plus: '<path d="M10 4.5v11M4.5 10h11"/>',
   back: '<path d="M12 4.5 6.5 10l5.5 5.5"/>',
   save: '<path d="M4.5 3.5h9l2 2v11h-11z"/><path d="M7 3.5v4h6v-4M7 16.5v-5h6v5"/>',
+  contacts: '<circle cx="10" cy="7.5" r="3"/><path d="M4.5 16.5a5.5 5.5 0 0 1 11 0"/>',
+  phone: '<path d="M6.5 3.5h-2a1 1 0 0 0-1 1.1c.5 6.5 5.4 11.4 11.9 11.9a1 1 0 0 0 1.1-1v-2l-3-1.5-1.5 1.5a8 8 0 0 1-4.5-4.5L9 7.5z"/>',
+  mail: '<rect x="3" y="4.5" width="14" height="11" rx="1.5"/><path d="m3.5 5.5 6.5 5 6.5-5"/>',
+  message: '<path d="M4 4.5h12a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1H8l-4 3V5.5a1 1 0 0 1 1-1z"/>',
+  pin: '<path d="M10 17.5s5.5-5.2 5.5-9.5a5.5 5.5 0 0 0-11 0c0 4.3 5.5 9.5 5.5 9.5z"/><circle cx="10" cy="8" r="2"/>',
+  cake: '<path d="M4 16.5h12v-6H4zM4 13c2 1 4-1 6 0s4-1 6 0M10 10.5V7.5M10 5.5v-.5"/>',
+  globe: '<circle cx="10" cy="10" r="7"/><path d="M3 10h14M10 3c2 2.2 3 4.5 3 7s-1 4.8-3 7c-2-2.2-3-4.5-3-7s1-4.8 3-7z"/>',
+  minus: '<path d="M5 10h10"/>',
 };
 const icon = (name, cls = "") => h("svg", { viewBox: "0 0 20 20", class: `ico ${cls}`, "aria-hidden": "true", html: ICONS[name] });
 
@@ -347,7 +355,7 @@ function render() {
   if (route.name !== "files" || route.path !== currentDir) sel.clear();
   const views = { files: renderFiles, search: renderSearch, deleted: renderDeleted, snapshots: renderSnapshots,
                   snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
-                  settings: renderSettings, log: renderLog, check: renderCheck };
+                  settings: renderSettings, log: renderLog, check: renderCheck, contacts: renderContacts };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -1607,6 +1615,242 @@ async function renderLog() {
   await tick();
   logTimer = setInterval(tick, 1000);
 }
+
+// ------------------------------------------------------------------ contacts
+// One address book, /Contacts/Contacts.vcf on the drive (encrypted, synced, earlier versions kept).
+let book = [];
+const chosenContacts = new Set();
+const LABELS = ["mobile", "home", "work", "main", "other", "fax"];
+
+function initials(c) {
+  const parts = (c.name || c.org || "?").trim().split(/\s+/);
+  return ((parts[0] || "?")[0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+}
+function avatar(c, big) {
+  const el = h("span", { class: "avatar-c" + (big ? " big" : "") });
+  if (c.photo) el.append(h("img", { src: c.photo, alt: "" }));
+  else el.textContent = initials(c);
+  return el;
+}
+const subline = (c) => [c.title, c.org].filter(Boolean).join(" · ") || (c.phones[0] || {}).value || (c.emails[0] || {}).value || "";
+
+async function loadBook() {
+  const data = await attempt(() => api("/api/contacts"));
+  book = data ? data.items : [];
+  return book;
+}
+
+async function renderContacts() {
+  const [id, mode] = route.rest.map(decodeURIComponent);
+  await loadBook();
+  const current = id === "new" ? null : book.find((c) => c.uid === id);
+  const search = h("input", { type: "search", class: "notes-search", placeholder: `Search ${plural(book.length, "contact")}`,
+                              oninput: () => fillList() });
+  const list = h("div", { class: "contact-list" });
+  function fillList() {
+    const t = search.value.trim().toLowerCase();
+    const shown = book.filter((c) => !t || [c.name, c.org, c.title, c.note, ...c.phones.map((p) => p.value), ...c.emails.map((e) => e.value)]
+      .join(" ").toLowerCase().includes(t));
+    let letter = "";
+    const rows = [];
+    for (const c of shown) {
+      const l = ((c.name || c.org || "#")[0] || "#").toUpperCase().replace(/[^A-Z]/, "#");
+      if (l !== letter && !t) { letter = l; rows.push(h("div", { class: "letter" }, l)); }
+      const box = h("button", { class: "cb row-cb", role: "checkbox", "aria-checked": String(chosenContacts.has(c.uid)), "aria-label": `Select ${c.name}`,
+                                onclick: (e) => { e.preventDefault(); e.stopPropagation(); chosenContacts.has(c.uid) ? chosenContacts.delete(c.uid) : chosenContacts.add(c.uid); fillList(); syncContactBar(); } }, icon("check"));
+      const row = h("a", { class: "contact-item" + (current && current.uid === c.uid ? " on" : "") + (chosenContacts.has(c.uid) ? " sel" : ""),
+                           href: "#/contacts/" + encodeURIComponent(c.uid) },
+        box, avatar(c), h("span", { class: "ci-text" }, h("span", { class: "nt" }, c.name || "No name"), h("span", { class: "ns" }, subline(c))));
+      bindMenu(row, () => contactMenu(c), c.name);
+      rows.push(row);
+    }
+    list.classList.toggle("selecting", chosenContacts.size > 0);
+    list.replaceChildren(...(rows.length ? rows : [h("div", { class: "muted note-none" }, t ? "No matches" : "No contacts yet")]));
+  }
+  const bar = h("div", { class: "contact-selbar" });
+  function syncContactBar() {
+    const n = chosenContacts.size;
+    bar.hidden = !n;
+    bar.replaceChildren(h("span", { class: "count" }, `${n} selected`),
+      h("button", { class: "btn ghost small", onclick: () => { chosenContacts.clear(); fillList(); syncContactBar(); } }, "Clear"),
+      h("button", { class: "btn ghost small", onclick: () => download("/api/contacts/export" + q({ uids: [...chosenContacts].join(",") }), "contacts.vcf") }, "Export"),
+      h("button", { class: "btn danger small", onclick: () => deleteContacts([...chosenContacts]) }, "Delete"));
+  }
+  fillList();
+  syncContactBar();
+  const side = h("div", { class: "notes-side" },
+    h("div", { class: "notes-head" }, h("h1", {}, "Contacts"),
+      h("div", { class: "actions" },
+        menuButton(() => [
+          { label: "Import contacts…", icon: "upload", run: () => $("#pick-contacts").click() },
+          { label: "How to export from your phone", icon: "info", run: importHelp },
+          { label: "Export all (.vcf)", icon: "download", run: () => download("/api/contacts/export", "contacts.vcf") },
+          { label: "Earlier versions of the address book", icon: "history",
+            run: () => openItem({ path: "/Contacts/Contacts.vcf", name: "Contacts.vcf", dir: false, size: 0, mtime: 0, state: "synced" }, "versions") },
+        ], "Contacts"),
+        h("button", { class: "btn small", onclick: () => go("#/contacts/new") }, icon("plus"), "New"))),
+    search, bar, list);
+  let pane;
+  if (id === "new") pane = contactForm(null);
+  else if (current && mode === "edit") pane = contactForm(current);
+  else if (current) pane = contactView(current);
+  else pane = h("div", { class: "notes-empty" },
+    h("b", {}, book.length ? "Pick a contact" : "Your contacts, encrypted"),
+    h("p", { class: "muted" }, book.length ? `${plural(book.length, "contact")}, synced to all your devices.`
+      : "Import them from your phone, Google, iCloud or Outlook, or add them one by one."),
+    h("div", { class: "actions" }, h("button", { class: "btn ghost", onclick: () => $("#pick-contacts").click() }, "Import…"),
+      h("button", { class: "btn", onclick: () => go("#/contacts/new") }, "New contact")),
+    !book.length && h("button", { class: "link", onclick: importHelp }, "How do I get my contacts out of my phone?"));
+  page(h("div", { class: "notes contacts" + (id ? " editing" : "") }, side, pane));
+}
+
+function contactMenu(c) {
+  return [
+    { label: "Open", icon: "open", run: () => go("#/contacts/" + encodeURIComponent(c.uid)) },
+    { label: "Edit", icon: "rename", run: () => go(`#/contacts/${encodeURIComponent(c.uid)}/edit`) },
+    { label: "Export (.vcf)", icon: "download", run: () => download("/api/contacts/export" + q({ uids: c.uid }), (c.name || "contact") + ".vcf") },
+    { label: chosenContacts.has(c.uid) ? "Deselect" : "Select", icon: "check", run: () => { chosenContacts.has(c.uid) ? chosenContacts.delete(c.uid) : chosenContacts.add(c.uid); renderContacts(); } },
+    "-",
+    { label: "Delete", icon: "trash", danger: true, run: () => deleteContacts([c.uid]) },
+  ];
+}
+
+function contactView(c) {
+  const copy = (v) => h("button", { class: "icon-btn copy", title: "Copy", "aria-label": "Copy", onclick: async () => {
+    try { await navigator.clipboard.writeText(v); toast("Copied"); } catch { toast(v); } } }, icon("copy"));
+  const rows = [];
+  const line = (ico, label, value, href) => rows.push(h("div", { class: "c-field" }, icon(ico),
+    h("div", { class: "c-val" }, h("div", { class: "c-label" }, label),
+      href ? h("a", { href, rel: "noopener" }, value) : h("div", { class: "c-text" }, value)), copy(value)));
+  c.phones.forEach((p) => line("phone", p.label || "phone", p.value, "tel:" + p.value.replace(/[^\d+]/g, "")));
+  c.emails.forEach((e) => line("mail", e.label || "email", e.value, "mailto:" + e.value));
+  c.addresses.forEach((a) => {
+    const text = [a.street, [a.postcode, a.city].filter(Boolean).join(" "), a.region, a.country].filter(Boolean).join("\n");
+    line("pin", a.label || "address", text, "https://www.openstreetmap.org/search?query=" + encodeURIComponent(text.replace(/\n/g, ", ")));
+  });
+  c.urls.forEach((u) => line("globe", "website", u, /^https?:\/\//i.test(u) ? u : "https://" + u));
+  if (c.bday) line("cake", "birthday", c.bday.startsWith("--") ? c.bday.slice(2) : c.bday);
+  const first = c.phones[0], mail = c.emails[0];
+  return h("div", { class: "note-editor contact-view" },
+    h("div", { class: "note-bar" },
+      h("a", { class: "icon-btn note-back", href: "#/contacts", "aria-label": "All contacts" }, icon("back")),
+      h("div", { class: "actions" },
+        h("button", { class: "btn ghost small", onclick: () => go(`#/contacts/${encodeURIComponent(c.uid)}/edit`) }, "Edit"),
+        menuButton(() => contactMenu(c), c.name))),
+    h("div", { class: "c-head" }, avatar(c, true), h("h2", {}, c.name || "No name"), subline(c) && h("div", { class: "muted" }, [c.title, c.org].filter(Boolean).join(" · ")),
+      h("div", { class: "c-quick" },
+        first && h("a", { class: "c-act", href: "tel:" + first.value.replace(/[^\d+]/g, "") }, icon("phone"), "Call"),
+        first && h("a", { class: "c-act", href: "sms:" + first.value.replace(/[^\d+]/g, "") }, icon("message"), "Message"),
+        mail && h("a", { class: "c-act", href: "mailto:" + mail.value }, icon("mail"), "Email"))),
+    h("div", { class: "c-fields" }, rows),
+    c.note && h("div", { class: "c-note" }, h("div", { class: "c-label" }, "Notes"), h("div", { class: "c-text" }, c.note)));
+}
+
+function contactForm(c) {
+  const d = JSON.parse(JSON.stringify(c || { uid: "", name: "", first: "", last: "", org: "", title: "", bday: "", note: "",
+                                                  phones: [{ label: "mobile", value: "" }], emails: [{ label: "home", value: "" }],
+                                                  addresses: [], urls: [], photo: "" }));
+  const text = (key, label, attrs = {}) => h("label", { class: "c-input" }, h("span", {}, label),
+    h("input", { value: d[key] || "", ...attrs, oninput: (e) => { d[key] = e.target.value; } }));
+  const multi = (key, label, make, render) => {
+    const box = h("div", { class: "c-multi" });
+    const draw = () => {
+      box.replaceChildren(h("div", { class: "c-multi-head" }, h("span", {}, label),
+        h("button", { type: "button", class: "link", onclick: () => { d[key].push(make()); draw(); } }, "Add")),
+        ...d[key].map((item, i) => h("div", { class: "c-row" }, ...render(item),
+          h("button", { type: "button", class: "icon-btn", "aria-label": "Remove", onclick: () => { d[key].splice(i, 1); draw(); } }, icon("minus")))));
+    };
+    draw();
+    return box;
+  };
+  const labelSel = (item) => h("select", { onchange: (e) => { item.label = e.target.value; } },
+    [...new Set([...LABELS, item.label || "other"])].map((l) => h("option", { value: l, selected: (item.label || "other") === l }, l)));
+  const inp = (item, k, ph, type = "text") => h("input", { type, value: item[k] || "", placeholder: ph, oninput: (e) => { item[k] = e.target.value; } });
+  const photo = h("div", { class: "c-photo" });
+  const drawPhoto = () => photo.replaceChildren(avatar(d, true),
+    h("div", { class: "actions" },
+      h("button", { type: "button", class: "btn ghost small", onclick: () => pickPhoto() }, d.photo ? "Change photo" : "Add photo"),
+      d.photo && h("button", { type: "button", class: "btn ghost small", onclick: () => { d.photo = ""; drawPhoto(); } }, "Remove")));
+  function pickPhoto() {
+    const input = h("input", { type: "file", accept: "image/*" });
+    input.onchange = () => {
+      const f = input.files[0];
+      if (!f) return;
+      const img = new Image();
+      img.onload = () => {
+        const side = 256, scale = Math.max(side / img.width, side / img.height);
+        const cv = h("canvas", { width: side, height: side });
+        cv.getContext("2d").drawImage(img, (side - img.width * scale) / 2, (side - img.height * scale) / 2, img.width * scale, img.height * scale);
+        d.photo = cv.toDataURL("image/jpeg", 0.85);
+        URL.revokeObjectURL(img.src);
+        drawPhoto();
+      };
+      img.src = URL.createObjectURL(f);
+    };
+    input.click();
+  }
+  drawPhoto();
+  const saveBtn = h("button", { class: "btn small", onclick: async () => {
+    d.phones = d.phones.filter((p) => p.value.trim());
+    d.emails = d.emails.filter((e) => e.value.trim());
+    d.addresses = d.addresses.filter((a) => ["street", "city", "region", "postcode", "country"].some((k) => (a[k] || "").trim()));
+    d.urls = d.urls.map((u) => (typeof u === "string" ? u : u.value || "").trim()).filter(Boolean);
+    d.name = [d.first, d.last].filter((x) => (x || "").trim()).join(" ").trim() || d.name;
+    saveBtn.disabled = true;
+    const r = await attempt(() => api("/api/contacts/save", { contact: d }), "Saved");
+    saveBtn.disabled = false;
+    if (r) go("#/contacts/" + encodeURIComponent(r.contact.uid));
+  } }, "Save");
+  return h("div", { class: "note-editor contact-form" },
+    h("div", { class: "note-bar" },
+      h("a", { class: "icon-btn note-back", href: c ? "#/contacts/" + encodeURIComponent(c.uid) : "#/contacts", "aria-label": "Cancel" }, icon("back")),
+      h("span", { class: "note-state" }, c ? "Edit contact" : "New contact"),
+      h("div", { class: "actions" }, h("a", { class: "btn ghost small", href: c ? "#/contacts/" + encodeURIComponent(c.uid) : "#/contacts" }, "Cancel"), saveBtn)),
+    h("div", { class: "c-form" },
+      photo,
+      h("div", { class: "c-grid" }, text("first", "First name", { autofocus: !c }), text("last", "Last name"),
+        text("org", "Company"), text("title", "Job title")),
+      multi("phones", "Phone", () => ({ label: "mobile", value: "" }), (p) => [labelSel(p), inp(p, "value", "Phone number", "tel")]),
+      multi("emails", "Email", () => ({ label: "home", value: "" }), (e) => [labelSel(e), inp(e, "value", "name@example.com", "email")]),
+      multi("addresses", "Address", () => ({ label: "home", street: "", city: "", region: "", postcode: "", country: "" }), (a) => [labelSel(a),
+        h("div", { class: "c-addr" }, inp(a, "street", "Street"), h("div", { class: "c-pair" }, inp(a, "postcode", "Postcode"), inp(a, "city", "City")),
+          h("div", { class: "c-pair" }, inp(a, "region", "State / region"), inp(a, "country", "Country")))]),
+      (() => { d.urls = d.urls.map((u) => (typeof u === "string" ? { value: u } : u)); const box = multi("urls", "Website", () => ({ value: "" }), (u) => [inp(u, "value", "example.com")]); return box; })(),
+      h("div", { class: "c-grid" }, text("bday", "Birthday", { type: "date" })),
+      h("label", { class: "c-input" }, h("span", {}, "Notes"), h("textarea", { rows: 4, oninput: (e) => { d.note = e.target.value; } }, d.note || ""))));
+}
+
+async function deleteContacts(uids) {
+  const one = uids.length === 1 && book.find((c) => c.uid === uids[0]);
+  if (!await ask({ title: one ? `Delete ${one.name || "this contact"}?` : `Delete ${plural(uids.length, "contact")}?`, ok: "Delete", danger: true,
+                   text: "Removed on every device. The address book keeps earlier versions, so this can be undone from its history." })) return;
+  const r = await attempt(() => api("/api/contacts/delete", { uids }), uids.length === 1 ? "Contact deleted" : `${plural(uids.length, "contact")} deleted`);
+  if (r) { uids.forEach((u) => chosenContacts.delete(u)); go("#/contacts"); render(); }
+}
+
+function importHelp() {
+  const step = (title, text) => h("div", { class: "help-step" }, h("b", {}, title), h("p", {}, text));
+  modal("Get your contacts out of your phone",
+    step("iPhone", "Contacts app → Lists → long-press All Contacts → Export. Save the .vcf, then Import it here. (Or iCloud.com → Contacts → select all → Export vCard.)"),
+    step("Android", "Contacts app → Fix & manage (or Settings) → Export to file. That makes a .vcf in Downloads."),
+    step("Google Contacts", "contacts.google.com → Export → vCard (or Google CSV)."),
+    step("Outlook", "Outlook.com → People → Manage contacts → Export contacts (CSV)."),
+    h("p", { class: "muted" }, "On a phone you can import straight from this page: Contacts → … → Import contacts. Duplicates are skipped. To put contacts back on a phone, use Export and open the .vcf there."));
+}
+
+$("#pick-contacts").addEventListener("change", async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  let added = 0, skipped = 0;
+  for (const f of files) {
+    const r = await fetch("/api/contacts/import" + q({ name: f.name }), { method: "POST", credentials: "same-origin", headers: { "X-DD": "1" }, body: f });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(data.error || `Could not import ${f.name}`); continue; }
+    added += data.added; skipped += data.skipped;
+  }
+  if (added || skipped) toast(`${plural(added, "contact")} imported${skipped ? `, ${skipped} already there` : ""}`);
+  if (route.name === "contacts") renderContacts(); else go("#/contacts");
+});
 
 // ------------------------------------------------------------------ check files
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat().filter((k) => k != null && k !== false && k !== ""));

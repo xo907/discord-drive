@@ -98,6 +98,8 @@ class WebServer:
         self._fail_lock = threading.Lock()
         self._failures = {}       # address -> (count, locked until)
         self.shares = Shares(drive.index)
+        self.contacts_lock = threading.Lock()
+        self._book = (None, [])           # (mtime, size) of the address book file, its contacts
 
     # ------------------------------------------------------------ lifecycle
     def start(self):
@@ -783,6 +785,115 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.app.shares.revoke(str(self._body_json().get("id"))):
             raise ApiError(404, "That link no longer exists")
         self._json({"ok": True})
+
+    # ------------------------------------------------------------ contacts
+    def _put_file(self, path, data, save="later", idle=NOTE_IDLE):
+        """Write a whole file on the drive (it then uploads like any other)."""
+        fs = self.drive.fs
+        parent = posixpath.dirname(path)
+        if self.drive.index.resolve(parent) is None:
+            self.drive.index.makedirs(parent)
+        fh = fs.create(path, 0o644)
+        try:
+            for off in range(0, max(1, len(data)), PIECE):
+                if data[off:off + PIECE]:
+                    fs.write(path, data[off:off + PIECE], off, fh)
+        finally:
+            fs.release(path, fh)
+        node = self.drive.index.resolve(path)
+        if node is not None and self.drive.uploader is not None:
+            self.drive.uploader.enqueue(node["id"], delay=0 if save == "now" else idle)
+
+    def _book_read(self):
+        from . import contacts
+        node = self.drive.index.resolve(contacts.BOOK)
+        if node is None:
+            return []
+        key = (node["mtime"], node["size"], node["version"])
+        if self.app._book[0] == key:
+            return [dict(c) for c in self.app._book[1]]
+        text = self.drive.fs.read_file(node["id"], 0, node["size"] or 0).decode("utf-8", "replace") if node["size"] else ""
+        items = contacts.parse_vcards(text)
+        self.app._book = (key, items)
+        return [dict(c) for c in items]
+
+    def _book_write(self, items):
+        from . import contacts
+        items = sorted(items, key=lambda c: (c.get("name") or "").lower())
+        self._put_file(contacts.BOOK, "".join(contacts.to_vcard(c) for c in items).encode("utf-8"), idle=8.0)
+        self.app._book = (None, [])
+
+    def _get_api_contacts(self):
+        from . import contacts
+        with self.app.contacts_lock:
+            items = self._book_read()
+        for c in items:
+            c.pop("extra", None)
+        self._json({"items": items, "file": contacts.BOOK})
+
+    def _post_api_contacts_save(self):
+        from . import contacts
+        c = self._body_json().get("contact") or {}
+        if not any((c.get("name"), c.get("first"), c.get("last"), c.get("org"), c.get("phones"), c.get("emails"))):
+            raise ApiError(400, "Give the contact a name, a phone number or an email")
+        with self.app.contacts_lock:
+            items = self._book_read()
+            old = next((x for x in items if x["uid"] == c.get("uid")), None)
+            merged = {**contacts.new_contact(), **(old or {}), **{k: v for k, v in c.items() if k != "extra"}}
+            if not merged.get("name"):
+                merged["name"] = " ".join(x for x in (merged.get("first"), merged.get("last")) if x) or merged.get("org") or ""
+            items = [x for x in items if x["uid"] != merged["uid"]] + [merged]
+            self._book_write(items)
+        merged.pop("extra", None)
+        self._json({"ok": True, "contact": merged})
+
+    def _post_api_contacts_delete(self):
+        uids = set(map(str, self._body_json().get("uids") or []))
+        with self.app.contacts_lock:
+            items = self._book_read()
+            keep = [x for x in items if x["uid"] not in uids]
+            if len(keep) != len(items):
+                self._book_write(keep)
+        self._json({"ok": True, "removed": len(items) - len(keep)})
+
+    def _post_api_contacts_import(self):
+        from . import contacts
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 64 * 2 ** 20:
+            raise ApiError(413, "That file is too big for contacts (64 MB at most)")
+        raw = self.rfile.read(n)
+        bom16 = (bytes([0xFF, 0xFE]), bytes([0xFE, 0xFF]))          # Outlook saves CSV as UTF-16
+        text = raw.decode("utf-16", "replace") if raw[:2] in bom16 else raw.decode("utf-8-sig", "replace")
+        found = contacts.parse_any(text, self._query().get("name") or "")
+        if not found:
+            raise ApiError(400, "No contacts found. Use a vCard (.vcf) or a Google / Outlook CSV export.")
+        with self.app.contacts_lock:
+            items = self._book_read()
+            added = skipped = 0
+            uids = {x["uid"] for x in items}
+            for c in found:
+                if any(contacts.same_person(c, x) for x in items):
+                    skipped += 1
+                    continue
+                if c["uid"] in uids:
+                    c["uid"] = contacts.new_contact()["uid"]
+                uids.add(c["uid"])
+                items.append(c)
+                added += 1
+            if added:
+                self._book_write(items)
+        self._json({"ok": True, "added": added, "skipped": skipped})
+
+    def _get_api_contacts_export(self):
+        from . import contacts
+        wanted = set(filter(None, (self._query().get("uids") or "").split(",")))
+        with self.app.contacts_lock:
+            items = self._book_read()
+        chosen = [c for c in items if not wanted or c["uid"] in wanted]
+        name = "contacts.vcf" if len(chosen) != 1 else (chosen[0]["name"] or "contact") + ".vcf"
+        body = "".join(contacts.to_vcard(c) for c in chosen).encode("utf-8")
+        self._send(200, body, "text/vcard; charset=utf-8",
+                   {"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}"})
 
     # ------------------------------------------------------------ checking files
     def _get_api_check(self):

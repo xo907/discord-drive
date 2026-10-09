@@ -293,6 +293,38 @@ class WebTest(helpers.DriveTest):
         self.assertIsNone(self.d.index.resolve("/Box/bad.bin"))
         self.assertIsNotNone(self.d.index.resolve("/Box/good.bin"))
 
+    def test_contacts(self):
+        self.login()
+        self.assertEqual(json.loads(self.req("GET", "/api/contacts")[2])["items"], [])
+        vcf = "\r\n".join(["BEGIN:VCARD", "VERSION:3.0", "FN:Ada Lovelace", "N:Lovelace;Ada;;;",
+                           "TEL;TYPE=CELL:+44 7700 900000", "END:VCARD", "BEGIN:VCARD", "VERSION:3.0",
+                           "FN:Grace Hopper", "EMAIL:grace@example.mil", "END:VCARD", ""])
+        r = json.loads(self.req("POST", "/api/contacts/import?name=phone.vcf", vcf.encode())[2])
+        self.assertEqual((r["added"], r["skipped"]), (2, 0))
+        r = json.loads(self.req("POST", "/api/contacts/import?name=phone.vcf", vcf.encode())[2])
+        self.assertEqual((r["added"], r["skipped"]), (0, 2))                       # duplicates skipped
+        items = json.loads(self.req("GET", "/api/contacts")[2])["items"]
+        self.assertEqual([c["name"] for c in items], ["Ada Lovelace", "Grace Hopper"])
+        ada = items[0]
+        ada["title"] = "Programmer"
+        ada["phones"].append({"label": "work", "value": "+44 20 7946 0000"})
+        self.assertEqual(self.req("POST", "/api/contacts/save", {"contact": ada})[0], 200)
+        r = json.loads(self.req("POST", "/api/contacts/save", {"contact": {"first": "Alan", "last": "Turing"}})[2])
+        self.assertEqual(r["contact"]["name"], "Alan Turing")
+        self.assertEqual(self.req("POST", "/api/contacts/save", {"contact": {}})[0], 400)
+        items = json.loads(self.req("GET", "/api/contacts")[2])["items"]
+        self.assertEqual(len(items), 3)
+        self.assertEqual(next(c for c in items if c["name"] == "Ada Lovelace")["title"], "Programmer")
+        _, headers, body = self.req("GET", "/api/contacts/export?uids=" + ada["uid"])
+        self.assertIn("text/vcard", headers["Content-Type"])
+        self.assertEqual(body.count(b"BEGIN:VCARD"), 1)
+        self.assertIn(b"TEL;TYPE=WORK:+44 20 7946 0000", body)
+        self.req("POST", "/api/contacts/delete", {"uids": [ada["uid"]]})
+        self.assertEqual(len(json.loads(self.req("GET", "/api/contacts")[2])["items"]), 2)
+        # stored on the drive as one encrypted vCard file
+        self.upload(self.d)
+        self.assertIn(b"Alan Turing", self.read(self.d, "/Contacts/Contacts.vcf"))
+
     def test_html_files_are_sandboxed(self):
         self.login()
         self.write(self.d, "/page.html", b"<script>alert(1)</script>")
