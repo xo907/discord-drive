@@ -1650,7 +1650,9 @@ def _sync_summary(res):
              (res.get("moved"), "moved off this computer"), (res.get("conflicts"), "conflict(s) kept twice"),
              (res.get("errors"), "problem(s)")]
     text = ", ".join(f"{n:,} {what}" for n, what in parts if n)
-    return text or "nothing to do, everything was in step"
+    if not text and res.get("files") == 0 and res.get("remote_files", 0) == 0:
+        return "the folder is empty, so there is nothing to copy"
+    return text or f"nothing to do, everything was in step ({res.get('files', 0):,} files)"
 
 
 def _pick_job(jobs, which):

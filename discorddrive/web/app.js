@@ -1968,12 +1968,13 @@ function drivePathShown(p) {
   return syncData.windows ? syncData.mount.replace(/\\$/, "") + p.replace(/\//g, "\\") : syncData.mount.replace(/\/$/, "") + p;
 }
 
-function syncSummary(r) {
+function syncSummary(r, j) {
+  if (j && j.direction !== "down" && r.files === 0) return "The folder on this computer is empty, so there is nothing to copy";
   const parts = [[r.up, "copied to the drive"], [r.down, "copied here"], [r.deleted_remote, "deleted on the drive"],
                  [r.deleted_local, "removed here"], [r.moved, "moved off this computer"], [r.conflicts, "kept twice (conflict)"],
                  [r.errors, "problem"]].filter(([n]) => n);
   return parts.length ? parts.map(([n, t]) => t === "problem" ? plural(n, "problem") : `${Number(n).toLocaleString()} ${t}`).join(", ")
-                      : "Everything was already in step";
+                      : `Everything was already in step (${plural(r.files || 0, "file")})`;
 }
 
 function syncNext(j) {
@@ -2016,7 +2017,7 @@ function syncCard(j) {
   } else if (s.error) {
     line = h("div", { class: "sync-line warn" }, s.error);
   } else if (s.last_run) {
-    line = h("div", { class: "sync-line" }, `${ago(s.last_run)}: ${syncSummary(last)}`,
+    line = h("div", { class: "sync-line" }, `${ago(s.last_run)}: ${syncSummary(last, j)}`,
              last.waiting ? ` · ${plural(last.waiting, "file")} still uploading to Discord` : "",
              last.busy ? ` · ${plural(last.busy, "file")} in use, next pass` : "");
   } else {

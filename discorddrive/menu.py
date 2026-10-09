@@ -594,7 +594,9 @@ def sync_menu():
         cfg = Config.load()
         if pick == "1":
             page(MAIN, title, "Add a folder")
+            from .sync import real_folder
             downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            downloads = real_folder(downloads) or downloads
             local = ask("Folder on this computer", downloads if os.path.isdir(downloads) else "")
             if not local:
                 continue

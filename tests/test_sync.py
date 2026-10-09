@@ -66,6 +66,12 @@ class SyncTest(helpers.DriveTest):
         self.assertEqual(self.remote("/Backup/a.txt"), b"two")
         self.assertIsNotNone(self.d.index.resolve("/Backup/sub/b.bin"))       # backup never deletes
 
+    def test_empty_folder_says_so(self):
+        j = self.job("backup")
+        res = self.run_job(j)
+        self.assertEqual(res["files"], 0)
+        self.assertIn("is empty", self.d.sync.status[j["id"]]["problems"][0])
+
     def test_files_still_being_written_wait(self):
         j = self.job("backup")
         self.put("fresh.txt", b"still downloading", age=0)

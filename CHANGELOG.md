@@ -3,6 +3,17 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.9.1 (2026-10-09)
+
+- Sync: Windows folders that OneDrive (or Windows settings) moved elsewhere are recognised. Choosing
+  the empty old place, e.g. C:\Users\you\Documents when Windows keeps it in
+  C:\Users\you\OneDrive\Documents, is refused with the right folder named; pairs set up that way show
+  a note saying where the files really are. "Add a folder" in the menu suggests the real Downloads.
+- Sync: an empty folder now says so ("the folder is empty, so there is nothing to copy") instead of
+  "everything was already in step"; that message also shows how many files were compared.
+- Sync: folders OneDrive keeps in the cloud (Files On-Demand) are synced; only shortcuts to other
+  places (junctions, symbolic links) are skipped.
+
 ## 0.9.0 (2026-10-09)
 
 - Sync and back up folders: keep a folder on this computer in step with a folder on the drive, e.g.

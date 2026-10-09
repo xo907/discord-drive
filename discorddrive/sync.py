@@ -152,6 +152,10 @@ def normalize_job(job, cfg, existing=()):
     direction = MODES[out["mode"]][1]
     if direction != "down" and not os.path.isdir(out["local"]):
         raise SyncError(f"Folder not found on this computer: {out['local']}")
+    moved = real_folder(out["local"])
+    if moved and not _has_files(out["local"]):
+        raise SyncError(f"{out['local']} is empty: Windows keeps this folder in {moved} (moved there by OneDrive "
+                        "or in its settings). Choose that folder instead.")
     mp = getattr(cfg, "mount_point", "") or ""
     if sys.platform == "win32":
         if mp and os.path.splitdrive(out["local"])[0].upper() == mp[:2].upper():
@@ -268,15 +272,63 @@ class _Excluder:
             any(fnmatch.fnmatchcase(rel, p) or rel.startswith(p + "/") for p in self.paths)
 
 
+_LINK_TAGS = (0xA0000003, 0xA000000C)     # junction (mount point), symbolic link
+
+
 def _is_link(entry):
+    """A link to somewhere else (skipped). Other reparse points, such as OneDrive folders, are real folders."""
     try:
         if entry.is_symlink():
             return True
         if sys.platform == "win32":
-            return bool(entry.stat(follow_symlinks=False).st_file_attributes & 0x400)   # junction
+            st = entry.stat(follow_symlinks=False)
+            return bool(st.st_file_attributes & 0x400) and getattr(st, "st_reparse_tag", _LINK_TAGS[0]) in _LINK_TAGS
     except OSError:
         return True
     return False
+
+
+# Windows' own folders, which OneDrive (or the user) can move elsewhere: registry value -> usual name
+_KNOWN = {"Personal": "Documents", "My Pictures": "Pictures", "My Music": "Music", "My Video": "Videos",
+          "Desktop": "Desktop", "{374DE290-123F-4565-9164-39C4925E467B}": "Downloads"}
+
+
+def known_folders():
+    """{usual path: where Windows really keeps it} for this user's Documents, Pictures, Desktop, ..."""
+    if sys.platform != "win32":
+        return {}
+    out = {}
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+            for value, name in _KNOWN.items():
+                try:
+                    real = os.path.normpath(os.path.expandvars(winreg.QueryValueEx(k, value)[0]))
+                except OSError:
+                    continue
+                out[os.path.join(os.path.expanduser("~"), name)] = real
+    except OSError:
+        pass
+    return out
+
+
+def real_folder(path):
+    """Where Windows really keeps `path` when it is one of its own folders that was moved (e.g. by
+    OneDrive: C:\\Users\\you\\Documents -> C:\\Users\\you\\OneDrive\\Documents), else None."""
+    for usual, real in known_folders().items():
+        if os.path.normcase(usual) == os.path.normcase(path) and os.path.normcase(real) != os.path.normcase(path) \
+                and os.path.isdir(real):
+            return real
+    return None
+
+
+def _has_files(path):
+    try:
+        with os.scandir(path) as it:
+            return any(not _is_link(e) for e in it if e.name.lower() != "desktop.ini")
+    except OSError:
+        return False
 
 
 def scan_local(root, excluded, problems):
@@ -520,6 +572,11 @@ class Run:
         L, Ldirs = scan_local(self.local, self.excluded, self.problems)
         R, Rdirs = scan_remote(self.d, self.remote, self.excluded)
         self.r["files"], self.r["remote_files"] = len(L), len(R)
+        if not L and direction != "down":
+            moved = real_folder(self.local)
+            self.problems.append(f"{self.local} is empty. Windows keeps this folder in {moved} (moved there by "
+                                 "OneDrive or in its settings): change this pair to use that folder." if moved else
+                                 f"{self.local} is empty, so there is nothing to copy.")
         getattr(self, "_" + self.mode.replace("-", "_"))(L, Ldirs, R, Rdirs)
         if direction != "down":        # how many files are still on their way to Discord
             R2, _ = scan_remote(self.d, self.remote, self.excluded)
