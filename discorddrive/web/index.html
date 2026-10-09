@@ -22,6 +22,7 @@
     <a class="sync" id="sync" href="#/health" title="Drive status">
       <span class="dot" id="sync-dot"></span><span id="sync-text">Connecting</span>
     </a>
+    <button class="avatar" id="account" aria-label="Account" aria-haspopup="menu"></button>
   </header>
 
   <nav class="side" id="nav" aria-label="Sections">
@@ -74,6 +75,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <div class="drop" id="drop"><div>Drop to upload into <b id="drop-to"></b></div></div>
 <input type="file" id="pick" multiple hidden>
+<input type="file" id="pick-dir" multiple webkitdirectory hidden>
 <script src="/app.js"></script>
 </body>
 </html>

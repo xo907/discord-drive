@@ -116,7 +116,9 @@ class Config:
     web_enabled: bool = True           # the web dashboard (http://127.0.0.1:<web_port>)
     web_port: int = 8765
     web_lan: bool = False              # also reachable from other devices on your network (phone)
-    web_token: str = ""                # sign-in secret for the web dashboard (generated)
+    web_token: str = ""                # secret that signs dashboard sessions and share links (generated)
+    web_user: str = ""                 # dashboard sign-in: user name...
+    web_password: str = ""             # ...and a scrypt hash of the password (set with 'web-password')
 
     @property
     def resolved_data_dir(self) -> str:

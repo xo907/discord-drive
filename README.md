@@ -283,6 +283,7 @@ versions <file>                      List the older versions kept for a file
 restore-version <file> <n> [--as p]  Bring back version n (or save it as a new file p)
 deleted [<folder>]                   List deleted files that can still be recovered
 undelete <path>                      Recover a deleted file
+purge <path> [--all]                 Delete a deleted file (or everything deleted under a folder) for good
 verify [<path>]                      Check that files can be downloaded and decrypted
 log [-n 30] [--errors]               Show the end of the log file
 approve-keys                         Send the key to a new device that asked for it
@@ -292,7 +293,8 @@ add-old-key [--from-config <file>]   Add an earlier key so files encrypted with 
 restore                              Rebuild this device's file list from Discord (drive stopped)
 backup                               Save an index checkpoint now (normally automatic)
 context-menu install|uninstall       "Make available offline" / "Free up space" in Explorer (Windows)
-web [--open]                         Show (and open) the sign-in link of the web dashboard
+web [--open]                         Show (and open) the address of the web dashboard
+web-password                         Set the dashboard's user name and password
 health [--check] [--protect]         Self-healing status; check every piece now; protect old files now
 snapshots [create [label]|delete <n>] List snapshots, take one now, or delete one
 snapshot-restore <n> [path] [--to p] [--in-place]
@@ -366,9 +368,17 @@ upload by drag and drop, new folder, rename, delete, earlier versions, "availabl
 recently deleted files, snapshots, and a health page (protection, checks, repairs, uploads,
 devices).
 
-- **Signing in.** The link the menu shows contains a secret (`web_token` in the config) that signs
-  the browser in. Anyone with that link can open your files, so keep it to yourself. To sign every
-  browser out, delete `web_token` from the config and restart the drive.
+- **Signing in.** The dashboard asks for a user name and password. Create them the first time you
+  open it on the computer running the drive, or with menu 11 / `web-password` (the way to do it on a
+  Raspberry Pi). Only a scrypt hash of the password is stored. After 5 wrong passwords an address
+  has to wait before trying again. Changing the password signs every browser out; the account
+  button (top right) signs this one out.
+- **Right-click** (or **long-press** on a phone) any file or folder for the usual actions: preview,
+  download (folders as a ZIP), copy a share link, available offline, rename, move, duplicate,
+  earlier versions, details, delete. Right-click empty space for new folder and uploads (files or a
+  whole folder).
+- **Deleted** files can be selected (or all at once) and restored, or deleted forever, which
+  removes them from Discord on every device straight away (`purge <path>` on the command line).
 - **Phone.** `config web_lan true` (menu 6 → Web dashboard on your network), restart the drive,
   then open the "On your phone" link from `web` on a phone on the same Wi-Fi. The connection
   inside your home network is not encrypted (plain HTTP), so only do this on a network you trust.

@@ -498,8 +498,14 @@ class Index:
 
     def queue_op(self, op):
         """Publish an operation through the journal (e.g. a repaired piece)."""
+        self.queue_ops([op])
+
+    def queue_ops(self, ops):
+        """Publish operations after everything already queued, so they keep their order (a restore
+        right after a delete must come after that delete)."""
         with self.tx() as db:
-            self._queue(db, op)
+            for op in ops:
+                self._queue(db, op)
 
     # ---------------------------------------------------------------- trash
     def trash_add(self, mids):
@@ -689,6 +695,34 @@ class Index:
 
     def version_chunks(self, vid):
         return self._all("SELECT * FROM version_chunks WHERE version_id=? ORDER BY idx", (vid,))
+
+    @classmethod
+    def _drop_versions(cls, db, uid):
+        vids = [r[0] for r in db.execute("SELECT id FROM versions WHERE uid=?", (uid,))]
+        mids = []
+        for vid in vids:
+            mids += [r[0] for r in db.execute("SELECT message_id FROM version_chunks WHERE version_id=?", (vid,))]
+            db.execute("DELETE FROM version_chunks WHERE version_id=?", (vid,))
+            db.execute("DELETE FROM versions WHERE id=?", (vid,))
+        cls._release(db, mids)
+        return len(vids)
+
+    def purge_deleted(self, uids):
+        """Delete deleted files for good: drop every kept version of them, on every device.
+        Files that exist (again) are left alone. Returns how many were purged."""
+        n = 0
+        with self.tx() as db:
+            for uid in uids:
+                if self._nid(db, uid) is not None:
+                    continue
+                if self._drop_versions(db, uid):
+                    self._queue(db, {"t": "purge", "u": uid})
+                    n += 1
+        return n
+
+    def _op_purge(self, db, op, busy, changed):
+        if self._nid(db, op["u"]) is None:
+            self._drop_versions(db, op["u"])
 
     def deleted_files(self, prefix="/"):
         """Most recent 'deleted' version of every file that no longer exists."""
@@ -920,7 +954,7 @@ class Index:
         return self._free_name(db, parent, conflict_name(name, uid))
 
     # Operations a device running an older version skipped: replayed after an upgrade (see Journal.catch_up).
-    EXTRA_OPS = ("par", "fix", "snap", "unsnap")
+    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge")
 
     def apply_ops(self, ops, cursor, busy=None, extras_only=False):
         """Apply journal operations (from message `cursor`) and advance the cursor.

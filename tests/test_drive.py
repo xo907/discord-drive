@@ -76,6 +76,22 @@ class SyncTest(helpers.DriveTest):
         self.assertIsNone(a.index.resolve("/docs/report.bin"))
         self.assertEqual(len(a.index.deleted_files()), 1)
 
+    def test_delete_forever_everywhere(self):
+        a = self.drive("aaaa")
+        b = self.drive("bbbb")
+        self.write(a, "/old.bin", data_of(2))
+        self.upload(a)
+        self.sync(a, b)
+        a.fs.unlink("/old.bin")
+        self.sync(a, b)
+        uid = b.index.deleted_files()[0]["uid"]
+        self.assertEqual(b.index.purge_deleted([uid]), 1)
+        self.sync(b, a)
+        for d in (a, b):
+            self.assertEqual(d.index.deleted_files(), [])
+            self.empty_trash(d)
+            self.assertFalse(d.index.referenced_mids())
+
     def test_versions(self):
         a = self.drive()
         self.write(a, "/f.txt", b"one" * 1000)

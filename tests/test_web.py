@@ -1,10 +1,11 @@
 """The web dashboard's HTTP API, against a real server on a free local port."""
 
 import http.client
+import io
 import json
 import os
-import time
 import urllib.parse
+import zipfile
 
 import helpers
 
@@ -14,6 +15,7 @@ class WebTest(helpers.DriveTest):
         super().setUp()
         self.d = self.drive(web_token="secret-token")
         self.web = self.d.start_web(port=0)
+        self.web.set_credentials("Dennis", "correct horse")
         self.cookie = None
 
     def tearDown(self):
@@ -27,7 +29,10 @@ class WebTest(helpers.DriveTest):
             h["Cookie"] = self.cookie
         if method == "POST":
             h.setdefault("X-DD", "1")
-            if isinstance(body, (dict, list)):
+            if isinstance(body, str):
+                body = body.encode()
+                h["Content-Type"] = "application/x-www-form-urlencoded"
+            elif isinstance(body, (dict, list)):
                 body = json.dumps(body).encode()
                 h["Content-Type"] = "application/json"
         conn.request(method, path, body=body, headers=h)
@@ -36,22 +41,94 @@ class WebTest(helpers.DriveTest):
         conn.close()
         return r.status, dict(r.getheaders()), data
 
-    def login(self):
-        status, headers, _ = self.req("GET", "/login?t=secret-token", auth=False)
-        self.assertEqual(status, 302)
-        self.cookie = headers["Set-Cookie"].split(";")[0]
+    def form(self, **fields):
+        return urllib.parse.urlencode(fields)
+
+    def login(self, user="dennis", password="correct horse"):
+        status, headers, body = self.req("POST", "/login", self.form(user=user, password=password), auth=False)
+        if status == 303:
+            self.cookie = headers["Set-Cookie"].split(";")[0]
+        return status, body
 
     def test_sign_in_required(self):
         self.assertEqual(self.req("GET", "/api/status")[0], 401)
         status, _, body = self.req("GET", "/")
         self.assertEqual(status, 200)
-        self.assertIn(b"link from the DiscordDrive menu", body)       # the sign-in page
-        self.assertEqual(self.req("GET", "/login?t=wrong", auth=False)[0], 200)
+        self.assertIn(b'action="/login"', body)                       # the sign-in form
+        self.assertEqual(self.login(password="wrong")[0], 401)
         self.assertEqual(self.req("GET", "/api/status")[0], 401)
-        self.login()
+        self.assertEqual(self.login()[0], 303)                         # user name is not case-sensitive
         self.assertEqual(self.req("GET", "/api/status")[0], 200)
         status, _, body = self.req("GET", "/")
         self.assertIn(b"app.js", body)
+        self.assertEqual(json.loads(self.req("GET", "/api/status")[2])["user"], "Dennis")
+
+    def test_forged_or_old_sessions_fail(self):
+        self.login()
+        self.cookie = self.cookie[:-4] + "AAAA"
+        self.assertEqual(self.req("GET", "/api/status")[0], 401)
+        self.login()
+        self.web.set_credentials("Dennis", "a new password")           # changing the password signs everyone out
+        self.assertEqual(self.req("GET", "/api/status")[0], 401)
+        self.assertEqual(self.login(password="a new password")[0], 303)
+
+    def test_lockout(self):
+        for _ in range(5):
+            self.assertEqual(self.login(password="nope")[0], 401)
+        status, body = self.login()                                     # even the right password waits now
+        self.assertEqual(status, 429)
+        self.assertIn(b"Too many", body)
+
+    def test_logout(self):
+        self.login()
+        _, headers, _ = self.req("POST", "/api/logout", {})
+        self.assertIn("Max-Age=0", headers["Set-Cookie"])
+
+    def test_first_sign_in_from_this_computer(self):
+        self.web.cfg.web_user = self.web.cfg.web_password = ""
+        status, _, body = self.req("GET", "/")
+        self.assertIn(b'action="/setup"', body)
+        status, _, body = self.req("POST", "/setup", self.form(user="me", password="short", password2="short"), auth=False)
+        self.assertEqual(status, 400)
+        status, headers, _ = self.req("POST", "/setup", self.form(user="me", password="long enough", password2="long enough"),
+                                      auth=False)
+        self.assertEqual(status, 303)
+        self.cookie = headers["Set-Cookie"].split(";")[0]
+        self.assertEqual(self.req("GET", "/api/status")[0], 200)
+        # once set, /setup can't replace it
+        self.assertEqual(self.req("POST", "/setup", self.form(user="x", password="12345678", password2="12345678"),
+                                  auth=False)[0], 403)
+
+    def test_zip_copy_and_purge(self):
+        self.login()
+        self.write(self.d, "/Album/a.txt", b"first file")
+        self.write(self.d, "/Album/sub/b.txt", b"second file")
+        self.upload(self.d)
+        status, _, body = self.req("GET", "/api/zip?path=%2FAlbum")
+        self.assertEqual(status, 200)
+        z = zipfile.ZipFile(io.BytesIO(body))
+        self.assertEqual(z.read("a.txt"), b"first file")
+        self.assertEqual(z.read("sub/b.txt"), b"second file")
+
+        self.assertEqual(self.req("POST", "/api/copy", {"from": "/Album/a.txt", "to": "/Album/a copy.txt"})[0], 200)
+        self.assertEqual(self.req("GET", "/api/file?path=%2FAlbum%2Fa%20copy.txt")[2], b"first file")
+        self.assertEqual(self.req("POST", "/api/move", {"from": "/Album", "to": "/Album/sub/Album"})[0], 400)
+        before = self.d.backend.uploads
+        self.upload(self.d)
+        self.assertEqual(self.d.backend.uploads, before)               # the duplicate reused every piece
+
+        self.assertEqual(self.req("POST", "/api/delete", {"path": "/Album"})[0], 200)
+        deleted = json.loads(self.req("GET", "/api/deleted")[2])["items"]
+        self.assertEqual(len(deleted), 3)
+        uids = [it["uid"] for it in deleted if it["path"] != "/Album/a.txt"]
+        r = json.loads(self.req("POST", "/api/purge", {"uids": uids})[2])
+        self.assertEqual(r["count"], 2)
+        left = json.loads(self.req("GET", "/api/deleted")[2])["items"]
+        self.assertEqual([it["path"] for it in left], ["/Album/a.txt"])
+        r = json.loads(self.req("POST", "/api/undelete", {"uids": [left[0]["uid"]]})[2])
+        self.assertEqual(r["count"], 1)
+        self.d.journal.sync_once()
+        self.assertEqual(self.read(self.d, "/Album/a.txt"), b"first file")
 
     def test_post_needs_header(self):
         self.login()

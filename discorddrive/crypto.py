@@ -61,6 +61,30 @@ def password_keys(passphrase: str, channel_id: str):
     return out
 
 
+def hash_password(password: str) -> str:
+    """A salted scrypt hash for storing a sign-in password (never the password itself)."""
+    import base64
+    salt = os.urandom(16)
+    n, r, p = 2 ** 14, 8, 1
+    h = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=64 * 2 ** 20, dklen=32)
+    b64 = lambda b: base64.b64encode(b).decode("ascii")
+    return f"scrypt${n}${r}${p}${b64(salt)}${b64(h)}"
+
+
+def check_password(password: str, stored: str) -> bool:
+    import base64
+    import hmac
+    try:
+        kind, n, r, p, salt, want = (stored or "").split("$")
+        if kind != "scrypt":
+            return False
+        got = hashlib.scrypt(password.encode("utf-8"), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p),
+                             maxmem=64 * 2 ** 20, dklen=32)
+        return hmac.compare_digest(got, base64.b64decode(want))
+    except (ValueError, TypeError):
+        return False
+
+
 def channel_salt(channel_id: str) -> bytes:
     """Deterministic per-channel salt, so the same passphrase yields the same key on every machine."""
     return hashlib.sha256(f"DiscordDrive:{channel_id}".encode("utf-8")).digest()[:16]

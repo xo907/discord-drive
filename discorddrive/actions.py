@@ -15,6 +15,22 @@ def version_put_op(idx, v, uid, parent_uid, name):
             "r": 1}   # an explicit restore: allowed even though the file was deleted
 
 
+def undelete_ops(idx, rows):
+    """Operations bringing back deleted files (rows of Index.deleted_files) at their old paths,
+    re-creating folders that were deleted with them."""
+    made, ops = {}, []
+    for v in rows:
+        folder = posixpath.dirname(v["path"] or "/" + v["name"]) or "/"
+        node = idx.get_by_uid(v["parent_uid"]) if v["parent_uid"] else None
+        if node is not None and node["is_dir"]:
+            puid = v["parent_uid"]
+        else:
+            puid, more = _folder_ops(idx, folder, made)
+            ops += more
+        ops.append(version_put_op(idx, v, v["uid"], puid, v["name"]))
+    return ops
+
+
 def _folder_ops(idx, path, made):
     """(uid of folder `path`, ops creating whichever part of it doesn't exist yet)."""
     path = "/" + path.strip("/")

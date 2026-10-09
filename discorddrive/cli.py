@@ -458,9 +458,10 @@ def cmd_approve_keys(args):
 
 
 _SECRET_FIELDS = {"bot_token", "encryption_key", "encryption_salt", "old_encryption_keys", "extra_bot_tokens",
-                  "web_token"}
+                  "web_token", "web_password"}
 _LIST_COMMANDS = {"extra_bot_tokens": "bots add <token>", "hidden_folders": "hide <folder>",
-                  "old_encryption_keys": "add-old-key"}
+                  "old_encryption_keys": "add-old-key", "web_user": "web-password",
+                  "web_password": "web-password"}
 
 
 def cmd_config(args):
@@ -886,7 +887,7 @@ def cmd_status(args):
             row("Upload bots", f"{1 + len(cfg.extra_bot_tokens)} (uploads are spread over all of them)")
     if cfg.web_enabled:
         row("Web dashboard", f"http://127.0.0.1:{cfg.web_port}/" + (" (also on your network)" if cfg.web_lan else "")
-            + f"  - '{launcher()} web' shows the sign-in link")
+            + (f", sign in as '{cfg.web_user}'" if cfg.web_password else ", no sign-in set yet"))
     if cfg.hidden_folders:
         row("Hidden here", ", ".join(cfg.hidden_folders))
 
@@ -1268,7 +1269,9 @@ def _put_op_for_version(idx, v, uid, parent_uid, name):
 
 
 def _publish(j, ops, what):
-    j.post_ops(ops)
+    j.index.queue_ops(ops)              # after anything still queued (e.g. the delete it undoes)
+    if not is_mounted(Config.load().mount_point):
+        j.flush()                       # a running drive sends it within a few seconds
     print(f"[SUCCESS] {what}")
     print("It appears on every running device within a few seconds (others pick it up when they start).")
 
@@ -1358,9 +1361,8 @@ def cmd_undelete(args):
         if not matches:
             print(f"[ERROR] No deleted file kept at {vpath}. See '{launcher()} deleted'.")
             return 1
-        v = matches[0]
-        op = _put_op_for_version(idx, v, v["uid"], v["parent_uid"], v["name"])
-        _publish(j, [op], f"{vpath} recovered (into 'Recovered files' if its folder no longer exists).")
+        from .actions import undelete_ops
+        _publish(j, undelete_ops(idx, matches[:1]), f"{vpath} recovered.")
         return 0
     finally:
         _close(idx, crypto)
@@ -1513,8 +1515,9 @@ def cmd_snapshot_restore(args):
         if not ops:
             print(f"[ERROR] The snapshot has nothing under {prefix}.")
             return 1
-        for i in range(0, len(ops), 300):
-            j.post_ops(ops[i:i + 300])
+        j.index.queue_ops(ops)
+        if not is_mounted(cfg.mount_point):
+            j.flush()
         where = "to their original places (what is there now is kept as an older version)" if args.in_place \
             else f"into {target}"
         print(f"[SUCCESS] {files:,} file(s) from the snapshot of {_fmt_time(snap['at'])} restored {where}.")
@@ -1610,25 +1613,24 @@ def cmd_health(args):
 
 # --------------------------------------------------------------------- web, hidden folders
 def cmd_web(args):
-    """Print (and open) the link to the web dashboard."""
+    """Print (and open) the address of the web dashboard."""
     cfg = Config.load()
     if not cfg.web_enabled:
         print(f"[!] The web dashboard is off. Turn it on with: {launcher()} config web_enabled true")
         return 1
-    if not cfg.web_token:
-        import secrets as _secrets
-        cfg.web_token = _secrets.token_urlsafe(24)
-        cfg.save()
-    url = f"http://127.0.0.1:{cfg.web_port}/login?t={cfg.web_token}"
+    url = f"http://127.0.0.1:{cfg.web_port}/"
     running = is_mounted(cfg.mount_point)
     print(f"Web dashboard:  {url}")
     if cfg.web_lan:
         from .web import lan_addresses
         for ip in lan_addresses():
-            print(f"On your phone:  http://{ip}:{cfg.web_port}/login?t={cfg.web_token}")
+            print(f"On your phone:  http://{ip}:{cfg.web_port}/")
     else:
         print(f"(To open it on your phone too: {launcher()} config web_lan true, then restart the drive.)")
-    print("The link signs a browser in: keep it to yourself.")
+    if cfg.web_user and cfg.web_password:
+        print(f"Sign in as '{cfg.web_user}'. Change the password with: {launcher()} web-password")
+    else:
+        print(f"No sign-in yet: the first visit from this computer creates one, or run: {launcher()} web-password")
     if not running:
         print(f"[!] The drive isn't running: start it first ({launcher()} start).")
         return 0
@@ -1636,6 +1638,67 @@ def cmd_web(args):
         import webbrowser
         webbrowser.open(url)
     return 0
+
+
+def cmd_web_password(args):
+    """Set the user name and password of the web dashboard."""
+    import getpass
+    from .crypto import hash_password
+    cfg = Config.load()
+    try:
+        current = cfg.web_user or "admin"
+        user = input(f"User name [{current}]: ").strip() or current
+        while True:
+            pw = getpass.getpass("New password (at least 8 characters, input is hidden): ")
+            if len(pw) < 8:
+                print("[!] Too short; use at least 8 characters.")
+                continue
+            if getpass.getpass("The same password again: ") != pw:
+                print("[!] The two passwords are different; try again.")
+                continue
+            break
+    except (EOFError, KeyboardInterrupt):
+        print("\n[!] Nothing changed.")
+        return 1
+    cfg.web_user = user
+    cfg.web_password = hash_password(pw)
+    cfg.save()
+    print(f"[OK] The dashboard now asks for '{user}' and this password. Browsers that were signed in have to "
+          "sign in again.")
+    return 0
+
+
+def cmd_purge(args):
+    """Delete deleted files for good (no recovery afterwards)."""
+    setup_logging(args.verbose)
+    cfg = Config.load()
+    idx, j, crypto = _open_journal(cfg)
+    try:
+        prefix = normalize_virtual_path(args.path, cfg.mount_point)
+        rows = [v for v in idx.deleted_files(prefix)
+                if args.all or (v["path"] or "").lower() == prefix.lower()]
+        if not rows:
+            print(f"[ERROR] No deleted file kept at {prefix}. See '{launcher()} deleted'."
+                  + ("" if args.all else " (Add --all for everything under a folder.)"))
+            return 1
+        for v in rows:
+            print(f"  {v['path']}  ({_fmt_size(v['size'])})")
+        if not args.yes:
+            try:
+                ok = input(f"Delete {len(rows)} file(s) for good? They can't be recovered afterwards. [y/N]: ")
+            except EOFError:
+                ok = ""
+            if not ok.strip().lower().startswith("y"):
+                print("[!] Nothing deleted.")
+                return 0
+        n = idx.purge_deleted([v["uid"] for v in rows])
+        if not is_mounted(cfg.mount_point):
+            j.flush()
+        print(f"[SUCCESS] {n} file(s) deleted for good, on every device. (Snapshots taken before still "
+              "contain them until those expire.)")
+        return 0
+    finally:
+        _close(idx, crypto)
 
 
 def cmd_hide(args):
@@ -1885,8 +1948,13 @@ def main():
     p_health = subparsers.add_parser("health", help="Self-healing status; --check every piece now, --protect old files")
     p_health.add_argument("--check", action="store_true", help="Check every piece is on Discord and repair what isn't")
     p_health.add_argument("--protect", action="store_true", help="Add spare pieces to files uploaded without them")
-    p_web = subparsers.add_parser("web", help="Show the link to the web dashboard")
+    p_web = subparsers.add_parser("web", help="Show the address of the web dashboard")
     p_web.add_argument("--open", action="store_true", help="Also open it in the browser")
+    subparsers.add_parser("web-password", help="Set the user name and password of the web dashboard")
+    p_purge = subparsers.add_parser("purge", help="Delete a deleted file for good (no recovery afterwards)")
+    p_purge.add_argument("path", help="Original path of the deleted file (or a folder with --all)")
+    p_purge.add_argument("--all", action="store_true", help="Every deleted file under that folder")
+    p_purge.add_argument("--yes", action="store_true", help="Don't ask for confirmation")
     p_hide = subparsers.add_parser("hide", help="Don't show a folder on this device")
     p_hide.add_argument("path")
     p_unhide = subparsers.add_parser("unhide", help="Show a hidden folder on this device again")
@@ -1997,6 +2065,10 @@ def main():
         return cmd_health(args)
     elif args.command == "web":
         return cmd_web(args)
+    elif args.command == "web-password":
+        return cmd_web_password(args)
+    elif args.command == "purge":
+        return cmd_purge(args)
     elif args.command in ("hide", "unhide"):
         return cmd_hide(args)
     else:

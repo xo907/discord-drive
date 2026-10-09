@@ -34,6 +34,24 @@ const ICONS = {
   text: '<path d="M5 2.5h6.5L15 6v11.5H5z"/><path d="M7.5 9.5h5M7.5 12h5M7.5 14.5h3"/>',
   archive: '<path d="M5 2.5h10v15H5z"/><path d="M10 2.5v2M10 6.5v2M10 10.5v2"/>',
   more: '<circle cx="5" cy="10" r=".9"/><circle cx="10" cy="10" r=".9"/><circle cx="15" cy="10" r=".9"/>',
+  open: '<path d="M2.5 10s2.8-5 7.5-5 7.5 5 7.5 5-2.8 5-7.5 5-7.5-5-7.5-5z"/><circle cx="10" cy="10" r="2.2"/>',
+  enter: '<path d="M8 4.5h6.5a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H8"/><path d="M3.5 10H12M9 7l3 3-3 3"/>',
+  download: '<path d="M10 3.5v9M6.5 9 10 12.5 13.5 9M4 16.5h12"/>',
+  upload: '<path d="M10 13V4M6.5 7.5 10 4l3.5 3.5M4 16.5h12"/>',
+  link: '<path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.4-2.4a3 3 0 0 0-4.2-4.2l-.9.9"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2.4 2.4a3 3 0 0 0 4.2 4.2l.9-.9"/>',
+  offline: '<path d="M6 15.5h8.5a3.5 3.5 0 0 0 .4-7 5 5 0 0 0-9.7 1.3A2.9 2.9 0 0 0 6 15.5z"/><path d="m8 11.5 1.6 1.6 3-3"/>',
+  rename: '<path d="M4 16h3.2l8.4-8.4a2.2 2.2 0 0 0-3.2-3.2L4 12.8z"/><path d="m11.4 5.4 3.2 3.2"/>',
+  move: '<path d="M2.5 5.5a1.5 1.5 0 0 1 1.5-1.5h3.6l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.7A1.5 1.5 0 0 1 16 16.5H4a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M7.5 11h5M10.5 9l2 2-2 2"/>',
+  copy: '<rect x="6.5" y="6.5" width="9.5" height="9.5" rx="1.5"/><path d="M13.5 6.5V5a1.5 1.5 0 0 0-1.5-1.5H5A1.5 1.5 0 0 0 3.5 5v7A1.5 1.5 0 0 0 5 13.5h1.5"/>',
+  history: '<path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6"/><path d="M3.5 4v3.5H7M10 6.5V10l2.5 1.5"/>',
+  info: '<circle cx="10" cy="10" r="7"/><path d="M10 9v4.5M10 6.6v.1"/>',
+  trash: '<path d="M4 6h12M8 6V4.5h4V6M5.5 6l.7 9.6a1 1 0 0 0 1 .9h5.6a1 1 0 0 0 1-.9L14.5 6"/>',
+  restore: '<path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6"/><path d="M3.5 4v3.5H7"/>',
+  newfolder: '<path d="M2.5 5.5a1.5 1.5 0 0 1 1.5-1.5h3.6l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.7A1.5 1.5 0 0 1 16 16.5H4a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M10 8.5v5M7.5 11h5"/>',
+  refresh: '<path d="M16 10a6 6 0 1 1-1.8-4.3"/><path d="M16.5 3.5v3.5H13"/>',
+  check: '<path d="m4.5 10.5 3.5 3.5 7.5-8"/>',
+  user: '<circle cx="10" cy="7" r="3.2"/><path d="M3.8 16.5a6.2 6.2 0 0 1 12.4 0"/>',
+  signout: '<path d="M12 4.5H15a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-3"/><path d="M12.5 10H4M7 7l-3 3 3 3"/>',
 };
 const icon = (name, cls = "") => h("svg", { viewBox: "0 0 20 20", class: `ico ${cls}`, "aria-hidden": "true", html: ICONS[name] });
 
@@ -134,6 +152,141 @@ function ask({ title, text = "", value = null, ok = "OK", danger = false }) {
   });
 }
 
+// ------------------------------------------------------------------ context menu
+// Right-click (desktop) or long press (touch) opens it: a small menu at the pointer on desktop,
+// a sheet from the bottom of the screen on phones. Items: {label, icon, run, danger, checked, disabled}
+// or "-" for a divider.
+let ctxEl = null;
+let ctxFor = null;           // the row whose menu is open (highlighted meanwhile)
+let lastTouch = 0;
+const sheetMode = () => matchMedia("(hover: none), (max-width: 760px)").matches;
+
+function closeMenu() {
+  if (ctxFor) { ctxFor.classList.remove("menu-on"); ctxFor = null; }
+  if (!ctxEl) return;
+  ctxEl.remove();
+  $("#ctx-scrim")?.remove();
+  ctxEl = null;
+}
+
+function openMenu(items, x, y, title, sub, anchor) {
+  closeMenu();
+  if (anchor && anchor.classList.contains("row")) { ctxFor = anchor; anchor.classList.add("menu-on"); }
+  const asSheet = sheetMode();
+  const buttons = [];
+  const list = items.filter(Boolean).filter((it, i, all) => it !== "-" || (i > 0 && all[i - 1] !== "-" && i < all.length - 1));
+  const el = h("div", { class: "ctx" + (asSheet ? " as-sheet" : ""), role: "menu", "aria-label": title || "Actions" },
+    asSheet && title ? h("div", { class: "ctx-title" }, h("div", { class: "t" }, title), sub && h("div", { class: "s" }, sub)) : null,
+    list.map((it) => {
+      if (it === "-") return h("div", { class: "sep", role: "separator" });
+      const b = h("button", { role: it.checked != null ? "menuitemcheckbox" : "menuitem", class: it.danger ? "danger" : "",
+                              disabled: it.disabled, "aria-checked": it.checked != null ? String(!!it.checked) : null,
+                              onclick: () => { closeMenu(); if (it.run) it.run(); } },
+        icon(it.icon || "more"), h("span", { class: "l" }, it.label),
+        it.checked != null ? h("span", { class: "on" + (it.checked ? " yes" : "") }, it.checked ? icon("check") : null) : null);
+      buttons.push(b);
+      return b;
+    }));
+  const scrim = h("div", { id: "ctx-scrim", class: "ctx-scrim" + (asSheet ? " dim" : ""), onclick: closeMenu,
+                           oncontextmenu: (e) => { e.preventDefault(); closeMenu(); } });
+  document.body.append(scrim, el);
+  ctxEl = el;
+  if (!asSheet) {
+    const r = el.getBoundingClientRect();
+    el.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+    el.style.top = Math.max(8, y + r.height > innerHeight - 8 ? y - r.height : y) + "px";
+  }
+  const usable = buttons.filter((b) => !b.disabled);
+  if (!asSheet && usable.length) usable[0].focus({ preventScroll: true });
+  el.addEventListener("keydown", (e) => {
+    const i = usable.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); usable[(i + 1) % usable.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); usable[(i - 1 + usable.length) % usable.length].focus(); }
+    else if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); closeMenu(); }
+  });
+}
+window.addEventListener("resize", closeMenu);
+main.addEventListener("scroll", closeMenu, { passive: true });
+
+/** Right-click and long press on `el` open the menu that `items()` returns. */
+function bindMenu(el, items, title, sub, skip) {
+  el.addEventListener("contextmenu", (e) => {
+    if (skip && skip(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (Date.now() - lastTouch < 1200) return;          // the long-press timer already opened it
+    openMenu(items(), e.clientX, e.clientY, title, sub, el);
+  });
+  let timer = null, sx = 0, sy = 0;
+  el.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" || (skip && skip(e))) return;
+    sx = e.clientX; sy = e.clientY;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      lastTouch = Date.now();
+      el.dataset.longPress = "1";
+      if (navigator.vibrate) navigator.vibrate(8);
+      openMenu(items(), sx, sy, title, sub, el);
+    }, 480);
+  });
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  el.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel(); });
+  el.addEventListener("pointerup", cancel);
+  el.addEventListener("pointercancel", cancel);
+  el.addEventListener("click", (e) => {
+    if (el.dataset.longPress) { e.preventDefault(); e.stopImmediatePropagation(); delete el.dataset.longPress; }
+  }, true);
+}
+
+function menuButton(items, title, sub) {
+  return h("button", { class: "icon-btn more", "aria-label": `Actions for ${title}`, "aria-haspopup": "menu", title: "Actions",
+                       onclick: (e) => {
+                         e.preventDefault(); e.stopPropagation();
+                         const r = e.currentTarget.getBoundingClientRect();
+                         openMenu(items(), r.right - 220, r.bottom + 4, title, sub, e.currentTarget.closest(".row"));
+                       } }, icon("more"));
+}
+
+function itemMenu(it) {
+  return [
+    it.dir ? { label: "Open", icon: "enter", run: () => go("#/files" + enc(it.path)) }
+           : { label: "Preview", icon: "open", run: () => openItem(it) },
+    it.dir ? { label: "Download as ZIP", icon: "download", run: () => download("/api/zip" + q({ path: it.path }), it.name + ".zip") }
+           : { label: "Download", icon: "download", run: () => download(fileUrl(it.path, true), it.name) },
+    !it.dir && { label: "Copy share link", icon: "link", run: () => quickShare(it) },
+    "-",
+    { label: "Available offline", icon: "offline", checked: !!it.pinned, run: () => setPinned(it, !it.pinned) },
+    "-",
+    { label: "Rename…", icon: "rename", run: () => rename(it) },
+    { label: "Move to…", icon: "move", run: () => moveTo(it) },
+    !it.dir && { label: "Duplicate", icon: "copy", run: () => duplicate(it) },
+    !it.dir && { label: "Earlier versions", icon: "history", run: () => openItem(it, "versions") },
+    { label: "Details", icon: "info", run: () => openItem(it) },
+    "-",
+    { label: "Delete", icon: "trash", danger: true, run: () => remove(it) },
+  ];
+}
+
+function backgroundMenu() {
+  return [
+    { label: "New folder…", icon: "newfolder", run: newFolder },
+    { label: "Upload files…", icon: "upload", run: () => $("#pick").click() },
+    { label: "Upload a folder…", icon: "upload", run: () => $("#pick-dir").click() },
+    currentDir !== "/" && { label: "Download this folder as ZIP", icon: "download",
+                            run: () => download("/api/zip" + q({ path: currentDir }), base(currentDir) + ".zip") },
+    "-",
+    { label: "Refresh", icon: "refresh", run: render },
+  ];
+}
+
+function download(url, name) {
+  const a = h("a", { href: url, download: name, style: "display:none" });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
 // ------------------------------------------------------------------ status
 async function refreshStatus() {
   try { status = await api("/api/status"); }
@@ -146,6 +299,8 @@ async function refreshStatus() {
   else if (st.outbox) { dot.className = "dot busy"; text.textContent = "Syncing"; }
   else { dot.className = "dot ok"; text.textContent = "Up to date"; }
   $("#usage").textContent = `${plural(st.files, "file")} · ${size(st.bytes)}`;
+  const acct = $("#account");
+  if (acct && status.user) { acct.textContent = status.user.slice(0, 1).toUpperCase(); acct.title = `Signed in as ${status.user}`; }
   if (route.name === "health" && !$("#sheet").classList.contains("open")) {
     keepScroll = true;
     try { renderHealth(true); } finally { keepScroll = false; }
@@ -204,14 +359,16 @@ function itemRow(it, opts = {}) {
   const name = h("span", { class: "name" }, icon(k === "pdf" ? "text" : k, it.dir ? "folder" : ""),
                  opts.where ? h("span", { style: "min-width:0" }, label, h("div", { class: "where" }, parent(it.path))) : label,
                  ...tags);
-  const more = h("button", { class: "icon-btn more", "aria-label": `More for ${it.name}`, title: "Details",
-                             onclick: (e) => { e.preventDefault(); e.stopPropagation(); openItem(it); } }, icon("more"));
+  const sub = it.dir ? parent(it.path) : `${size(it.size)} · ${when(it.mtime)}`;
+  const more = menuButton(() => itemMenu(it), it.name, sub);
   const attrs = it.dir ? { class: "row", href: "#/files" + enc(it.path) }
                        : { class: "row click", tabindex: "0", role: "button",
                            onclick: () => openItem(it), onkeydown: (e) => { if (e.key === "Enter") openItem(it); } };
-  return h(it.dir ? "a" : "div", attrs, name,
-           h("span", { class: "size" }, it.dir ? "" : size(it.size)),
-           h("span", { class: "date" }, when(it.mtime)), more);
+  const row = h(it.dir ? "a" : "div", attrs, name,
+                h("span", { class: "size" }, it.dir ? "" : size(it.size)),
+                h("span", { class: "date" }, when(it.mtime)), more);
+  bindMenu(row, () => itemMenu(it), it.name, sub);
+  return row;
 }
 
 function listHead() {
@@ -235,8 +392,10 @@ async function renderFiles() {
   const rows = data.items.map((it) => itemRow(it));
   const body = rows.length ? h("div", { class: "list" }, listHead(), rows)
     : h("div", { class: "empty" }, h("b", {}, "Nothing here yet"), "Drop files anywhere on this page, or use Upload.");
-  page(bar, body);
+  page(bar, body, h("div", { class: "spacer" }));
 }
+bindMenu(main, backgroundMenu, "This folder", null,
+         (e) => route.name !== "files" || !!e.target.closest(".row, button, a, input"));
 
 async function newFolder() {
   const name = await ask({ title: "New folder", value: "", ok: "Create" });
@@ -292,7 +451,17 @@ function preview(it) {
   return h("div", { class: "preview" }, h("div", { class: "note" }, icon(k === "file" ? "file" : k, "big"), h("div", {}, "No preview for this kind of file")));
 }
 
-function openItem(it) {
+async function setPinned(it, on) {
+  if (await attempt(() => api("/api/pin", { path: it.path, on }),
+                    on ? "Downloading it to keep it available offline" : "No longer kept offline")) {
+    it.pinned = on;
+    if (route.name === "files" || route.name === "search") render();
+    return true;
+  }
+  return false;
+}
+
+function openItem(it, focus) {
   $("#sheet-title").textContent = it.name;
   const body = $("#sheet-body");
   const meta = h("dl", { class: "meta" },
@@ -308,9 +477,10 @@ function openItem(it) {
   const sw = h("button", { class: "switch", role: "switch", "aria-checked": String(!!it.pinned), "aria-label": "Available offline",
                            onclick: async () => {
                              const on = sw.getAttribute("aria-checked") !== "true";
-                             if (await attempt(() => api("/api/pin", { path: it.path, on }),
-                                               on ? "Downloading it to keep it available offline" : "No longer kept offline")) {
-                               sw.setAttribute("aria-checked", String(on)); it.pinned = on;
+                             const isOpen = $("#sheet").classList.contains("open");
+                             if (await setPinned(it, on)) {
+                               sw.setAttribute("aria-checked", String(on));
+                               if (isOpen && !$("#sheet").classList.contains("open")) openItem(it);
                              }
                            } });
   const toggle = h("div", { class: "toggle" },
@@ -320,15 +490,18 @@ function openItem(it) {
     sw);
   const extra = h("div");
   body.replaceChildren(preview(it), meta, actions, toggle, extra);
-  if (!it.dir) loadVersions(it, extra);
+  if (!it.dir) loadVersions(it, extra, focus === "versions");
   $("#sheet").classList.add("open");
   $("#sheet").setAttribute("aria-hidden", "false");
   $("#scrim").classList.add("open");
 }
 
-async function loadVersions(it, into) {
+async function loadVersions(it, into, focus) {
   const data = await api("/api/versions" + q({ path: it.path })).catch(() => null);
-  if (!data || !data.versions.length) return;
+  if (!data || !data.versions.length) {
+    if (focus) into.append(h("div", { class: "versions" }, h("h3", {}, "Earlier versions"), h("p", { class: "muted" }, "None kept for this file.")));
+    return;
+  }
   const reasons = { replaced: "Replaced", deleted: "Deleted", conflict: "Edited on two devices" };
   const box = h("div", { class: "versions" }, h("h3", {}, "Earlier versions"),
     data.versions.map((v) => h("div", { class: "v" },
@@ -342,6 +515,7 @@ async function loadVersions(it, into) {
         }
       } }, "Restore"))));
   into.append(box);
+  if (focus) box.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 async function share(it, into) {
@@ -357,6 +531,38 @@ async function share(it, into) {
     h("div", { class: "hint" }, `Works for 7 days. ${local
       ? "It only opens on this computer. To share with phones and computers at home, turn on “Web dashboard on your network” in the DiscordDrive menu (Settings)."
       : "Anyone on your home network with this link can download this one file."}`));
+}
+
+async function quickShare(it) {
+  const r = await attempt(() => api("/api/share", { path: it.path, hours: 24 * 7 }));
+  if (!r) return;
+  const url = (r.lan && r.lan[0]) || location.origin + r.path;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast("Share link copied. It works for 7 days.");
+  } catch {
+    await ask({ title: "Share link", value: url, ok: "Done", text: "Copy this link. It works for 7 days." });
+  }
+}
+
+async function moveTo(it) {
+  const dest = await ask({ title: `Move “${it.name}”`, value: parent(it.path), ok: "Move",
+                           text: "Folder to move it into, for example /Photos/2024." });
+  if (!dest) return;
+  const folder = "/" + dest.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (folder === parent(it.path)) return;
+  if (await attempt(() => api("/api/move", { from: it.path, to: join(folder, it.name) }), `Moved to ${folder}`)) {
+    closeSheet(); render();
+  }
+}
+
+async function duplicate(it) {
+  const dot = it.name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [it.name.slice(0, dot), it.name.slice(dot)] : [it.name, ""];
+  const name = await ask({ title: "Duplicate", value: `${stem} copy${ext}`, ok: "Duplicate",
+                           text: "The copy reuses the pieces already in Discord, so nothing is uploaded again." });
+  if (!name) return;
+  if (await attempt(() => api("/api/copy", { from: it.path, to: join(parent(it.path), name) }), "Duplicated")) render();
 }
 
 async function rename(it) {
@@ -416,11 +622,13 @@ async function uploadAll(entries, dir) {
   if (route.name === "files") render();
 }
 
-$("#pick").addEventListener("change", (e) => {
-  const files = [...e.target.files].map((file) => ({ file, rel: file.name }));
-  e.target.value = "";
-  uploadAll(files, currentDir);
-});
+for (const id of ["#pick", "#pick-dir"]) {
+  $(id).addEventListener("change", (e) => {
+    const files = [...e.target.files].map((file) => ({ file, rel: file.webkitRelativePath || file.name }));
+    e.target.value = "";
+    uploadAll(files, currentDir);
+  });
+}
 
 async function readEntries(entry, prefix, out) {
   if (entry.isFile) {
@@ -458,22 +666,95 @@ document.addEventListener("drop", async (e) => {
 });
 
 // ------------------------------------------------------------------ deleted
+const picked = new Set();
+
 async function renderDeleted() {
   const data = await attempt(() => api("/api/deleted"));
   const items = data ? data.items : [];
-  page(h("h1", {}, "Deleted"),
-       h("p", { class: "lede" }, "Deleted files are kept for a while (see Settings) and can be brought back on every device."),
-       items.length ? h("div", { class: "list rows-simple" }, items.map((it) => h("div", { class: "row" },
-         h("span", { class: "name" }, icon(kind(it.path)), h("span", { style: "min-width:0" },
-           h("span", { class: "label" }, base(it.path)), h("div", { class: "where" }, parent(it.path)))),
-         h("span", { class: "size" }, size(it.size)),
-         h("span", { class: "date" }, when(it.at)),
-         h("button", { class: "btn ghost small", onclick: async (e) => {
-           e.target.disabled = true;
-           if (await attempt(() => api("/api/undelete", { path: it.path }), `${base(it.path)} restored`)) setTimeout(renderDeleted, 2500);
-           else e.target.disabled = false;
-         } }, "Restore"))))
-       : h("div", { class: "empty" }, h("b", {}, "Nothing deleted"), "Files you delete show up here."));
+  for (const uid of [...picked]) if (!items.some((it) => it.uid === uid)) picked.delete(uid);
+  const head = h("div", { class: "bar" }, h("h1", { style: "margin:0" }, "Deleted"));
+  const lede = h("p", { class: "lede" }, "Deleted files are kept for a while (see Settings) and can be brought back on every device. ",
+                 "Delete them for good to free the space now.");
+  if (!items.length) {
+    page(head, lede, h("div", { class: "empty" }, h("b", {}, "Nothing deleted"), "Files you delete show up here."));
+    return;
+  }
+  const boxes = [];
+  const selbar = h("div", { class: "selbar" });
+  const all = checkbox(false, (on) => { items.forEach((it) => on ? picked.add(it.uid) : picked.delete(it.uid)); sync(); }, "Select all");
+  function sync() {
+    boxes.forEach(([it, box, row]) => { setBox(box, picked.has(it.uid)); row.classList.toggle("sel", picked.has(it.uid)); });
+    setBox(all, picked.size === items.length ? true : picked.size ? "mixed" : false);
+    const chosen = items.filter((it) => picked.has(it.uid));
+    selbar.replaceChildren(
+      h("span", { class: "count" }, chosen.length ? `${plural(chosen.length, "file")} selected · ${size(chosen.reduce((a, it) => a + it.size, 0))}`
+                                                  : `${plural(items.length, "file")} · ${size(items.reduce((a, it) => a + it.size, 0))}`),
+      h("div", { class: "actions" },
+        chosen.length ? h("button", { class: "btn ghost small", onclick: () => { picked.clear(); sync(); } }, "Clear") : null,
+        h("button", { class: "btn ghost small", disabled: !chosen.length, onclick: () => restoreMany(chosen) }, "Restore"),
+        h("button", { class: "btn danger small", disabled: !chosen.length, onclick: () => purgeMany(chosen) }, "Delete forever")));
+  }
+  const rows = items.map((it) => {
+    const box = checkbox(false, (on) => { on ? picked.add(it.uid) : picked.delete(it.uid); sync(); }, `Select ${base(it.path)}`);
+    const menu = () => deletedMenu(it, sync);
+    const row = h("div", { class: "row click pick", tabindex: "0",
+                           onclick: (e) => { if (e.target.closest("button")) return; picked.has(it.uid) ? picked.delete(it.uid) : picked.add(it.uid); sync(); },
+                           onkeydown: (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); row.click(); } } },
+      h("span", { class: "name" }, box, icon(kind(it.path) === "pdf" ? "text" : kind(it.path)), h("span", { style: "min-width:0" },
+        h("span", { class: "label" }, base(it.path)), h("div", { class: "where" }, parent(it.path)))),
+      h("span", { class: "size" }, size(it.size)),
+      h("span", { class: "date" }, when(it.at)),
+      menuButton(menu, base(it.path), `Deleted ${when(it.at)}`));
+    bindMenu(row, menu, base(it.path), `Deleted ${when(it.at)}`);
+    boxes.push([it, box, row]);
+    return row;
+  });
+  page(head, lede, selbar,
+       h("div", { class: "list" },
+         h("div", { class: "row head" }, h("span", { class: "name" }, all, h("span", {}, "Name")), h("span", { class: "size" }, "Size"),
+           h("span", { class: "date" }, "Deleted"), h("span")),
+         rows));
+  sync();
+}
+
+function checkbox(on, change, label) {
+  const b = h("button", { class: "cb", role: "checkbox", "aria-label": label, "aria-checked": String(on),
+                          onclick: (e) => { e.stopPropagation(); change(b.getAttribute("aria-checked") !== "true"); } },
+              icon("check"));
+  return b;
+}
+function setBox(b, state) { b.setAttribute("aria-checked", String(state)); }
+
+function deletedMenu(it, sync) {
+  return [
+    { label: "Restore", icon: "restore", run: () => restoreMany([it]) },
+    { label: picked.has(it.uid) ? "Deselect" : "Select", icon: "check",
+      run: () => { picked.has(it.uid) ? picked.delete(it.uid) : picked.add(it.uid); sync(); } },
+    "-",
+    { label: "Delete forever", icon: "trash", danger: true, run: () => purgeMany([it]) },
+  ];
+}
+
+async function restoreMany(list) {
+  const r = await attempt(() => api("/api/undelete", { uids: list.map((it) => it.uid) }));
+  if (!r) return;
+  list.forEach((it) => picked.delete(it.uid));
+  toast(list.length === 1 ? `${base(list[0].path)} restored` : `${plural(r.count, "file")} restored`);
+  setTimeout(() => { if (route.name === "deleted") renderDeleted(); }, 2500);
+}
+
+async function purgeMany(list) {
+  const one = list.length === 1;
+  const ok = await ask({ title: one ? `Delete “${base(list[0].path)}” forever?` : `Delete ${plural(list.length, "file")} forever?`,
+                         ok: "Delete forever", danger: true,
+                         text: `${one ? "It is" : "They are"} removed from Discord on every device and can't be recovered. ` +
+                               "Snapshots taken before still contain them until those snapshots expire." });
+  if (!ok) return;
+  const r = await attempt(() => api("/api/purge", { uids: list.map((it) => it.uid) }));
+  if (!r) return;
+  list.forEach((it) => picked.delete(it.uid));
+  toast(one ? "Deleted forever" : `${plural(r.count, "file")} deleted forever`);
+  renderDeleted();
 }
 
 // ------------------------------------------------------------------ snapshots
@@ -506,22 +787,31 @@ async function renderSnapshot() {
   const sn = snaps && snaps.items.find((x) => x.id === id);
   if (!list || !sn) { page(h("div", { class: "empty" }, h("b", {}, "Snapshot not found"), h("a", { href: "#/snapshots" }, "All snapshots"))); return; }
   const title = fmtFull.format(new Date(sn.at * 1000));
-  const restore = h("button", { class: "btn", onclick: async () => {
-    const ok = await ask({ title: `Restore ${path === "/" ? "the whole drive" : "“" + base(path) + "”"}?`, ok: "Restore",
+  async function restoreFrom(what) {
+    const ok = await ask({ title: `Restore ${what === "/" ? "the whole drive" : "“" + base(what) + "”"}?`, ok: "Restore",
                            text: "It is copied into a new folder named after the snapshot, so nothing you have now is changed." });
     if (!ok) return;
-    const r = await attempt(() => api("/api/snapshots/restore", { id, path }));
+    const r = await attempt(() => api("/api/snapshots/restore", { id, path: what }));
     if (r) { toast(`${plural(r.files, "file")} restored into ${r.folder}`); setTimeout(() => go("#/files" + enc(r.folder)), 2500); }
-  } }, path === "/" ? "Restore everything" : "Restore this folder");
+  }
+  const restore = h("button", { class: "btn", onclick: () => restoreFrom(path) }, path === "/" ? "Restore everything" : "Restore this folder");
   page(h("div", { class: "bar" },
          crumbs(path, title, (p) => `#/snapshot/${id}` + enc(p)),
          h("div", { class: "actions" }, h("a", { class: "btn ghost", href: "#/snapshots" }, "All snapshots"), restore)),
-       list.items.length ? h("div", { class: "list" }, listHead(), list.items.map((it) => h(it.dir ? "a" : "div",
-         it.dir ? { class: "row", href: `#/snapshot/${id}` + enc(it.path) } : { class: "row" },
-         h("span", { class: "name" }, icon(it.dir ? "folder" : (kind(it.name) === "pdf" ? "text" : kind(it.name)), it.dir ? "folder" : ""),
-           h("span", { class: "label" }, it.name)),
-         h("span", { class: "size" }, it.dir ? "" : size(it.size)),
-         h("span", { class: "date" }, when(it.mtime)), h("span"))))
+       list.items.length ? h("div", { class: "list" }, listHead(), list.items.map((it) => {
+         const menu = () => [
+           it.dir && { label: "Open", icon: "enter", run: () => go(`#/snapshot/${id}` + enc(it.path)) },
+           { label: it.dir ? "Restore this folder" : "Restore this file", icon: "restore", run: () => restoreFrom(it.path) },
+         ];
+         const row = h(it.dir ? "a" : "div",
+           it.dir ? { class: "row", href: `#/snapshot/${id}` + enc(it.path) } : { class: "row" },
+           h("span", { class: "name" }, icon(it.dir ? "folder" : (kind(it.name) === "pdf" ? "text" : kind(it.name)), it.dir ? "folder" : ""),
+             h("span", { class: "label" }, it.name)),
+           h("span", { class: "size" }, it.dir ? "" : size(it.size)),
+           h("span", { class: "date" }, when(it.mtime)), menuButton(menu, it.name, title));
+         bindMenu(row, menu, it.name, title);
+         return row;
+       }))
        : h("div", { class: "empty" }, h("b", {}, "Empty folder")));
 }
 
@@ -572,6 +862,17 @@ function renderHealth(quiet) {
       h("div", {}, "Open on your phone"), h("div", {}, h("code", {}, status.lan[0])))] : null,
     h("p", { class: "muted", style: "margin-top:40px;font-size:12px" }, `DiscordDrive ${status.version} · Made by XO.ST`));
 }
+
+// ------------------------------------------------------------------ account
+$("#account").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  openMenu([
+    { label: status && status.user ? `Signed in as ${status.user}` : "Signed in", icon: "user", disabled: true },
+    "-",
+    { label: "Sign out", icon: "signout", run: async () => { await api("/api/logout", {}).catch(() => null); location.reload(); } },
+  ], r.right - 220, r.bottom + 6, "Account");
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
 
 // ------------------------------------------------------------------ start
 render();
