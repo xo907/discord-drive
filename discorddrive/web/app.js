@@ -2574,6 +2574,7 @@ function markCard(b) {
   const menu = () => [
     { label: "Open", icon: "open", run: () => window.open(b.url, "_blank", "noopener,noreferrer") },
     { label: "Copy the link", icon: "link", run: async () => { try { await navigator.clipboard.writeText(b.url); toast("Link copied"); } catch { await ask({ title: "Link", value: b.url, ok: "Done" }); } } },
+    { label: b.pinned ? "Unpin" : "Pin to the top", icon: "star", run: () => pinMark(b, !b.pinned) },
     { label: "Edit…", icon: "rename", run: () => markEdit(b) },
     { label: "Read the preview again", icon: "refresh", run: async () => {
       toast("Reading the page…");
@@ -2597,9 +2598,12 @@ function markCard(b) {
       b.note && h("div", { class: "bm-note" }, b.note),
       (b.tags || []).length ? h("div", { class: "bm-tags" }, b.tags.map((t) =>
         h("button", { class: "bm-tag", type: "button", onclick: (e) => { e.preventDefault(); e.stopPropagation(); markTag = markTag === t ? "" : t; drawMarks(); } }, t))) : null),
+    h("button", { class: "icon-btn bm-pin" + (b.pinned ? " on" : ""), "aria-label": b.pinned ? "Unpin" : "Pin to the top",
+                  "aria-pressed": String(!!b.pinned), title: b.pinned ? "Pinned: click to unpin" : "Pin to the top",
+                  onclick: (e) => { e.preventDefault(); e.stopPropagation(); pinMark(b, !b.pinned); } }, icon("star")),
     h("button", { class: "icon-btn bm-more", "aria-label": `Actions for ${b.title || host}`, title: "Actions",
                   onclick: (e) => { e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openMenu(menu(), r.right - 220, r.bottom + 4, b.title || host, host); } }, icon("more")));
-  bindMenu(card, menu, b.title || host, host, (e) => !!e.target.closest(".bm-more"));
+  bindMenu(card, menu, b.title || host, host, (e) => !!e.target.closest(".bm-more, .bm-pin"));
   return card;
 }
 
@@ -2618,11 +2622,22 @@ function drawMarks() {
   const loading = [...markPending.values()].map((url) => h("div", { class: "bm-card loading" },
     h("div", { class: "bm-banner" }), h("div", { class: "bm-body" }, h("div", { class: "bm-site" }, h("span", { class: "s" }, hostOf(url))),
       h("div", { class: "bm-title" }, "Reading the page…"), h("div", { class: "bm-line" }), h("div", { class: "bm-line short" }))));
-  grid.replaceChildren(...loading, ...shown.map(markCard));
+  const pinned = shown.filter((b) => b.pinned).sort((a, b) => b.pinned - a.pinned);
+  const rest = shown.filter((b) => !b.pinned);
+  const cards = (list, extra = []) => h("div", { class: "bm-grid" }, ...extra, ...list.map(markCard));
+  grid.replaceChildren(...(pinned.length
+    ? [h("div", { class: "bm-head" }, icon("star"), "Pinned"), cards(pinned),
+       (loading.length || rest.length) ? h("div", { class: "bm-head" }, "Everything else") : null, cards(rest, loading)]
+    : [cards(rest, loading)]).filter(Boolean));
   $("#bm-empty").hidden = loading.length + shown.length > 0;
   $("#bm-empty").replaceChildren(...(marks.length ? [h("b", {}, "Nothing matches"), "Try another word or tag."]
     : [h("b", {}, "No bookmarks yet"), "Paste a link above, or press Ctrl+V anywhere on this page."]));
   $("#bm-count").textContent = marks.length ? plural(marks.length, "bookmark") : "";
+}
+
+async function pinMark(b, on) {
+  const r = await attempt(() => api("/api/bookmarks/save", { id: b.id, pinned: on }), on ? "Pinned to the top" : "Unpinned");
+  if (r) { Object.assign(b, r.bookmark); if (!on) delete b.pinned; drawMarks(); }
 }
 
 async function addMark(text) {
@@ -2674,7 +2689,7 @@ async function renderBookmarks() {
        h("div", { class: "bm-add" }, icon("link"), input,
          h("button", { class: "btn", onclick: () => { if (input.value.trim()) { const v = input.value; input.value = ""; addMark(v); } else input.focus(); } }, "Save")),
        h("div", { class: "bm-chips", id: "bm-tags" }),
-       h("div", { class: "bm-grid", id: "bm-grid" }),
+       h("div", { id: "bm-grid" }),
        h("div", { class: "empty", id: "bm-empty", hidden: true }));
   const d = await api("/api/bookmarks").catch((e) => { toast(e.message); return null; });
   if (route.name !== "bookmarks") return;

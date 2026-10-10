@@ -412,8 +412,8 @@ devices).
   (synced to every device); Activity lists what was added, changed, moved and deleted, and on which
   device.
 - **Bookmarks**: paste a link and it is saved as a card with the page's title, description, icon and
-  banner picture (the same tags link previews use). Tags, notes, a filter, and Ctrl+V anywhere on the
-  page. Kept in `/Bookmarks` on the drive with their pictures: encrypted, synced, versioned, and
+  banner picture (the same tags link previews use). Tags, notes, a filter, pinned favourites at the top,
+  and Ctrl+V anywhere on the page. Kept in `/Bookmarks` on the drive with their pictures: encrypted, synced, versioned, and
   nothing is loaded from the sites when you look at them.
 - **Storage**: space by kind, the biggest folders and files, and identical files (keep the oldest and
   delete the copies in one click). Folders show their size in Files.

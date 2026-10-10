@@ -3,6 +3,12 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.1.1 (2026-10-09)
+
+- Bookmarks can be pinned: the star on a card (or "Pin to the top" in its menu) puts it in a Pinned
+  section above the others, the most recently pinned first. Pins sync to your other devices with the
+  bookmarks, and the tag and filter boxes apply to pinned ones too.
+
 ## 1.1.0 (2026-10-09)
 
 - Bookmarks: a new tab in the dashboard. Paste a link (in the box, or Ctrl+V anywhere on the page;

@@ -842,7 +842,12 @@ class WebTest(helpers.DriveTest):
             self.assertEqual([x["title"] for x in self.get("/api/bookmarks")["items"]], ["bare.txt", "How to bake bread & more"])
             status, r = self.post("/api/bookmarks/save", {"id": b["id"], "title": "Bread", "tags": "food, #Baking, food", "note": "try it"})
             self.assertEqual((r["bookmark"]["title"], r["bookmark"]["tags"], r["bookmark"]["note"]), ("Bread", ["food", "Baking"], "try it"))
+            self.assertTrue(self.post("/api/bookmarks/save", {"id": b["id"], "pinned": True})[1]["bookmark"]["pinned"])
+            self.assertTrue(self.get("/api/bookmarks")["items"][1]["pinned"])                  # kept in the list on the drive
+            self.assertNotIn("pinned", self.post("/api/bookmarks/save", {"id": b["id"], "pinned": False})[1]["bookmark"])
+            self.post("/api/bookmarks/save", {"id": b["id"], "pinned": True})
             status, r = self.post("/api/bookmarks/refresh", {"id": b["id"]})
+            self.assertTrue(r["bookmark"]["pinned"])                                           # a refresh keeps the pin
             self.assertEqual((status, r["bookmark"]["title"], r["bookmark"]["site"]), (200, "Bread", "Bread Weekly"))  # your title stays
             self.assertEqual(json.loads(self.read(self.d, "/Bookmarks/Bookmarks.json", cold=False))["items"][1]["note"], "try it")
             self.assertEqual(self.post("/api/bookmarks/delete", {"ids": [b["id"]]})[1]["removed"], 1)

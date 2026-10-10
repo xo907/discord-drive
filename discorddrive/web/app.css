@@ -1011,3 +1011,16 @@ svg.bm-icon { color: var(--faint); }
   .bm-grid { grid-template-columns: 1fr; gap: 12px; }
   .bm-filter { width: 100%; }
 }
+
+/* pinned bookmarks */
+.bm-head { display: flex; align-items: center; gap: 7px; margin: 26px 0 12px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.bm-head:first-child { margin-top: 4px; }
+.bm-head svg { width: 14px; height: 14px; fill: var(--warn); stroke: var(--warn); }
+.bm-pin { position: absolute; top: 8px; left: 8px; width: 30px; height: 30px; border-radius: 8px; background: rgba(0, 0, 0, .55);
+          color: #fff; opacity: 0; transition: opacity .12s, transform .12s; backdrop-filter: blur(6px); }
+.bm-pin:hover { background: rgba(0, 0, 0, .75); color: #fff; transform: scale(1.08); }
+.bm-pin svg { width: 16px; height: 16px; }
+.bm-pin.on { opacity: 1; color: #ffc53d; }
+.bm-pin.on svg { fill: currentColor; }
+.bm-card:hover .bm-pin, .bm-pin:focus-visible { opacity: 1; }
+@media (hover: none) { .bm-pin { opacity: 1; } }

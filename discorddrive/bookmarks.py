@@ -304,6 +304,11 @@ class BookmarkHandlers:
                     mark["title"], mark["edited"] = title, True
             if "description" in body:
                 mark["description"] = _clean(body["description"], 600)
+            if "pinned" in body:                     # pinned bookmarks are shown first
+                if body["pinned"]:
+                    mark["pinned"] = time.time()
+                else:
+                    mark.pop("pinned", None)
             if "note" in body:
                 mark["note"] = str(body["note"] or "")[:4000]
             if "tags" in body:
