@@ -740,6 +740,7 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
                 "parity": bool(d.cfg.parity_enabled),
                 "group": d.cfg.parity_group, "pieces": d.cfg.parity_pieces,
                 "scrub": scrub, "healer": dict(d.healer.stats) if d.healer else {},
+                "lost": [e for e in (d.healer.lost_files(max_age=20) if d.healer else []) if self._shown(e["path"])][:500],
                 "leader": d.maintenance.leader() if d.maintenance else False,
             },
             "devices": devices,

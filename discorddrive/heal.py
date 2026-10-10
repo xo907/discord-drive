@@ -42,6 +42,8 @@ class Healer:
         self._thread = None
         self._running = False
         self.stats = {"rebuilt": 0, "repaired": 0, "lost": 0}
+        self._lost_logged = set()
+        self._lost_list = (0.0, [])       # lost_files(), kept a moment (the dashboard asks every few seconds)
 
     # ------------------------------------------------------------ fetching
     def _fetch(self, mid, sha):
@@ -160,9 +162,82 @@ class Healer:
                 return None
         with self._lock:
             self.stats["lost"] += 1
-        log.error("Piece %s can't be read (gone from Discord, damaged, or encrypted with another key) and can't "
-                  "be rebuilt (no spare pieces, or too many pieces of its group are unreadable)", mid)
+        self._note_lost(mid)
         return None
+
+    # ------------------------------------------------------------ what can't be repaired
+    def _lost(self):
+        try:
+            return json.loads(self.index.kv_get("lost_pieces") or "{}")
+        except ValueError:
+            return {}
+
+    def _note_lost(self, mid):
+        """A piece is gone for good: remember it, and say which files that concerns (once per piece)."""
+        lost = self._lost()
+        first = mid not in lost
+        if first:
+            self._lost_list = (0.0, [])
+            lost[mid] = time.time()
+            if len(lost) > 5000:
+                for old in sorted(lost, key=lost.get)[:len(lost) - 5000]:
+                    lost.pop(old)
+            self.index.kv_set("lost_pieces", json.dumps(lost, separators=(",", ":")))
+        with self._lock:
+            if mid in self._lost_logged:
+                return
+            self._lost_logged.add(mid)
+        use = self.index.piece_users(mid)
+
+        def names(paths):
+            paths = list(dict.fromkeys(paths))
+            return ", ".join(paths[:8]) + (f" and {len(paths) - 8} more" if len(paths) > 8 else "")
+
+        why = "it is gone from Discord, damaged, or encrypted with another key, and there are no (or not enough) spare pieces"
+        if use["files"]:
+            log.error("A part of %s can't be read and can't be rebuilt (%s). %s damaged: bring back an earlier version or a "
+                      "snapshot, or put the file on the drive again from another copy.", names(use["files"]), why,
+                      "This file is" if len(use["files"]) == 1 else "These files are")
+        if use["versions"]:
+            log.warning("A part of an earlier version of %s can't be read and can't be rebuilt; that version can't be "
+                        "brought back in full.", names(v["path"] for v in use["versions"]))
+        if use["snapshots"] and not use["files"]:
+            log.warning("A part of %s as kept in a snapshot can't be read and can't be rebuilt.",
+                        names(s["path"] for s in use["snapshots"]))
+        if use["protects"] and not (use["files"] or use["versions"] or use["snapshots"]):
+            log.warning("A spare piece of %s is gone and can't be rebuilt. The %s still fully readable, with less protection "
+                        "than before.", names(use["protects"]), "file is" if len(use["protects"]) == 1 else "files are")
+        if not any(use.values()):
+            log.error("Piece %s can't be read and can't be rebuilt (%s).", mid, why)
+
+    def lost_files(self, max_age=0.0):
+        """Files (and earlier versions, and snapshot copies) with a part that can't be repaired, as they are now:
+        [{"path", "kind": file | version | snapshot | spare, "pieces", "found", "at"}]. Pieces that are no longer
+        used, or were repaired after all, drop out."""
+        if max_age and time.time() - self._lost_list[0] < max_age:
+            return self._lost_list[1]
+        lost = self._lost()
+        out, keep = {}, {}
+        for mid, found in lost.items():
+            if not self.index.is_referenced(mid):
+                continue
+            keep[mid] = found
+            use = self.index.piece_users(mid)
+            entries = [("file", p, None) for p in use["files"]] + [("version", v["path"], v["at"]) for v in use["versions"]]
+            if not use["files"]:
+                entries += [("snapshot", s["path"], s["at"]) for s in use["snapshots"][:1]]
+            if not entries:
+                entries = [("spare", p, None) for p in use["protects"]]
+            for kind, path, at in entries:
+                e = out.setdefault((kind, path, at), {"path": path, "kind": kind, "pieces": 0, "found": found, "at": at})
+                e["pieces"] += 1
+                e["found"] = min(e["found"], found)
+        if len(keep) != len(lost):
+            self.index.kv_set("lost_pieces", json.dumps(keep, separators=(",", ":")))
+        order = {"file": 0, "version": 1, "snapshot": 2, "spare": 3}
+        result = sorted(out.values(), key=lambda e: (order[e["kind"]], e["path"].lower()))
+        self._lost_list = (time.time(), result)
+        return result
 
     def _remember(self, mid, data):
         """Keep a rebuilt piece in the read cache (RAM), so reading it again needs no second rebuild."""

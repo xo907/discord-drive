@@ -655,6 +655,23 @@ class Index:
             row = self.db.execute("SELECT size, sha256 FROM parity_shards WHERE message_id=? LIMIT 1", (mid,)).fetchone()
             return ("parity", row[0], row[1]) if row else None
 
+    def piece_users(self, mid):
+        """What a stored piece belongs to: {"files": [paths], "versions": [{path, at, reason}],
+        "snapshots": [{path, at}], "protects": [paths of files it is a spare piece for]}."""
+        with self.lock:
+            db = self.db
+            files = sorted({self._path(db, r[0]) for r in db.execute("SELECT DISTINCT node_id FROM chunks WHERE message_id=?", (mid,))})
+            versions = [{"path": r["path"] or "/" + r["name"], "at": r["superseded"], "reason": r["reason"]} for r in db.execute(
+                "SELECT DISTINCT v.id, v.path, v.name, v.superseded, v.reason FROM version_chunks c JOIN versions v ON v.id = c.version_id "
+                "WHERE c.message_id=? ORDER BY v.superseded DESC", (mid,))]
+            snapshots = [{"path": r["path"], "at": r["at"]} for r in db.execute(
+                "SELECT DISTINCT e.path, s.at FROM snapshot_chunks c JOIN snapshot_entries e ON e.id = c.entry_id "
+                "JOIN snapshots s ON s.id = c.snap_id WHERE c.message_id=? ORDER BY s.at DESC LIMIT 50", (mid,))]
+            protects = sorted({self._path(db, r[0]) for r in db.execute(
+                "SELECT DISTINCT k.node_id FROM parity_shards s JOIN parity_members m ON m.gid = s.gid "
+                "JOIN chunks k ON k.message_id = m.message_id WHERE s.message_id=?", (mid,))})
+        return {"files": files, "versions": versions, "snapshots": snapshots, "protects": protects}
+
     def referenced_mids(self):
         """Every stored piece the drive needs (for the background check), in upload order."""
         with self.lock:

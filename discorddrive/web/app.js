@@ -1259,6 +1259,18 @@ function renderHealth(quiet) {
            sc.last_pass ? "last full check" : (hl.leader ? "pieces, first check running" : "another device checks"), checkPct),
       stat("Repaired", Number((sc.repaired || 0) + (hl.healer.repaired || 0)).toLocaleString(),
            (sc.lost || hl.healer.lost) ? `${sc.lost || hl.healer.lost} could not be rebuilt` : "nothing lost")),
+    (hl.lost || []).length ? [
+      h("h2", { class: "warn-text" }, "Parts that can't be repaired"),
+      h("p", { class: "muted", style: "margin:0 0 12px;max-width:680px" }, "A part of these is gone from Discord (or unreadable) and there were not enough spare pieces to rebuild it. A damaged file can be replaced by an earlier version or a snapshot copy if one is intact, or by putting it on the drive again from another copy."),
+      h("div", { class: "list rows-simple" }, hl.lost.map((e) => {
+        const what = { file: "This file is damaged", version: `An earlier version (${e.at ? when(e.at) : "older"}) can't be brought back in full`,
+                       snapshot: `Its copy in a snapshot (${e.at ? when(e.at) : "older"}) is damaged`, spare: "Still fully readable, with less protection" }[e.kind];
+        return h("a", { class: "row", href: "#/files" + enc(parent(e.path)), style: "grid-template-columns:minmax(0,1fr) auto auto" },
+          h("span", { class: "name" }, icon(e.kind === "spare" ? "info" : kind(e.path) === "pdf" ? "text" : kind(e.path)),
+            h("span", { style: "min-width:0" }, h("span", { class: "label" }, base(e.path)), h("div", { class: "where" }, `${parent(e.path)} · ${what}`))),
+          h("span", { class: "size" }, plural(e.pieces, "part")),
+          h("span", { class: "date" }, `found ${ago(e.found)}`));
+      }))] : null,
     h("div", { class: "health-actions" },
       h("a", { class: "btn ghost", href: "#/check" }, "Check files for problems…")),
     h("h2", {}, "Storage"),

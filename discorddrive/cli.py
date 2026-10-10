@@ -1559,6 +1559,17 @@ def cmd_health(args):
                   f"lost: {sc.get('lost', 0):,})")
         print(f"{'Snapshots:':20}{st['snapshots']:,}")
         healer = Healer(cfg, idx, j.backend, crypto=crypto)
+        damaged = healer.lost_files()
+        if damaged:
+            print()
+            print("--- Parts that can't be repaired ---")
+            words_ = {"file": "this file is damaged", "version": "an earlier version can't be brought back in full",
+                      "snapshot": "its copy in a snapshot is damaged", "spare": "still readable, with less protection"}
+            for e in damaged[:200]:
+                print(f"  [!] {e['path']}  ({e['pieces']} part(s): {words_[e['kind']]})")
+            if len(damaged) > 200:
+                print(f"  ... and {len(damaged) - 200} more")
+            print("Bring a damaged file back from an earlier version or a snapshot, or put it on the drive again.")
         if args.protect:
             from .uploader import parity_shape
             k, _ = parity_shape(cfg, 10)

@@ -3,6 +3,16 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.2.3 (2026-10-09)
+
+- When a part can't be repaired, the drive says which files are affected. The log names them once
+  ("A part of /Photos/a.jpg can't be read and can't be rebuilt") instead of only a piece number, and
+  tells a damaged file apart from a damaged earlier version, a damaged snapshot copy, and a lost
+  spare piece (the file is then still fully readable, with less protection).
+- Health in the dashboard and the `health` command list them under "Parts that can't be repaired",
+  with how many parts and since when. The list follows renames and moves, and an entry goes away when
+  the file is replaced, deleted for good, or the part turns out to be repairable after all.
+
 ## 1.2.2 (2026-10-09)
 
 - The pictures and the list that Bookmarks keeps in /Bookmarks no longer show up in Recent, Activity

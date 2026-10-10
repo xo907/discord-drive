@@ -566,6 +566,12 @@ devices).
   computer: on your home network with `web_lan`, or from anywhere only if you forward the port
   yourself (not recommended).
 
+**When a part can't be repaired** (too many pieces of one group lost, or a file uploaded before spare
+pieces existed), the drive names the files concerned: once in the log, and under **Health → Parts that
+can't be repaired** in the dashboard and in `health`. It tells a damaged file from a damaged earlier
+version or snapshot copy, and from a lost spare piece (that file still reads fine). Bring a damaged
+file back from an earlier version or a snapshot, or put it on the drive again from another copy.
+
 ## Faster uploads with more bots
 
 Discord limits how fast each bot may post messages. Uploads already send several pieces at once,
