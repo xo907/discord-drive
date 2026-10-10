@@ -402,7 +402,7 @@ deleted [<folder>]                   List deleted files that can still be recove
 undelete <path>                      Recover a deleted file
 purge <path> [--all]                 Delete a deleted file (or everything deleted under a folder) for good
 verify [<path>]                      Check that files can be downloaded and decrypted
-log [-n 30] [--errors]               Show the end of the log file
+log [-n 30] [--errors] [--clear]     Show the end of the log file, or empty it
 approve-keys                         Send the key to a new device that asked for it
 request-key                          Ask one of your other devices for the key
 export-key                           Show the encryption key, to copy it to another device

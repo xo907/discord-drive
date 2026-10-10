@@ -1638,6 +1638,7 @@ let logTimer = null;
 let logAfter = 0;
 let logLines = [];
 let logPaused = false;
+let logGen = null;
 let logLevel = "all";
 const LEVELS = { all: () => true, info: (l) => l !== "DEBUG", warn: (l) => l === "WARNING" || l === "ERROR" || l === "CRITICAL",
                  error: (l) => l === "ERROR" || l === "CRITICAL" };
@@ -1663,11 +1664,17 @@ async function renderLog() {
     const text = logLines.map((l) => `${new Date(l.t * 1000).toISOString()} [${l.l}] ${l.n}: ${l.m}`).join("\n");
     download(URL.createObjectURL(new Blob([text], { type: "text/plain" })), "discorddrive-log.txt");
   } }, "Download");
+  const clear = h("button", { class: "btn ghost small", onclick: async () => {
+    if (!await ask({ title: "Clear the log?", ok: "Clear", danger: true,
+                     text: "Empties the list here and the log file on the computer running the drive. Download it first if you may need it." })) return;
+    const r = await attempt(() => api("/api/log/clear", {}));
+    if (r) { logLines = []; logAfter = 0; drawLog(); toast(r.file ? "Log cleared" : "Cleared here; the log file could not be emptied"); }
+  } }, "Clear");
   const box = h("div", { class: "log-box", role: "log", "aria-live": "off" });
   page(h("h1", {}, "Log"),
        h("p", { class: "lede" }, "Everything the drive is doing, live: uploads and downloads with their progress, then every log line."),
        h("h2", {}, "Now"), now,
-       h("div", { class: "log-bar" }, h("h2", { style: "margin:0" }, "Log"), chips, search, h("div", { class: "actions" }, pause, save)),
+       h("div", { class: "log-bar" }, h("h2", { style: "margin:0" }, "Log"), chips, search, h("div", { class: "actions" }, pause, save, clear)),
        box);
 
   function drawLog() {
@@ -1702,6 +1709,11 @@ async function renderLog() {
       if (a.sync.failures) sum.push("Can't reach Discord right now; retrying");
       if (a.check && a.check.total) sum.push(`Background check: ${Number(a.check.done || 0).toLocaleString()} of ${Number(a.check.total).toLocaleString()} pieces`);
       now.replaceChildren(h("div", { class: "act-sum" }, sum.length ? sum.join(" · ") : "Nothing is uploading or downloading right now."), ...parts);
+    }
+    if (lg && lg.gen !== undefined && lg.gen !== logGen) {       // cleared (here, in another tab or in the terminal)
+      if (logGen !== null) logLines = [];
+      logGen = lg.gen;
+      if (!lg.lines.length) drawLog();
     }
     if (lg && lg.lines.length) {
       logLines = logLines.concat(lg.lines).slice(-5000);

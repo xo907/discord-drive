@@ -3,6 +3,12 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.2.5 (2026-10-09)
+
+- The log can be cleared: a Clear button in the dashboard's Log tab (next to Download), `log --clear`,
+  and menu 9 → Clear the log. It empties both the list in the Log tab and the log file on that
+  computer; other open Log tabs empty too.
+
 ## 1.2.4 (2026-10-09)
 
 - Snapshots can be deleted for good from the dashboard: the menu on each snapshot (or right-click),

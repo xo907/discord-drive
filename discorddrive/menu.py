@@ -707,6 +707,7 @@ def tools_menu():
             ("1", "Check that files can be downloaded and decrypted (verify)"),
             ("2", "Show recent problems"),
             ("3", "Show the log"),
+            ("15", "Clear the log"),
             (None, None),
             ("4", "Show my recovery phrase (the 24 words that are this drive's key)"),
             ("5", "Add an older encryption key"),
@@ -746,6 +747,10 @@ def tools_menu():
             cli("log", "--errors", "-n", "25")
         elif pick == "3":
             cli("log", "-n", "40")
+        elif pick == "15":
+            if confirm("Empty the log file and the dashboard's Log tab?", default=False):
+                print()
+                cli("log", "--clear")
         elif pick == "4":
             warn("These 24 words are the key to your drive: anyone who has them can read your files.")
             info("Make sure nobody is looking at your screen.")

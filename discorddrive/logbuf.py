@@ -16,6 +16,8 @@ class LogBuffer(logging.Handler):
         self._lines = collections.deque(maxlen=size)
         self._seq = 0
         self._lock = threading.Lock()
+        self.gen = 0                      # goes up when the log is cleared (open Log tabs then start afresh)
+        self._file_size = None
 
     def _add(self, t, level, name, msg):
         with self._lock:
@@ -32,6 +34,21 @@ class LogBuffer(logging.Handler):
         with self._lock:
             out = [r for r in self._lines if r["i"] > after]
         return out[-limit:]
+
+    def clear(self):
+        with self._lock:
+            self._lines.clear()
+            self.gen += 1
+
+    def follow_file(self, path):
+        """Notice the log file having been emptied from outside (`log --clear`) and forget the lines here too."""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return
+        if self._file_size is not None and size < self._file_size:
+            self.clear()
+        self._file_size = size
 
     def seed_from_file(self, path, lines=400):
         """Start with the end of the log file, so the tab isn't empty right after a start."""
@@ -57,6 +74,18 @@ class LogBuffer(logging.Handler):
 
 BUFFER = LogBuffer()
 _installed = False
+
+
+def clear_file(path):
+    """Empty the log file (the drive keeps writing to it; new lines follow at its start)."""
+    try:
+        with open(path, "r+", encoding="utf-8") as f:
+            f.truncate(0)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 def install(log_path=None):

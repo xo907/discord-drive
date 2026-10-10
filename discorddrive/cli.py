@@ -580,6 +580,14 @@ def cmd_log(args):
     if not os.path.exists(path):
         print(f"No log yet ({path}).")
         return 0
+    if args.clear:
+        from .logbuf import clear_file
+        size = os.path.getsize(path)
+        if not clear_file(path):
+            print(f"[ERROR] Could not empty {path} (is another program holding it open?).")
+            return 1
+        print(f"[OK] Log cleared ({_human(size)} removed). The dashboard's Log tab empties too.")
+        return 0
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
     if args.errors:
@@ -2305,6 +2313,7 @@ def main():
     p_log = subparsers.add_parser("log", help="Show the end of the log file")
     p_log.add_argument("-n", "--lines", type=int, default=30, help="Number of lines (default 30)")
     p_log.add_argument("--errors", action="store_true", help="Only warnings and errors")
+    p_log.add_argument("--clear", action="store_true", help="Empty the log")
     p_config = subparsers.add_parser("config", help="Show or change a setting (e.g. config cache_mode memory)")
     p_config.add_argument("key", nargs="?", help="Setting name")
     p_config.add_argument("value", nargs="?", help="New value")

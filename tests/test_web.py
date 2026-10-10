@@ -442,6 +442,28 @@ class WebTest(helpers.DriveTest):
         self.assertEqual(b.index.snapshots(), [])
         self.assertEqual(self.read(self.d, "/v.txt"), b"first")           # the files themselves are untouched
 
+    def test_clear_the_log(self):
+        self.login()
+        logging.getLogger("discorddrive.test").warning("something worth clearing")
+        first = json.loads(self.req("GET", "/api/log")[2])
+        self.assertIn("something worth clearing", " ".join(r["m"] for r in first["lines"]))
+        self.assertEqual(self.req("POST", "/api/log/clear", {})[0], 200)
+        after = json.loads(self.req("GET", "/api/log")[2])
+        self.assertEqual(after["gen"], first["gen"] + 1)
+        self.assertEqual([r["m"] for r in after["lines"]], ["The log was cleared."])
+        # the file being emptied from the terminal is noticed too
+        from discorddrive.logbuf import BUFFER, clear_file
+        path = os.path.join(self.tmp, "drive.log")
+        with open(path, "w") as f:
+            f.write("12:00:00 [INFO] discorddrive.x: a line\n" * 50)
+        BUFFER._file_size = None
+        BUFFER.follow_file(path)
+        self.assertEqual(BUFFER.gen, after["gen"])
+        self.assertTrue(clear_file(path))
+        self.assertEqual(os.path.getsize(path), 0)
+        BUFFER.follow_file(path)
+        self.assertEqual(BUFFER.gen, after["gen"] + 1)
+
     def test_status(self):
         self.login()
         st = json.loads(self.req("GET", "/api/status")[2])

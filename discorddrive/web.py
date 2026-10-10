@@ -817,8 +817,27 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
             after = int(q.get("after") or 0)
         except ValueError:
             after = 0
-        self._json({"lines": [r for r in BUFFER.since(after, 2000 if not after else 1000)
-                              if not self._names_locked(r.get("m") or json.dumps(r))]})
+        if not getattr(self.drive, "local_test_dir", None):
+            BUFFER.follow_file(self._log_path())
+        self._json({"gen": BUFFER.gen, "lines": [r for r in BUFFER.since(after, 2000 if not after else 1000)
+                                                 if not self._names_locked(r.get("m") or json.dumps(r))]})
+
+    @staticmethod
+    def _log_path():
+        from .config import default_data_dir
+        return os.path.join(default_data_dir(), "discorddrive.log")
+
+    def _post_api_log_clear(self):
+        """Empty the log: the lines shown in the Log tab and the log file on this computer."""
+        from .logbuf import BUFFER, clear_file
+        self._body_json()
+        ok = True
+        if not getattr(self.drive, "local_test_dir", None):
+            ok = clear_file(self._log_path())
+            BUFFER._file_size = 0
+        BUFFER.clear()
+        log.info("The log was cleared.")
+        self._json({"ok": True, "file": ok})
 
     def _get_api_changelog(self):
         import sys
