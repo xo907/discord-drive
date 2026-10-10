@@ -741,7 +741,7 @@ def tools_menu():
                 print()
                 cli("export-key")
         elif pick == "5":
-            info("Paste the key (64 hex characters), or the path of another device's config.json.")
+            info("Paste the key (64 hex characters): on the device that has it, 'export-key' shows it.")
             print()
             value = ask("Key or file")
             if value:

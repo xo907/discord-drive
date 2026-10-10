@@ -6,6 +6,12 @@ Linux:   config in ~/.config/DiscordDrive/config.json, data in ~/.local/share/Di
 
 Nothing is ever read from the current directory or the source checkout, so the
 bot token and encryption key never end up inside a git repository or synced folder.
+
+The secrets in the file (SECRET_FIELDS) are not stored readable: they are kept together in one
+entry, "protected", encrypted for this computer and account (see secretbox.py). A file written by
+hand or by an older version, with the secrets in the clear, is accepted; it is rewritten protected
+when the drive starts (Config.protect_file), not by other commands: an older version of the drive
+that is still running would not understand the new form and could lose the secrets.
 """
 
 import json
@@ -67,6 +73,18 @@ def config_path() -> str:
     return os.environ.get("DISCORDDRIVE_CONFIG") or DEFAULT_CONFIG_PATH
 
 MiB = 1024 * 1024
+SECRET_FIELDS = ("bot_token", "encryption_key", "encryption_salt", "old_encryption_keys", "extra_bot_tokens",
+                 "web_token", "web_password")
+_warned = set()
+
+
+def _note(text):
+    """Tell the person at the terminal (once per run), and the log."""
+    if text in _warned:
+        return
+    _warned.add(text)
+    import logging
+    logging.getLogger("discorddrive.config").warning(text)      # with no log set up yet, this goes to the terminal
 
 
 @dataclass
@@ -128,6 +146,10 @@ class Config:
     lock_timeout_minutes: float = 15.0  # password-locked folders lock again after this long (0 = until the drive restarts)
     sync_jobs: list = field(default_factory=list)  # folders kept in sync with the drive ('sync add', dashboard Sync)
     sync_remote_edit: bool = False     # let the dashboard on other devices add or change sync folders
+    protect_config: bool = True        # keep the secrets in this file encrypted for this computer and account
+
+    protect_error = None               # why the protected secrets could not be read (not saved)
+    _unreadable = None
 
     @property
     def resolved_data_dir(self) -> str:
@@ -155,26 +177,98 @@ class Config:
             for k, v in raw.items():
                 if k in known:
                     setattr(cfg, k, v)
+            in_clear = [k for k in SECRET_FIELDS if raw.get(k)]
+            if raw.get("protected"):
+                from . import secretbox
+                try:
+                    secrets_ = json.loads(secretbox.unprotect(raw["protected"]))
+                    for k in SECRET_FIELDS:
+                        if k in secrets_ and k not in in_clear:      # something typed into the file by hand wins
+                            setattr(cfg, k, secrets_[k])
+                except (secretbox.ProtectError, ValueError) as e:
+                    # Keep what we can't read (it may be readable again as the right user) and say so.
+                    cfg._unreadable = raw["protected"]
+                    cfg.protect_error = (
+                        f"The secrets in {path} (bot token, encryption key) can't be read here: {str(e).rstrip('.')}. They are "
+                        "encrypted for the computer and account that wrote the file. On that account they work; "
+                        f"anywhere else run '{launcher()} setup' and enter the bot token and your encryption "
+                        "password (or the key from 'export-key').")
+                    _note(cfg.protect_error)
         # Environment overrides (handy for scripts / not storing the token on disk).
         cfg.bot_token = os.environ.get("DISCORDDRIVE_TOKEN", cfg.bot_token)
         cfg.channel_id = os.environ.get("DISCORDDRIVE_CHANNEL", cfg.channel_id)
         cfg.mount_point = normalize_mount_point(cfg.mount_point)
         return cfg
 
-    def save(self, path: str = None) -> None:
+    @staticmethod
+    def _in_clear(path, partly=False) -> bool:
+        """True when the file at `path` holds its secrets readable (written by hand or an older version).
+        partly: also when only some were typed into an otherwise protected file."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return False
+        return isinstance(raw, dict) and (partly or not raw.get("protected")) and any(raw.get(k) for k in SECRET_FIELDS)
+
+    def protection(self, path: str = None) -> str:
+        """How the secrets of the saved file are kept, in words."""
+        from . import secretbox
+        if not self.protect_config:
+            return "not encrypted (protect_config is off)"
+        if self._in_clear(path or config_path()):
+            return "not encrypted yet (they will be when the drive is next started)"
+        return secretbox.HOW[secretbox.METHOD]
+
+    @classmethod
+    def protect_file(cls, path: str = None) -> bool:
+        """Rewrite a file that holds its secrets readable so that they are encrypted (when the drive starts)."""
+        path = path or config_path()
+        if not cls._in_clear(path, partly=True):
+            return False
+        cfg = cls.load(path)
+        if not cfg.protect_config or not cfg.save(path, protect=True):
+            return False
+        _note(f"The secrets in {path} (bot tokens, encryption keys) are now {cfg.protection(path)}; a copy of "
+              "the file no longer contains them. Keep your encryption password (or the key shown by "
+              f"'{launcher()} export-key') somewhere safe outside this computer.")
+        return True
+
+    def save(self, path: str = None, protect: bool = None) -> bool:
+        """Write the file. Returns True when its secrets were stored encrypted.
+
+        A file that still has readable secrets keeps that form unless `protect` is true (see the
+        note at the top about older versions); new files and protected ones are written protected."""
         path = path or config_path()
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        tmp = path + ".tmp"
+        data = asdict(self)
+        protected = False
+        secrets_ = {k: data[k] for k in SECRET_FIELDS if data[k]}
+        if protect is None:
+            protect = not self._in_clear(path)
+        if self.protect_config and protect and secrets_:
+            from . import secretbox
+            try:
+                data["protected"] = secretbox.protect(json.dumps(secrets_, separators=(",", ":")).encode("utf-8"))
+                for k in secrets_:
+                    data[k] = [] if isinstance(data[k], list) else ""
+                protected = True
+            except secretbox.ProtectError as e:
+                _note(f"The secrets in the config file could not be encrypted ({e}); they are stored readable.")
+        elif not secrets_ and getattr(self, "_unreadable", None):
+            data["protected"] = self._unreadable          # written elsewhere and unreadable here: don't destroy it
+        tmp = f"{path}.{os.getpid()}.tmp"
         # The file holds the bot token and encryption key: keep it private on POSIX.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(asdict(self), f, indent=2)
+            json.dump(data, f, indent=2)
         os.replace(tmp, path)
         if sys.platform != "win32":
             try:
                 os.chmod(path, 0o600)
             except OSError:
                 pass
+        return protected
 
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.channel_id)

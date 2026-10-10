@@ -59,6 +59,8 @@ class DiscordDrive:
             log.info("Running in mock mode using local directory: %s", self.local_test_dir)
             self.backend = LocalBackend(self.local_test_dir)
         else:
+            if getattr(self.cfg, "protect_error", None):
+                raise ValueError(self.cfg.protect_error)
             if not self.cfg.is_configured():
                 raise ValueError(
                     f"DiscordDrive is not configured yet. Run '{launcher()} setup' or provide bot_token and channel_id."
@@ -90,6 +92,12 @@ class DiscordDrive:
                 saved = Config.load()
                 saved.device_id = self.cfg.device_id
                 saved.save()
+
+        if not self.local_test_dir:
+            try:
+                Config.protect_file()      # secrets written readable by an older version: encrypt them now
+            except Exception as e:
+                log.warning("Could not encrypt the secrets in the config file: %s", e)
 
         from . import logbuf
         from .config import default_data_dir

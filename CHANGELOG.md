@@ -3,6 +3,23 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.12.0 (2026-10-09)
+
+- The config file no longer holds its secrets readable. Bot tokens, encryption keys and the dashboard
+  sign-in are stored encrypted for the computer and account they belong to: on Windows with the
+  account's own protection (DPAPI), on Linux and Raspberry Pi with a key file kept apart from the
+  config (<data dir>/machine.key, readable by you only) together with the machine's id. A copy of the
+  file (a backup, a synced folder, a screenshot, a support request) gives nothing away.
+- Automatic on every device: nothing to set up or type, and the drive still starts by itself. An
+  existing config is converted the first time this version of the drive starts. Ordinary settings stay
+  readable and can still be edited by hand; a token or key typed into the file is picked up and
+  encrypted at the next start.
+- Because a copy of the config file is no longer a copy of your key, keep your encryption password (or
+  the key from `export-key`) somewhere outside the computer. A config moved to another computer or
+  account says clearly that its secrets can't be read there and asks for `setup`.
+- `config` shows how the secrets are kept. `config protect_config false` turns this off (the secrets
+  are then written readable again).
+
 ## 0.11.0 (2026-10-09)
 
 - Password-locked folders and files. A locked item, and everything in it, is gone from the drive

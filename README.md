@@ -144,7 +144,8 @@ other devices**:
 
 (You can also type your encryption password, or paste the key from `export-key`, instead.)
 
-> **Back up your encryption password** (or the `encryption_key` from the config file). Without it,
+> **Back up your encryption password** (or the key that `export-key` shows; a copy of the config file
+> is not a backup of it, see [The config file](#the-config-file)). Without it,
 > the data in Discord cannot be decrypted. Nobody can recover it for you.
 
 ---
@@ -434,6 +435,32 @@ and every extra bot adds the same again:
 
 Each device can use its own set of extra bots; any bot in the channel can read every piece.
 
+## The config file
+
+The config file (`%APPDATA%\DiscordDrive\config.json`, or `~/.config/DiscordDrive/config.json`) holds
+your settings and the secrets the drive needs: bot tokens, encryption keys, the dashboard sign-in. The
+secrets are not stored readable. They sit in one entry, `protected`, encrypted for the computer and
+account they belong to:
+
+- **Windows**: with the account's own protection (DPAPI). Only your Windows account on that computer
+  can decrypt them.
+- **Linux / Raspberry Pi**: with a key made from a key file kept apart from the config
+  (`~/.local/share/DiscordDrive/machine.key`, readable by you only), the machine's id and your user id.
+
+So a copy of the file, in a backup, a synced folder, a screenshot or a message asking for help, gives
+nothing away. It is automatic: nothing to type, the drive still starts by itself, and a config from an
+earlier version is converted the first time the drive starts. Settings stay readable and editable; a
+token or key you type into the file by hand is picked up and encrypted at the next start.
+
+- **Keep your encryption password or key elsewhere.** A copy of the config is no longer a copy of the
+  key: after reinstalling Windows, resetting the account's password from outside, or moving to a new
+  machine, the secrets can't be read and `setup` asks for the bot token and your encryption password
+  again (or the key from `export-key`, or let another of your devices send it).
+- **What it doesn't do**: a program running as you on that computer can ask for the secrets the same
+  way DiscordDrive does, and while the drive runs the key is in memory. It protects the file, not a
+  computer someone else already controls.
+- `config` shows how the secrets are kept; `config protect_config false` stores them readable again.
+
 ## Password-locked folders
 
 Lock a folder or a file with a password and it is gone, with everything in it, until the password is
@@ -457,7 +484,7 @@ files, snapshots, shared links, the log), on all your devices. Not even its name
 
 What it is and isn't: a lock is a gate, not a second layer of encryption. Locked files are encrypted
 with the drive's key like all others. It keeps out anyone using your computer, the drive letter or the
-dashboard; it does not stop someone who has your config file (the key) and technical skill. While a
+dashboard; it does not stop someone with technical skill who can run programs as you on that computer. While a
 folder is unlocked on the drive letter, every program on that computer can read it, and Windows may
 remember file names it saw (recent files, Explorer's thumbnail cache). The log *file* on disk and the
 terminal commands (`deleted`, `versions`) still name locked files; the dashboard's Log tab does not.
@@ -534,7 +561,7 @@ automatically; menu **10** on the device that has the key approves it). How it s
 
 Every device needs the **same bot token, channel, and encryption key**. Either use the same
 passphrase during `setup` (the key is derived from the passphrase and the channel ID, so it comes
-out identical), or copy `encryption_key` from the first device's config. If `setup` sees that the
+out identical), or run `export-key` on the first device and give the key to `setup -k`. If `setup` sees that the
 channel already holds an encrypted drive, it refuses to generate a new random key.
 
 Devices stay in sync while they are running:
@@ -754,8 +781,8 @@ on Linux (background starts also write `mount.log` next to it).
   files.** The devices are using different keys, usually because `setup` was run again with a
   password and replaced the original key. Compare the fingerprints in `status`. Nothing is lost:
   give each device the key the others are missing with `add-old-key`; it keeps reading with every
-  key it knows while new data uses its current key. Easiest: copy a working device's config file
-  over and run `add-old-key --from-config <that file>`, then stop and start the drive. Current
+  key it knows while new data uses its current key. Easiest: run `export-key` on a working device,
+  paste the key into `add-old-key` on the other, then stop and start the drive. Current
   versions of `setup` always keep the previous key, and older keys travel inside the encrypted
   index, so a new device set up with the password can read everything.
 - **"Found index checkpoint ... could not restore it" / "Decryption / authentication failed".** This

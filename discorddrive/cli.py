@@ -478,6 +478,7 @@ def cmd_config(args):
                 shown = f"{len(value)} folder(s), see 'sync list'"
             print(f"{name:24} {shown}")
         print(f"\nConfig file: {config_path()}  (restart the drive after changing settings)")
+        print(f"Secrets in it (bot tokens, keys, dashboard sign-in): {cfg.protection()}")
         return 0
     if args.key not in types:
         print(f"[ERROR] Unknown setting '{args.key}'. Run 'config' to list them.")
@@ -661,14 +662,16 @@ def cmd_add_old_key(args):
     cfg = Config.load()
     candidates = []
     if args.from_config:
-        import json
         try:
-            with open(args.from_config, "r", encoding="utf-8") as f:
-                other = json.load(f)
-        except (OSError, ValueError) as e:
+            other = Config.load(args.from_config)
+        except (OSError, ValueError, SystemExit) as e:
             print(f"[ERROR] Could not read {args.from_config}: {e}")
             return 1
-        candidates = [other.get("encryption_key", "")] + list(other.get("old_encryption_keys") or [])
+        if getattr(other, "protect_error", None):
+            print("[ERROR] The keys in that file are encrypted for the device it comes from, so they can't be read "
+                  f"here. On that device run '{launcher()} export-key' and paste the key instead.")
+            return 1
+        candidates = [other.encryption_key] + list(other.old_encryption_keys or [])
     else:
         raw = args.key if args.key and args.key != "-" else sys.stdin.readline()
         candidates = [raw]
