@@ -694,6 +694,9 @@ that moment. Its pieces are kept until it expires after `snapshot_keep_days` (14
 are changed or deleted meanwhile. Snapshots cost no space until files change.
 
 - `snapshots` lists them, `snapshots create` takes one now (menu 7 → Snapshots).
+- `snapshots delete <n>` (or `all`) deletes a snapshot for good, on every device; in the dashboard use
+  the menu on a snapshot, or **Delete all**. Your current files are not touched; contents that only
+  that snapshot still kept are removed from Discord and can't be brought back.
 - `snapshot-restore 2 /Photos` brings `/Photos` back as it was in snapshot 2, into a new folder
   `Restored <date>`, so nothing you have now changes. `--in-place` puts files back where they were
   instead (their current content is kept as an earlier version, so that can be undone too).

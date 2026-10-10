@@ -451,6 +451,7 @@ def files_menu():
             ("8", "Snapshots of the whole drive"),
             ("9", "Restore a folder from a snapshot"),
             ("10", "Take a snapshot now"),
+            ("16", "Delete a snapshot for good"),
             (None, None),
             ("12", "Lock a folder or file with a password"),
             ("13", "Unlock: show locked folders on this device's drive"),
@@ -527,6 +528,17 @@ def files_menu():
         elif pick == "10":
             page(MAIN, title, "Take a snapshot")
             cli("snapshots", "create")
+        elif pick == "16":
+            page(MAIN, title, "Delete a snapshot")
+            cli("snapshots")
+            print()
+            info("Deleting a snapshot can't be undone. Your files as they are now are not touched; what only that")
+            info("snapshot still kept (older contents of changed and deleted files) is removed from Discord.")
+            print()
+            n = ask("Snapshot number to delete, or 'all' (Enter = cancel)")
+            if n and confirm(f"Delete {'every snapshot' if n == 'all' else 'snapshot ' + n} for good?", default=False):
+                print()
+                cli("snapshots", "delete", n)
         elif pick == "12":
             page(MAIN, title, "Lock with a password")
             info("A locked folder (or file) is gone from the drive and the dashboard, on every device, until it is")

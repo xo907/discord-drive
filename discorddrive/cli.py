@@ -1477,11 +1477,20 @@ def cmd_snapshots(args):
     try:
         snaps = idx.snapshots()
         if action == "delete":
-            snap = _snapshot_by_number(idx, int(args.label or 0))
+            if (args.label or "").strip().lower() == "all":
+                for sn in snaps:
+                    idx.delete_snapshot(sn["id"])
+                print(f"[OK] {len(snaps)} snapshot(s) deleted for good (on every device once the drive syncs).")
+                return 0
+            if not (args.label or "").isdigit():
+                print(f"[ERROR] Give the snapshot's number from '{launcher()} snapshots', or 'all'.")
+                return 1
+            snap = _snapshot_by_number(idx, int(args.label))
             if snap is None:
                 return 1
             idx.delete_snapshot(snap["id"])
-            print(f"[OK] Snapshot of {_fmt_time(snap['at'])} deleted (on every device once the drive syncs).")
+            print(f"[OK] Snapshot of {_fmt_time(snap['at'])} deleted for good (on every device once the drive syncs).")
+            print("     Your current files are untouched; what only this snapshot still kept is removed from Discord.")
             return 0
         if not snaps:
             print("No snapshots yet." + (f" One is taken automatically every {cfg.snapshot_interval_hours:g} hours."
@@ -2306,9 +2315,9 @@ def main():
     p_bots = subparsers.add_parser("bots", help="Extra bots for faster uploads: list, add [token], remove <n>")
     p_bots.add_argument("action", nargs="?", choices=["list", "add", "remove"])
     p_bots.add_argument("token", nargs="?", help="Bot token (add) or number (remove)")
-    p_snaps = subparsers.add_parser("snapshots", help="Snapshots of the whole drive: list, create [label], delete <n>")
+    p_snaps = subparsers.add_parser("snapshots", help="Snapshots of the whole drive: list, create [label], delete <n>|all")
     p_snaps.add_argument("action", nargs="?", choices=["list", "create", "delete"])
-    p_snaps.add_argument("label", nargs="?", help="Label (create) or number (delete)")
+    p_snaps.add_argument("label", nargs="?", help="Label (create), or number or 'all' (delete)")
     p_sr = subparsers.add_parser("snapshot-restore", help="Restore a folder (or everything) from a snapshot")
     p_sr.add_argument("number", type=int, help="Snapshot number from 'snapshots'")
     p_sr.add_argument("path", nargs="?", default="/", help="Folder or file in the snapshot (default: everything)")

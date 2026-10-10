@@ -424,6 +424,24 @@ class WebTest(helpers.DriveTest):
         folder = json.loads(body)["folder"]
         self.assertEqual(self.read(self.d, folder + "/v.txt"), b"first")
 
+        # snapshots can be deleted for good
+        self.assertEqual(self.req("POST", "/api/snapshots/create", {"label": "second"})[0], 200)
+        self.assertEqual(self.req("POST", "/api/snapshots/create", {"label": "third"})[0], 200)
+        snaps = json.loads(self.req("GET", "/api/snapshots")[2])["items"]
+        self.assertEqual(len(snaps), 3)
+        self.assertEqual(self.req("POST", "/api/snapshots/delete", {"ids": ["nope"]})[0], 404)
+        status, _, body = self.req("POST", "/api/snapshots/delete", {"ids": [snaps[0]["id"]]})
+        self.assertEqual((status, json.loads(body)["count"]), (200, 1))
+        left = [s["id"] for s in json.loads(self.req("GET", "/api/snapshots")[2])["items"]]
+        self.assertEqual(left, [snaps[1]["id"], snaps[2]["id"]])
+        b = self.drive("bbbb")                                           # and they go on the other devices too
+        self.sync(self.d, b)
+        self.assertEqual({s["id"] for s in b.index.snapshots()}, set(left))
+        self.assertEqual(json.loads(self.req("POST", "/api/snapshots/delete", {"all": True})[2])["count"], 2)
+        self.sync(self.d, b)
+        self.assertEqual(b.index.snapshots(), [])
+        self.assertEqual(self.read(self.d, "/v.txt"), b"first")           # the files themselves are untouched
+
     def test_status(self):
         self.login()
         st = json.loads(self.req("GET", "/api/status")[2])

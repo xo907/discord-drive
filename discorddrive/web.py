@@ -1763,6 +1763,20 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
         sid = self.drive.journal.create_snapshot(label or "Manual", float(self.drive.cfg.snapshot_keep_days or 0))
         self._json({"ok": True, "id": sid})
 
+    def _post_api_snapshots_delete(self):
+        """Delete snapshots for good, on every device. Whatever only they still kept is removed from Discord."""
+        body = self._body_json()
+        idx = self.drive.index
+        have = {s["id"] for s in idx.snapshots()}
+        wanted = have if body.get("all") else {str(i) for i in body.get("ids") or []} & have
+        if not wanted:
+            raise ApiError(404, "no such snapshot")
+        for sid in wanted:
+            idx.delete_snapshot(sid)
+        self.drive.journal.wake()
+        log.info("%d snapshot(s) deleted for good.", len(wanted))
+        self._json({"ok": True, "count": len(wanted)})
+
     def _post_api_snapshots_restore(self):
         body = self._body_json()
         snap = next((s for s in self.drive.index.snapshots() if s["id"] == body.get("id")), None)

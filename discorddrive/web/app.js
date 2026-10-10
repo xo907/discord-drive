@@ -1173,24 +1173,48 @@ async function purgeMany(list) {
 }
 
 // ------------------------------------------------------------------ snapshots
+async function deleteSnapshots(list, all) {
+  const one = list.length === 1 && !all;
+  const ok = await ask({ title: one ? `Delete the snapshot of ${fmtFull.format(new Date(list[0].at * 1000))}?` : `Delete ${all ? "all " : ""}${plural(list.length, "snapshot")}?`,
+                         ok: "Delete for good", danger: true,
+                         text: `${one ? "It is" : "They are"} removed on every device and can't be brought back. Your files as they are now are not touched; what only ${one ? "this snapshot" : "these snapshots"} still kept (older contents of changed and deleted files) is removed from Discord.` });
+  if (!ok) return false;
+  const r = await attempt(() => api("/api/snapshots/delete", all ? { all: true } : { ids: list.map((s) => s.id) }));
+  if (r) toast(`${plural(r.count, "snapshot")} deleted for good`);
+  return !!r;
+}
+
 async function renderSnapshots() {
   const data = await attempt(() => api("/api/snapshots"));
   const items = data ? data.items : [];
   const s = status && status.snapshots;
   const every = s && s.interval ? `A snapshot is taken every ${s.interval} hours and kept ${s.keep} days. ` : "";
   page(h("div", { class: "bar" }, h("h1", { style: "margin:0" }, "Snapshots"),
-         h("div", { class: "actions" }, h("button", { class: "btn", onclick: async (e) => {
-           e.target.disabled = true;
-           if (await attempt(() => api("/api/snapshots/create", { label: "Manual" }), "Snapshot taken")) renderSnapshots();
-           e.target.disabled = false;
-         } }, "Take snapshot now"))),
+         h("div", { class: "actions" },
+           items.length > 1 && h("button", { class: "btn danger", onclick: async () => { if (await deleteSnapshots(items, true)) renderSnapshots(); } }, "Delete all…"),
+           h("button", { class: "btn", onclick: async (e) => {
+             e.target.disabled = true;
+             if (await attempt(() => api("/api/snapshots/create", { label: "Manual" }), "Snapshot taken")) renderSnapshots();
+             e.target.disabled = false;
+           } }, "Take snapshot now"))),
        h("p", { class: "lede" }, `${every}Each one is the whole drive exactly as it was, so you can bring back a folder as it was on a given day.`),
-       items.length ? h("div", { class: "list rows-simple" }, items.map((sn) => h("a", { class: "row", href: `#/snapshot/${sn.id}/` },
-         h("span", { class: "name" }, icon("folder", "folder"), h("span", { class: "label" }, fmtFull.format(new Date(sn.at * 1000))),
-           sn.label && h("span", { class: "tag" }, sn.label)),
-         h("span", { class: "size" }, size(sn.bytes)),
-         h("span", { class: "date" }, plural(sn.files, "file")),
-         h("span", { class: "date" }, sn.keep_until ? `until ${when(sn.keep_until)}` : "kept"))))
+       items.length ? h("div", { class: "list rows-snap" }, items.map((sn) => {
+         const title = fmtFull.format(new Date(sn.at * 1000));
+         const menu = () => [
+           { label: "Open", icon: "enter", run: () => go(`#/snapshot/${sn.id}/`) },
+           "-",
+           { label: "Delete for good…", icon: "trash", danger: true, run: async () => { if (await deleteSnapshots([sn])) renderSnapshots(); } },
+         ];
+         const row = h("a", { class: "row", href: `#/snapshot/${sn.id}/` },
+           h("span", { class: "name" }, icon("folder", "folder"), h("span", { class: "label" }, title),
+             sn.label && h("span", { class: "tag" }, sn.label)),
+           h("span", { class: "size" }, size(sn.bytes)),
+           h("span", { class: "date" }, plural(sn.files, "file")),
+           h("span", { class: "date" }, sn.keep_until ? `until ${when(sn.keep_until)}` : "kept"),
+           menuButton(menu, title, sn.label || "Snapshot"));
+         bindMenu(row, menu, title, sn.label || "Snapshot");
+         return row;
+       }))
        : h("div", { class: "empty" }, h("b", {}, "No snapshots yet"), "Take one now, or wait for the first automatic one."));
 }
 
@@ -1212,7 +1236,8 @@ async function renderSnapshot() {
   const restore = h("button", { class: "btn", onclick: () => restoreFrom(path) }, path === "/" ? "Restore everything" : "Restore this folder");
   page(h("div", { class: "bar" },
          crumbs(path, title, (p) => `#/snapshot/${id}` + enc(p)),
-         h("div", { class: "actions" }, h("a", { class: "btn ghost", href: "#/snapshots" }, "All snapshots"), restore)),
+         h("div", { class: "actions" }, h("a", { class: "btn ghost", href: "#/snapshots" }, "All snapshots"),
+           h("button", { class: "btn danger", onclick: async () => { if (await deleteSnapshots([sn])) go("#/snapshots"); } }, "Delete snapshot…"), restore)),
        list.items.length ? h("div", { class: "list" }, listHead(), list.items.map((it) => {
          const menu = () => [
            it.dir && { label: "Open", icon: "enter", run: () => go(`#/snapshot/${id}` + enc(it.path)) },

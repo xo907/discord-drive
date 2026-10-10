@@ -3,6 +3,14 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.2.4 (2026-10-09)
+
+- Snapshots can be deleted for good from the dashboard: the menu on each snapshot (or right-click),
+  "Delete snapshot" while looking inside one, and "Delete all" on the Snapshots page. Also in the
+  terminal menu (7 → Delete a snapshot for good), and `snapshots delete all` joins `snapshots delete
+  <n>`. Deleting applies on every device; your current files are not touched, and what only that
+  snapshot still kept is removed from Discord.
+
 ## 1.2.3 (2026-10-09)
 
 - When a part can't be repaired, the drive says which files are affected. The log names them once
