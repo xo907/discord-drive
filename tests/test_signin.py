@@ -228,6 +228,37 @@ class SignInTest(helpers.DriveTest):
         self.assertEqual(self.req("POST", "/api/signin/passkey/remove", {"id": pk.b64u(key.id)})[0], 200)
         self.assertEqual(self.req("GET", "/api/signin")[1]["passkeys"], [])
 
+    def test_requests_share_a_connection(self):
+        # browsers send the passkey's two requests (and everything else) over one kept-open connection;
+        # a body that a request didn't need must not spill into the next one
+        self.web.save_cfg(web_user="Dennis")
+        self.sign_in_with_phrase()
+        key = Authenticator("localhost", f"http://{self.host}")
+        conn = http.client.HTTPConnection("127.0.0.1", self.web.port, timeout=10)
+
+        def post(path, body, cookie=True):
+            h = {"Host": self.host, "X-DD": "1", "Content-Type": "application/json"}
+            if cookie:
+                h["Cookie"] = self.cookie
+            conn.request("POST", path, body=json.dumps(body).encode(), headers=h)
+            r = conn.getresponse()
+            data = r.read()
+            self.assertIn("json", r.getheader("Content-Type"), data[:80])
+            return r.status, json.loads(data), r.getheader("Set-Cookie")
+
+        try:
+            _, opts, _ = post("/api/signin/passkey/options", {})
+            self.assertEqual(post("/api/signin/passkey/register", key.create(opts["challenge"]))[0], 200)
+            self.assertEqual(post("/api/locks/lock", {"unused": "x" * 500})[0], 200)
+            self.assertEqual(post("/api/logout", {})[0], 200)
+            status, opts, _ = post("/passkey/options", {}, cookie=False)                 # as the sign-in page does
+            self.assertEqual(status, 200)
+            status, _, cookie = post("/passkey/login", key.get(opts["challenge"]), cookie=False)
+            self.assertEqual(status, 200)
+            self.assertIn("dd_session=", cookie)
+        finally:
+            conn.close()
+
     def test_password_is_optional(self):
         self.web.save_cfg(web_user="Dennis")
         self.sign_in_with_phrase()

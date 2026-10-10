@@ -3,6 +3,13 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.2.1 (2026-10-09)
+
+- Signing in with a passkey works: it failed with "Unexpected token '<' ... is not valid JSON". The
+  first of its two requests left its (empty) body unread on the connection, which garbled the second.
+  The dashboard now always clears a request's unread body before the next one, which also covers Sign
+  out and "Lock again now" (they could make the following request fail in the same way).
+
 ## 1.2.0 (2026-10-09)
 
 - Recovery phrase instead of an encryption password. A drive's key is shown as 24 ordinary words (the

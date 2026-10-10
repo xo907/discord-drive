@@ -278,6 +278,28 @@ class WebServer:
         return _b64(hmac.new(self._secret(b"share"), msg, hashlib.sha256).digest())
 
 
+class _Counted:
+    """The connection's input, counting what is read, so that a request body nobody read can be
+    cleared away before the next request on the same connection (it would be taken for its start)."""
+
+    def __init__(self, raw):
+        self._raw = raw
+        self.n = 0
+
+    def read(self, *args):
+        data = self._raw.read(*args)
+        self.n += len(data)
+        return data
+
+    def readline(self, *args):
+        data = self._raw.readline(*args)
+        self.n += len(data)
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
 class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
     server_version = "DiscordDrive"
     protocol_version = "HTTP/1.1"
@@ -507,13 +529,35 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
     def _do_other(self):
         self._dispatch(self.command)
 
+    def setup(self):
+        super().setup()
+        self.rfile = _Counted(self.rfile)
+
+    def _dispatch(self, method):
+        self.rfile.n = 0                         # from here on: bytes of this request's body
+        try:
+            self._route(method)
+        finally:
+            # Leave nothing of this request behind on the connection.
+            try:
+                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                    left = 0
+                else:
+                    left = int(self.headers.get("Content-Length") or 0) - self.rfile.n
+                if left > 1 << 20:
+                    self.close_connection = True
+                elif left > 0 and not self.close_connection:
+                    self.rfile.read(left)
+            except (OSError, ValueError):
+                self.close_connection = True
+
     do_OPTIONS = do_PROPFIND = do_PROPPATCH = do_MKCOL = do_PUT = do_DELETE = do_MOVE = do_COPY = do_LOCK = do_UNLOCK = _do_other
 
     @staticmethod
     def _media_ext():
         return _MEDIA_EXT
 
-    def _dispatch(self, method):
+    def _route(self, method):
         try:
             self.drive.fs.scope.unlocked = frozenset()     # locked folders: nothing is open until we know who asks
             if not self._host_ok():
