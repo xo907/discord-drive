@@ -3,6 +3,13 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.0.1 (2026-10-09)
+
+- Tests: the request pacing tests no longer fail now and then on Windows. They measured real waits
+  with a clock that only moves in 15.6 ms steps there, so a 75 ms wait could read as 62.5 ms; they now
+  run on a pretend clock and check the exact waits, including the 4x limit and the return to normal
+  after five minutes. Nothing changes in how the drive behaves.
+
 ## 1.0.0 (2026-10-09)
 
 - Home: the dashboard opens on an overview with what is on the drive, how well it is protected, folder
