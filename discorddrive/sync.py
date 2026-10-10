@@ -7,7 +7,9 @@ its config file (`sync_jobs`); what they copy onto the drive syncs to every devi
 
 Modes
     backup           this computer -> drive. New and changed files are copied; files deleted here
-                     stay on the drive.
+                     stay on the drive. Each file is copied once: the job remembers what it has
+                     backed up, so a copy you move, rename or delete on the drive is not put back
+                     (only a file that changes here is copied again).
     mirror           this computer -> drive, exactly: deleting a file here deletes it on the drive
                      too (the drive keeps it under Deleted, so it can be brought back).
     two-way          both ways. Changes and deletions on either side are copied to the other. A file
@@ -238,12 +240,18 @@ def read_status(cfg):
         return {}
 
 
-def request_run(cfg, jid, cancel=False):
-    """Ask the running drive to run (or stop) a job now."""
+def request_run(cfg, jid, cancel=False, again=False):
+    """Ask the running drive to run (or stop) a job now. again: a backup forgets what it already
+    copied, so everything missing on the drive is copied once more."""
     d = sync_dir(cfg)
     os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, ("cancel-" if cancel else "run-") + jid), "w") as f:
+    with open(os.path.join(d, ("cancel-" if cancel else "again-" if again else "run-") + jid), "w") as f:
         f.write(str(time.time()))
+
+
+def backup_state(state_dir, jid):
+    """Where a backup job remembers what it has copied."""
+    return os.path.join(state_dir, f"{jid}.backup.json")
 
 
 def next_daily(at, after):
@@ -411,7 +419,7 @@ class Run:
         self.mode = job["mode"]
         self.excluded = _Excluder(job.get("exclude"))
         self.r = {"up": 0, "down": 0, "deleted_remote": 0, "deleted_local": 0, "moved": 0, "conflicts": 0,
-                  "bytes": 0, "busy": 0, "waiting": 0, "errors": 0, "skipped_deletes": 0,
+                  "bytes": 0, "busy": 0, "waiting": 0, "errors": 0, "skipped_deletes": 0, "kept_away": 0,
                   "files": 0, "remote_files": 0}
         self.problems = []
         self.settled_at = None        # when the newest file held back because it was just written can go
@@ -587,13 +595,27 @@ class Run:
         self.progress(total=len(todo), total_bytes=sum(s for _, s in todo))
 
     # ---------- this computer -> drive
-    def _up(self, L, Ldirs, R, Rdirs, exact):
-        uploads = [(rel, l) for rel, l in L.items() if not same(l, R.get(rel)) and self._settled(rel, l)]
+    def _up(self, L, Ldirs, R, Rdirs, exact, known=None):
+        """known: {rel: (size, mtime)} of what this job has already copied (backup mode). A file that
+        hasn't changed here since then is left alone, wherever its copy on the drive went."""
+        uploads = []
+        for rel, l in L.items():
+            if same(l, R.get(rel)):
+                if known is not None:
+                    known[rel] = l
+            elif known is not None and same(l, known.get(rel)):
+                self.r["kept_away"] += 1         # moved, renamed, changed or deleted on the drive by its owner
+            elif self._settled(rel, l):
+                uploads.append((rel, l))
         self._plan([(rel, l[0]) for rel, l in uploads])
         for rel, l in sorted(uploads):
             self._check()
-            self.upload(rel, l)
+            if self.upload(rel, l) and known is not None:
+                known[rel] = l
         for rel in sorted(Ldirs - Rdirs):
+            if known is not None and not any(r == rel or r.startswith(rel + "/") for r, _ in uploads) \
+                    and any(k.startswith(rel + "/") for k in known):
+                continue                         # a folder that was backed up and then moved away on the drive
             self._check()
             try:
                 self.d.index.makedirs(self._r(rel))
@@ -621,7 +643,26 @@ class Run:
                     self._problem(rel, e)
 
     def _backup(self, L, Ldirs, R, Rdirs):
-        self._up(L, Ldirs, R, Rdirs, exact=False)
+        state_file = backup_state(self.state_dir, self.job["id"])
+        try:
+            with open(state_file, encoding="utf-8") as f:
+                st = json.load(f)
+            if st.get("local") != self.local or st.get("remote") != self.remote:
+                st = {}
+        except (OSError, ValueError):
+            st = {}
+        known = {k: tuple(v) for k, v in (st.get("files") or {}).items() if k in L}
+        try:
+            self._up(L, Ldirs, R, Rdirs, exact=False, known=known)
+        finally:
+            tmp = state_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"local": self.local, "remote": self.remote, "files": known}, f, separators=(",", ":"))
+            os.replace(tmp, state_file)
+        if self.r["kept_away"]:
+            self.problems.append(f"{self.r['kept_away']} file(s) backed up earlier are no longer where the backup put "
+                                 "them on the drive (moved, renamed or deleted there). They are not copied again "
+                                 "unless they change here; “Copy everything again” puts them back.")
 
     def _mirror(self, L, Ldirs, R, Rdirs):
         self._up(L, Ldirs, R, Rdirs, exact=True)
@@ -939,7 +980,9 @@ class SyncManager:
         for j in self.jobs:
             self.status.setdefault(j["id"], {"since": time.time()})
 
-    def run_now(self, jid):
+    def run_now(self, jid, again=False):
+        if again:
+            _unlink(backup_state(self.dir, jid))
         self._requests.add(jid)
         self._wake.set()
 
@@ -1071,13 +1114,13 @@ class SyncManager:
         except OSError:
             return
         for name in names:
-            if name.startswith(("run-", "cancel-")):
+            if name.startswith(("run-", "cancel-", "again-")):
                 _unlink(os.path.join(self.dir, name))
                 kind, _, jid = name.partition("-")
-                if kind == "run":
-                    self._requests.add(jid)
-                else:
+                if kind == "cancel":
                     self.cancel(jid)
+                else:
+                    self.run_now(jid, again=kind == "again")
 
     # -------------------------------------------------- running a job
     def run_job(self, job, settle=SETTLE):

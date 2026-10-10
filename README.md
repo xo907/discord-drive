@@ -533,7 +533,7 @@ run.bat sync add C:\Users\you\Downloads Z:\Downloads --mode backup
 
 | Mode | Direction | What happens |
 |---|---|---|
-| `backup` (default) | computer → drive | New and changed files are copied. Files you delete here stay on the drive. |
+| `backup` (default) | computer → drive | New and changed files are copied, each one once. Files you delete here stay on the drive, and copies you move, rename or delete on the drive are not put back. |
 | `mirror` | computer → drive | The drive folder becomes an exact copy: deleting here deletes there too (it stays under **Deleted**, so it can be brought back). |
 | `two-way` | both ways | Changes and deletions on either side are copied to the other. A file changed on both sides since the last sync is kept twice (`name (conflict <computer> <date>).ext`). |
 | `move` | computer → drive | Files are copied, then deleted here once they are safely stored in Discord. Frees space, e.g. for Downloads. |
@@ -544,6 +544,10 @@ run.bat sync add C:\Users\you\Downloads Z:\Downloads --mode backup
 the drive at once, elsewhere and for changes on the drive it checks every few seconds),
 `interval` (`--every 30` minutes), `daily` (`--at 03:00`) or `manual` (only `sync run` or **Sync now**).
 
+- A backup remembers what it has copied: reorganise the copies on the drive as you like, and only a
+  file that changes on the computer is copied again. `sync run <n> --again` (dashboard: **Copy
+  everything again**) puts back whatever is missing in the drive folder. Use `mirror` if the drive
+  folder should always match the computer exactly.
 - Copies keep each file's modification time, so a file is copied once, not on every pass. A file that
   is still being written (changed in the last 5 seconds, or locked by the program writing it) waits for
   the next pass; unfinished downloads (`*.crdownload`, `*.part`, ...) and temporary files are never

@@ -1712,7 +1712,8 @@ def _sync_detail(cfg, sync, job, n):
         print(f"{'Result:':16}{_sync_summary(r)}")
         print(f"{'Files:':16}{r.get('files', 0):,} here, {r.get('remote_files', 0):,} on the drive"
               + (f", {r['waiting']:,} still uploading to Discord" if r.get("waiting") else "")
-              + (f", {r['busy']:,} busy (being written; next pass)" if r.get("busy") else ""))
+              + (f", {r['busy']:,} busy (being written; next pass)" if r.get("busy") else "")
+              + (f", {r['kept_away']:,} moved or deleted on the drive (not copied again)" if r.get("kept_away") else ""))
     for p in (s.get("problems") or [])[:20]:
         print(f"  [!] {p}")
     if s.get("history"):
@@ -1871,7 +1872,7 @@ def cmd_sync(args):
         print(f"[ERROR] The drive isn't running; syncing happens inside it. Start it first: {launcher()} start")
         return 1
     asked = time.time()
-    sync.request_run(cfg, job["id"], cancel=action == "stop")
+    sync.request_run(cfg, job["id"], cancel=action == "stop", again=action == "run" and args.again)
     if action == "stop":
         print(f"[OK] Asked {job['name']} to stop. Files copied so far stay copied.")
         return 0
@@ -2337,6 +2338,8 @@ def main():
     p_sync.add_argument("--local-folder", help="edit: another folder on this computer")
     p_sync.add_argument("--drive-folder", help="edit: another folder on the drive")
     p_sync.add_argument("--no-wait", action="store_true", help="run: don't wait for it to finish")
+    p_sync.add_argument("--again", action="store_true",
+                        help="run: a backup copies everything again that is missing on the drive (also what you moved away)")
     p_lock = subparsers.add_parser("lock", help="Lock a folder or file with a password (hidden everywhere until unlocked)")
     p_lock.add_argument("path")
     p_unlock = subparsers.add_parser("unlock", help="Show password-locked folders on this device's drive for a while")

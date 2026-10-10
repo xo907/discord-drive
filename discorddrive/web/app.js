@@ -2367,6 +2367,11 @@ function syncCard(j) {
   const menu = () => [
     running ? { label: "Stop", icon: "close", run: () => syncAction("stop", j, "Stopping") }
             : { label: "Sync now", icon: "refresh", run: () => syncAction("run", j, "Syncing") },
+    j.mode === "backup" && !running && { label: "Copy everything again", icon: "upload", run: async () => {
+      if (await ask({ title: "Copy everything again?", ok: "Copy again",
+                      text: "The backup normally copies each file once, so copies you moved, renamed or deleted on the drive are not put back. This copies every file that is not in the drive folder again." }))
+        syncAction("run", j, "Syncing", { again: true });
+    } },
     { label: j.enabled ? "Pause" : "Resume", icon: j.enabled ? "minus" : "restore",
       run: () => syncAction("pause", j, j.enabled ? "Paused" : "Resumed", { paused: j.enabled }) },
     { label: "Open the drive folder", icon: "enter", run: () => go("#/files" + enc(j.remote)) },
@@ -2391,7 +2396,8 @@ function syncCard(j) {
   } else if (s.last_run) {
     line = h("div", { class: "sync-line" }, `${ago(s.last_run)}: ${syncSummary(last, j)}`,
              last.waiting ? ` · ${plural(last.waiting, "file")} still uploading to Discord` : "",
-             last.busy ? ` · ${plural(last.busy, "file")} in use, next pass` : "");
+             last.busy ? ` · ${plural(last.busy, "file")} in use, next pass` : "",
+             last.kept_away ? ` · ${plural(last.kept_away, "file")} moved or deleted on the drive, not copied again` : "");
   } else {
     line = h("div", { class: "sync-line" }, "Not run yet");
   }

@@ -1320,8 +1320,9 @@ class _Handler(PlusHandlers, BaseHTTPRequestHandler):
 
     def _post_api_sync_run(self):
         m = self._sync_mgr()
-        job = self._sync_job(m, self._body_json().get("id"))
-        m.run_now(job["id"])
+        body = self._body_json()
+        job = self._sync_job(m, body.get("id"))
+        m.run_now(job["id"], again=bool(body.get("again")))
         self._json({"ok": True, "queued": m.running not in (None, job["id"])})
 
     def _post_api_sync_stop(self):

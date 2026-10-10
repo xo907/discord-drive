@@ -66,6 +66,45 @@ class SyncTest(helpers.DriveTest):
         self.assertEqual(self.remote("/Backup/a.txt"), b"two")
         self.assertIsNotNone(self.d.index.resolve("/Backup/sub/b.bin"))       # backup never deletes
 
+    def test_backup_copies_each_file_once(self):
+        # what is done with the copy on the drive (moved, renamed, deleted) is not undone by the backup
+        j = self.job("backup", remote="/Windows/Downloads")
+        self.put("movie.mkv", b"a film")
+        self.put("setup.exe", b"an installer")
+        self.put("album/song.mp3", b"music")
+        self.assertEqual(self.run_job(j)["up"], 3)
+        self.d.index.makedirs("/Films")
+        self.d.fs.rename("/Windows/Downloads/movie.mkv", "/Films/movie.mkv")            # moved elsewhere on the drive
+        self.d.fs.unlink("/Windows/Downloads/setup.exe")                                # deleted there
+        self.d.fs.rename("/Windows/Downloads/album", "/Films/album")                    # a whole folder moved
+        res = self.run_job(j)
+        self.assertEqual((res["up"], res["kept_away"]), (0, 3))
+        self.assertIsNone(self.d.index.resolve("/Windows/Downloads/movie.mkv"))
+        self.assertIsNone(self.d.index.resolve("/Windows/Downloads/setup.exe"))
+        self.assertIsNone(self.d.index.resolve("/Windows/Downloads/album"))
+        self.assertIn("not copied again", self.d.sync.status[j["id"]]["problems"][0])
+        self.put("movie.mkv", b"a film, director's cut", age=10)                        # changed here: copied again
+        self.put("new.txt", b"new")
+        res = self.run_job(j)
+        self.assertEqual((res["up"], res["kept_away"]), (2, 2))
+        self.assertEqual(self.remote("/Windows/Downloads/movie.mkv"), b"a film, director's cut")
+        self.assertEqual(self.remote("/Films/movie.mkv"), b"a film")
+        self.d.sync.run_now(j["id"], again=True)                                        # "Copy everything again"
+        self.d.sync._requests.clear()
+        res = self.run_job(j)
+        self.assertEqual((res["up"], res["kept_away"]), (2, 0))
+        self.assertIsNotNone(self.d.index.resolve("/Windows/Downloads/album/song.mp3"))
+
+    def test_backup_made_before_this_version_learns_what_is_there(self):
+        j = self.job("backup")
+        self.put("a.txt", b"one")
+        self.run_job(j)
+        os.remove(os.path.join(self.d.sync.dir, j["id"] + ".backup.json"))             # as after an update
+        self.assertEqual(self.run_job(j)["up"], 0)                                      # sees the copies, notes them
+        self.d.fs.rename("/Backup/a.txt", "/elsewhere.txt")
+        res = self.run_job(j)
+        self.assertEqual((res["up"], res["kept_away"]), (0, 1))
+
     def test_empty_folder_says_so(self):
         j = self.job("backup")
         res = self.run_job(j)

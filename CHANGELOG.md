@@ -3,6 +3,15 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.0.2 (2026-10-09)
+
+- Folder sync, backup mode: each file is copied once. The job remembers what it has backed up, so a
+  copy you move, rename, change or delete on the drive is no longer put back by the next pass (before,
+  moving files out of a backup folder made them upload again). A file is copied again only when it
+  changes on the computer. The job's status says how many files this applies to.
+- "Copy everything again" (the job's menu in the dashboard, or `sync run <n> --again`) puts back whatever
+  is missing in the drive folder. Mirror and two-way sync are unchanged: they keep both sides the same.
+
 ## 1.0.1 (2026-10-09)
 
 - Tests: the request pacing tests no longer fail now and then on Windows. They measured real waits
