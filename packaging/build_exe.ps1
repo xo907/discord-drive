@@ -8,6 +8,7 @@ python -m PyInstaller --noconfirm --clean --onefile --console `
     --name DiscordDrive `
     --icon docs\images\logo-128.png `
     --add-data "discorddrive\web;discorddrive\web" `
+    --add-data "discorddrive\wordlist.txt;discorddrive" `
     --add-data "CHANGELOG.md;." `
     --collect-submodules discorddrive `
     packaging\entry.py

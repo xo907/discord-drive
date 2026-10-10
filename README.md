@@ -78,7 +78,7 @@ The DiscordDrive menu opens. Choose **5 (Setup)** and answer the questions:
 | Private Discord Channel ID | the channel ID from Step 1 |
 | Mount Point Drive Letter `[Z:]` | press **Enter** (or type another free letter) |
 | Enable Zero-Knowledge Encryption? `[Y/n]` | press **Enter** |
-| Encryption Password | a password you will remember. **Use the same one on all your computers.** |
+| (setup then shows a **recovery phrase**) | **write the 24 words down** and keep them safe: they are the key to your drive |
 
 When setup asks "Start the drive now?", press **Enter**. Open **File Explorer**: your new drive is
 **Z:**. Anything you put there is stored in Discord.
@@ -95,8 +95,8 @@ S=$(command -v sudo); $S apt update && $S apt install -y git && git clone https:
 ```
 
 In the menu choose **5 (Setup)**. Paste the bot token and channel ID, type **`/mnt/discord`** as the
-mount directory, press **Enter** at "Enable encryption?", and type an encryption password (the
-**same one on all your computers**). Answer **Enter** to "Start the drive now?".
+mount directory and press **Enter** at "Enable encryption?". Setup then shows your **recovery phrase**:
+write the 24 words down. Answer **Enter** to "Start the drive now?".
 
 Your files are in **`/mnt/discord`**. From now on, run **`~/DiscordDrive/run.sh`** to get the menu.
 
@@ -111,7 +111,7 @@ Everything is in the menu: **`run.bat`** on Windows (double-click it), **`./run.
 | 1 / 2 | Start or stop the drive |
 | 3 | Status: what is stored in Discord, what is uploading, cache and disk space |
 | 4 | Update DiscordDrive to the latest version (stops and restarts the drive for you) |
-| 5 | Setup: bot token, channel, encryption password |
+| 5 | Setup: bot token, channel, recovery phrase |
 | 6 | Settings: memory-only cache, cache size, disk-space limits, max file size, drive letter |
 | 7 | Old versions, deleted files, offline files |
 | 8 | How to copy lots of files onto the drive |
@@ -143,11 +143,13 @@ other devices**:
 3. The key is sent across, encrypted, and the new computer catches up with all your files and
    folders before it starts.
 
-(You can also type your encryption password, or paste the key from `export-key`, instead.)
+(Or choose "type the recovery phrase" and enter your 24 words.)
 
-> **Back up your encryption password** (or the key that `export-key` shows; a copy of the config file
-> is not a backup of it, see [The config file](#the-config-file)). Without it,
-> the data in Discord cannot be decrypted. Nobody can recover it for you.
+> **Keep your recovery phrase safe.** It is your drive's key written as 24 words: setup shows it for a
+> new drive, and `recovery-phrase` shows it again on any device that has the drive (a copy of the
+> config file is not a backup of it, see [The config file](#the-config-file)). With every device
+> lost and no phrase, the data in Discord cannot be decrypted. Nobody can recover it for you, and
+> anyone who has the phrase can read your files.
 
 ---
 
@@ -287,7 +289,8 @@ start                                Start the drive in the background
 stop                                 Stop the drive (uploads continue on the next start)
 status                               What is stored, what is uploading, cache and disk space
 mount                                Run the drive in this window (Ctrl+C to stop)
-setup                                Bot token, channel, encryption password
+setup                                Bot token, channel; shows or asks for the recovery phrase
+recovery-phrase [--check]            Show this drive's 24-word recovery phrase (or check the one you wrote down)
 config [<name> [<value>]]            Show or change a setting (sizes like 500M, 2G)
 offline <path>                       Keep a file/folder on this computer for offline use
 free-space [<path>] [--all]          Remove cached data (one path, or everything)
@@ -307,7 +310,7 @@ restore                              Rebuild this device's file list from Discor
 backup                               Save an index checkpoint now (normally automatic)
 context-menu install|uninstall       "Make available offline" / "Free up space" in Explorer (Windows)
 web [--open]                         Show (and open) the address of the web dashboard
-web-password                         Set the dashboard's user name and password
+web-password                         Set the dashboard's user name and (optional) password
 health [--check] [--protect]         Self-healing status; check every piece now; protect old files now
 snapshots [create [label]|delete <n>] List snapshots, take one now, or delete one
 snapshot-restore <n> [path] [--to p] [--in-place]
@@ -385,11 +388,19 @@ upload by drag and drop, new folder, rename, delete, earlier versions, "availabl
 recently deleted files, snapshots, and a health page (protection, checks, repairs, uploads,
 devices).
 
-- **Signing in.** The dashboard asks for a user name and password. Create them the first time you
-  open it on the computer running the drive, or with menu 11 / `web-password` (the way to do it on a
-  Raspberry Pi). Only a scrypt hash of the password is stored. After 5 wrong passwords an address
-  has to wait before trying again. Changing the password signs every browser out; the account
-  button (top right) signs this one out.
+- **Signing in.** Three ways, managed under Settings → **Sign-in**:
+  - **Passkeys** (the easy way): a fingerprint, face, PIN, phone or security key. Add one with **Add a
+    passkey**; only its public key is stored. A passkey works at the address it was made for, and
+    browsers allow passkeys only on https (your domain through a reverse proxy) or on
+    `http://localhost:8765` on the computer itself, not on `http://127.0.0.1` or a plain-http network
+    address. Add one per address you use.
+  - **The recovery phrase** (the backup): your drive's 24 words always sign in, for example to add a
+    new passkey after losing a device, or where passkeys aren't possible.
+  - **A password** (optional): set, change or remove it there (or `web-password`), and switch off
+    signing in with it if you like. Other apps over WebDAV always need it.
+
+  The first visit on the computer running the drive only asks for a name. After 5 failed tries an
+  address has to wait. The account button (top right) signs this browser out.
 - **Right-click** (or **long-press** on a phone) any file or folder for the usual actions: preview,
   download (folders as a ZIP), copy a share link, available offline, rename, move, duplicate,
   earlier versions, details, delete. Right-click empty space for new folder and uploads (files or a
@@ -483,10 +494,10 @@ nothing away. It is automatic: nothing to type, the drive still starts by itself
 earlier version is converted the first time the drive starts. Settings stay readable and editable; a
 token or key you type into the file by hand is picked up and encrypted at the next start.
 
-- **Keep your encryption password or key elsewhere.** A copy of the config is no longer a copy of the
+- **Keep your recovery phrase elsewhere.** A copy of the config is no longer a copy of the
   key: after reinstalling Windows, resetting the account's password from outside, or moving to a new
-  machine, the secrets can't be read and `setup` asks for the bot token and your encryption password
-  again (or the key from `export-key`, or let another of your devices send it).
+  machine, the secrets can't be read and `setup` asks for the bot token and your recovery phrase
+  again (or lets another of your devices approve it).
 - **What it doesn't do**: a program running as you on that computer can ask for the secrets the same
   way DiscordDrive does, and while the drive runs the key is in memory. It protects the file, not a
   computer someone else already controls.
@@ -508,7 +519,7 @@ files, snapshots, shared links, the log), on all your devices. Not even its name
 - **It locks again by itself** after `lock_timeout_minutes` (15) without use, when you sign out, with
   **Lock again now** / `relock`, and whenever the drive restarts.
 - **Remove a lock** with its password: right-click → **Remove the lock…**, or `unprotect <path>`. If
-  you forgot it, `unprotect <path> --forgot` asks for the dashboard's password instead.
+  you forgot it, `unprotect <path> --forgot` asks for the drive's recovery phrase instead.
 - Wrong passwords are slowed down like wrong sign-ins. Folder sync keeps copying into a locked folder,
   and a link you shared to a locked item itself keeps working (locked things *inside* a shared folder
   don't show).
@@ -594,10 +605,9 @@ automatically; menu **10** on the device that has the key approves it). How it s
   ciphertext. Comparing the code stops anyone from slipping in a request of their own.
 - Requests expire after 15 minutes, and both messages are deleted once the key arrives.
 
-Every device needs the **same bot token, channel, and encryption key**. Either use the same
-passphrase during `setup` (the key is derived from the passphrase and the channel ID, so it comes
-out identical), or run `export-key` on the first device and give the key to `setup -k`. If `setup` sees that the
-channel already holds an encrypted drive, it refuses to generate a new random key.
+Every device needs the **same bot token, channel, and encryption key**. `setup` on a new device gets
+the key either from a device that already has it (approval, above) or from the drive's 24-word
+recovery phrase. If the channel already holds an encrypted drive, setup never generates a new key.
 
 Devices stay in sync while they are running:
 
@@ -802,9 +812,8 @@ on Linux (background starts also write `mount.log` next to it).
   `config <name> <value>` (e.g. `config cache_mode memory`) instead of editing the file. A comma
   after the *last* entry is tolerated.
 - **Files from another device don't show up.** Run `status` on both devices and compare:
-  - **key fingerprint** must be identical. If not, run `setup` again with the same encryption
-    password. If setup says the key doesn't match the existing drive, copy the key instead: run
-    `export-key` on a working device, then `setup -k <that key>` on this one.
+  - **key fingerprint** must be identical. If not, run `recovery-phrase` on a working device and
+    `setup -k "<those 24 words>"` on this one (or run `setup` and let the working device approve it).
   - **Discord** must show the same channel.
   - **Sync position** must show a message number (not "not started"). If it says "not started",
     that device is still running an old version; see [Updating](#updating).
@@ -813,20 +822,20 @@ on Linux (background starts also write `mount.log` next to it).
   although its key fingerprint matches. It missed some sync messages, for example while it had a
   different key. Rebuild its file list from the drive: stop the drive, run `restore`, start it again.
 - **Some files can't be decrypted on one device but work on another, or a device stopped seeing new
-  files.** The devices are using different keys, usually because `setup` was run again with a
-  password and replaced the original key. Compare the fingerprints in `status`. Nothing is lost:
+  files.** The devices are using different keys, usually because `setup` was run again with another
+  key and replaced the original one. Compare the fingerprints in `status`. Nothing is lost:
   give each device the key the others are missing with `add-old-key`; it keeps reading with every
   key it knows while new data uses its current key. Easiest: run `export-key` on a working device,
   paste the key into `add-old-key` on the other, then stop and start the drive. Current
   versions of `setup` always keep the previous key, and older keys travel inside the encrypted
-  index, so a new device set up with the password can read everything.
+  index, so a new device can read everything.
 - **"Found index checkpoint ... could not restore it" / "Decryption / authentication failed".** This
   device has a different encryption key from the one that wrote the drive, so it refuses to start
   rather than show (and later save) an empty drive. This happens when the drive was created with an
   older version, which turned the same password into a different key on each computer, or with a
-  random key. Copy the real key over:
-  1. On a device where the drive works: `export-key` (menu 9 → "Show my encryption key", or `run.bat export-key` / `./run.sh export-key`).
-  2. On this device: `setup -k <that key>`, then start the drive. Setup confirms the key matches.
+  random key. Bring the real key over:
+  1. On a device where the drive works: `recovery-phrase` (menu 9 → "Show my recovery phrase").
+  2. On this device: `setup -k "<those 24 words>"`, then start the drive. Setup confirms the key matches.
 
   From Windows to a Linux machine in one step, without the key appearing on screen:
   ```powershell

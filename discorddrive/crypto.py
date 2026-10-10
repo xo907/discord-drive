@@ -99,7 +99,10 @@ def generate_key() -> bytes:
 
 
 def parse_key(key_hex: str) -> bytes:
-    """Validates a hex-encoded 256-bit key."""
+    """A 256-bit key from what a person gives: its 24-word recovery phrase, or 64 hex characters."""
+    from . import words
+    if words.looks_like_phrase(key_hex):
+        return words.phrase_to_key(key_hex)
     try:
         key = bytes.fromhex((key_hex or "").strip())
     except ValueError:

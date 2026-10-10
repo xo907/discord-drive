@@ -12,8 +12,7 @@ from .backend import DiscordBackend, is_encrypted_index
 from .cache import ChunkCache
 from .config import Config, config_path, default_data_dir, format_size, launcher, normalize_mount_point, parse_size
 from . import codec
-from .crypto import (AuthenticationError, KeyRing, channel_salt, generate_key, key_fingerprint, parse_key,
-                     password_keys)
+from .crypto import AuthenticationError, KeyRing, generate_key, key_fingerprint, parse_key
 from .discord_api import DiscordAPI, DiscordError
 from .drive import DiscordDrive
 from .fuse_loader import find_winfsp_dll, find_linux_fuse_lib, unmount, FUSE_ERROR
@@ -159,6 +158,8 @@ def cmd_setup(args):
     enc_key_hex = cfg.encryption_key
     enc_salt_hex = cfg.encryption_salt
     received_old_keys = []
+    new_phrase = False
+    from . import words
 
     # Is there already an encrypted drive in this channel? Then a new random key would be useless.
     existing_encrypted = False
@@ -177,39 +178,20 @@ def cmd_setup(args):
         enc_salt_hex = ""
         enc_enabled = True
         print(f"  [OK] Custom encryption key configured (fingerprint {key_fingerprint(enc_key_hex)}).")
-    elif getattr(args, "passphrase", None):
-        enc_key_hex = _key_for_password(args.passphrase, api, channel_id, latest if existing_encrypted else None)
-        if enc_key_hex is None:
-            return 1
-        enc_salt_hex = channel_salt(channel_id).hex()
-        enc_enabled = True
-        print(f"  [OK] Key derived from provided passphrase (fingerprint {key_fingerprint(enc_key_hex)}).")
     elif not enc_key_hex and existing_encrypted:
-        print("  [!] This channel already holds an encrypted DiscordDrive. How do you want to get its key?")
-        print("      1) Request it from one of your other devices (recommended)")
-        print("      2) Enter the encryption password")
-        print("      3) Paste the key (from 'export-key' on another device)")
+        print("  [!] This channel already holds an encrypted DiscordDrive. How do you want to bring this device in?")
+        print("      1) Ask one of your other devices to approve it (recommended)")
+        print("      2) Type the drive's 24-word recovery phrase")
         try:
-            how = input("Choose 1, 2 or 3 [1]: ").strip() or "1"
+            how = input("Choose 1 or 2 [1]: ").strip() or "1"
         except EOFError:
             how = "1"
-        if how == "2":
+        if how == "2" or words.looks_like_phrase(how):
             try:
-                passphrase = input("Encryption password: ").strip()
-            except EOFError:
-                passphrase = ""
-            if not passphrase:
-                print("  [FAIL] No password entered.")
-                return 1
-            enc_key_hex = _key_for_password(passphrase, api, channel_id, latest)
-            if enc_key_hex is None:
-                return 1
-            enc_salt_hex = channel_salt(channel_id).hex()
-        elif how == "3":
-            try:
-                enc_key_hex = parse_key(input("Key: ")).hex()
+                typed = how if words.looks_like_phrase(how) else input("Recovery phrase (24 words): ")
+                enc_key_hex = parse_key(typed).hex()
             except (ValueError, EOFError) as e:
-                print(f"  [FAIL] Not a valid key: {e}")
+                print(f"  [FAIL] {str(e) or 'Nothing entered'}.")
                 return 1
             enc_salt_hex = ""
         else:
@@ -227,25 +209,11 @@ def cmd_setup(args):
         except EOFError:
             enc_ans = "y"
         if enc_ans != "n":
-            try:
-                passphrase = input("Enter an Encryption Password (or press Enter to auto-generate a random key): ").strip()
-            except EOFError:
-                passphrase = ""
-            if passphrase:
-                enc_key_hex = _key_for_password(passphrase, api, channel_id, None)
-                enc_salt_hex = channel_salt(channel_id).hex()
-                print("  [OK] Key derived with scrypt (memory-hard, so passwords are slow to guess).")
-                print("       Use the same passphrase and channel on other machines to get the same key.")
-            elif existing_encrypted:
-                print("  [FAIL] Refusing to generate a new key for a channel that already holds encrypted data.")
-                return 1
-            else:
-                key = generate_key()
-                enc_key_hex = key.hex()
-                enc_salt_hex = ""
-                print("  [OK] Generated random 256-bit AES master key.")
-                print("       BACK IT UP: without 'encryption_key' from the config file your data is unrecoverable.")
+            enc_key_hex = generate_key().hex()
+            enc_salt_hex = ""
             enc_enabled = True
+            new_phrase = True
+            print("  [OK] Generated a random 256-bit key for this drive.")
         else:
             enc_enabled = False
             enc_key_hex = ""
@@ -272,11 +240,10 @@ def cmd_setup(args):
             print("  [OK] The key matches the existing drive.")
         except AuthenticationError:
             print("  [FAIL] This key cannot read the drive already stored in this channel. Nothing was saved.")
-            print("         Copy the key from a device where the drive works:")
-            print(f"           on that device:  {launcher()} export-key")
-            print(f"           on this device:  {launcher()} setup -k <the key it shows>")
-            print("         (Drives set up with older versions derived keys from passwords differently,")
-            print("          so the same password can give a different key.)")
+            print("         Use the recovery phrase of the drive that is in this channel:")
+            print(f"           on a device where it works:  {launcher()} recovery-phrase")
+            print(f"           on this device:              {launcher()} setup   (choose 2 and type the 24 words)")
+            print("         or let that device approve this one (choose 1).")
             return 1
         except Exception as e:
             print(f"  [WARNING] Could not verify the key right now ({e}); saving it anyway.")
@@ -293,34 +260,12 @@ def cmd_setup(args):
     cfg.save()
 
     print(f"\n[SUCCESS] Configuration saved to: {config_path()}")
+    if new_phrase:
+        _show_phrase(enc_key_hex, first=True)
     if existing_encrypted and not is_mounted(cfg.mount_point):
         _catch_up(cfg)
     print(f"Start the drive from the menu ({launcher()}, option 1), or run: {launcher()} start")
     return 0
-
-
-def _key_for_password(passphrase, api, channel_id, latest):
-    """The key a password stands for. For a new drive: scrypt. For a drive already in the channel
-    (`latest` = its newest checkpoint message): whichever method opens it (older drives used PBKDF2)."""
-    candidates = password_keys(passphrase, channel_id)
-    if latest is None:
-        return candidates[0][1].hex()
-    print("  Checking the password against your drive...")
-    for _, key in candidates:
-        ring = KeyRing(key)
-        try:
-            DiscordBackend(api, channel_id, crypto=ring).load_index_message(latest)
-            return key.hex()
-        except AuthenticationError:
-            continue
-        except Exception as e:
-            print(f"  [WARNING] Could not check the password right now ({e}). Try again when Discord is reachable.")
-            return None
-        finally:
-            ring.close()
-    print("  [FAIL] That password doesn't open the drive in this channel.")
-    print(f"         Request the key from another device instead, or use '{launcher()} setup -k <key>'.")
-    return None
 
 
 def _request_key(backend):
@@ -814,6 +759,45 @@ def cmd_autostart(args):
     return 0
 
 
+def _show_phrase(key_hex, first=False):
+    from . import words
+    print()
+    print("--- Your recovery phrase ---")
+    print(words.grid(words.key_to_phrase(bytes.fromhex(key_hex))))
+    print()
+    if first:
+        print("[!] WRITE THESE 24 WORDS DOWN, in this order, and keep them somewhere safe and offline.")
+        print("    They are the key to this drive. With them you can set up another device, sign in to the")
+        print("    dashboard and get your files back if this computer is lost. Without them (and with no other")
+        print("    device still set up) the files in Discord can never be read again. Nobody can reset them.")
+        print("    Anyone who has them can read your files.")
+        print(f"    Show them again any time on this computer with: {launcher()} recovery-phrase")
+    else:
+        print(f"Key fingerprint {key_fingerprint(key_hex)}. Anyone with these words can read your files.")
+        print(f"On a new device: {launcher()} setup, then choose \"type the recovery phrase\".")
+
+
+def cmd_recovery_phrase(args):
+    """Show the 24-word recovery phrase of this drive (its encryption key, as words)."""
+    cfg = Config.load()
+    if not cfg.encryption_key:
+        print("[ERROR] No encryption key is configured on this device.")
+        return 1
+    if args.check:
+        from . import words
+        try:
+            typed = input("Type your recovery phrase to check it (24 words): ")
+            ok = words.phrase_to_key(typed).hex() == cfg.encryption_key
+        except (ValueError, EOFError) as e:
+            print(f"[ERROR] {str(e) or 'Nothing entered'}.")
+            return 1
+        print("[OK] That is this drive's recovery phrase." if ok else
+              "[ERROR] Those are 24 valid words, but they are NOT this drive's phrase.")
+        return 0 if ok else 1
+    _show_phrase(cfg.encryption_key)
+    return 0
+
+
 def cmd_export_key(args):
     """Print the encryption key so it can be copied to another device (setup -k <key>)."""
     cfg = Config.load()
@@ -900,7 +884,7 @@ def cmd_status(args):
         if cfg.extra_bot_tokens:
             row("Upload bots", f"{1 + len(cfg.extra_bot_tokens)} (uploads are spread over all of them)")
     if cfg.web_enabled:
-        row("Web dashboard", f"http://127.0.0.1:{cfg.web_port}/" + (" (also on your network)" if cfg.web_lan else "")
+        row("Web dashboard", f"http://localhost:{cfg.web_port}/" + (" (also on your network)" if cfg.web_lan else "")
             + (f", sign in as '{cfg.web_user}'" if cfg.web_password else ", no sign-in set yet"))
     if cfg.hidden_folders:
         row("Hidden here", ", ".join(cfg.hidden_folders))
@@ -1956,15 +1940,21 @@ def cmd_lock(args):
             print(f"[ERROR] {vpath} has no lock.")
             return 1
         if args.forgot:
-            if not cfg.web_password:
-                print(f"[ERROR] That needs the dashboard's password, and none is set ({launcher()} web-password).")
-                return 1
-            ok = check_password(_ask_password("The DASHBOARD's password (input is hidden): ") or "", cfg.web_password)
+            from . import words
+            typed = _ask_password("The drive's recovery phrase, or the dashboard's password (input is hidden): ") or ""
+            if words.looks_like_phrase(typed):
+                try:
+                    ok = bool(cfg.encryption_key) and words.phrase_to_key(typed).hex() == cfg.encryption_key
+                except ValueError as e:
+                    print(f"[ERROR] {e}.")
+                    return 1
+            else:
+                ok = bool(cfg.web_password) and check_password(typed, cfg.web_password)
         else:
             ok = locks.check(node["uid"], _ask_password("Password of the lock (input is hidden): ") or "")
         if not ok:
             print("[ERROR] Wrong password. Nothing changed."
-                  + ("" if args.forgot else f" (Forgot it? {launcher()} unprotect <path> --forgot asks for the dashboard's password instead.)"))
+                  + ("" if args.forgot else f" (Forgot it? {launcher()} unprotect <path> --forgot asks for the recovery phrase instead.)"))
             return 1
         locks.remove(node["uid"])
         if not running:
@@ -1982,7 +1972,7 @@ def cmd_web(args):
     if not cfg.web_enabled:
         print(f"[!] The web dashboard is off. Turn it on with: {launcher()} config web_enabled true")
         return 1
-    url = f"http://127.0.0.1:{cfg.web_port}/"
+    url = f"http://localhost:{cfg.web_port}/"      # by name: browsers only allow passkeys there, not on 127.0.0.1
     running = is_mounted(cfg.mount_point)
     print(f"Web dashboard:  {url}")
     if cfg.web_lan:
@@ -1991,10 +1981,13 @@ def cmd_web(args):
             print(f"On your phone:  http://{ip}:{cfg.web_port}/")
     else:
         print(f"(To open it on your phone too: {launcher()} config web_lan true, then restart the drive.)")
-    if cfg.web_user and cfg.web_password:
-        print(f"Sign in as '{cfg.web_user}'. Change the password with: {launcher()} web-password")
+    if cfg.web_passkeys:
+        print(f"Sign in with a passkey ({len(cfg.web_passkeys)} added), or with your recovery phrase.")
+    elif cfg.web_user or cfg.web_password:
+        print("Sign in with your recovery phrase" + (f", or as '{cfg.web_user}' with the password" if cfg.web_password else "")
+              + ". Add a passkey under Settings -> Sign-in.")
     else:
-        print(f"No sign-in yet: the first visit from this computer creates one, or run: {launcher()} web-password")
+        print("No sign-in yet: the first visit from this computer sets it up (your recovery phrase always works too).")
     if not running:
         print(f"[!] The drive isn't running: start it first ({launcher()} start).")
         return 0
@@ -2264,8 +2257,7 @@ def main():
     p_setup.add_argument("-t", "--token", help="Discord bot token")
     p_setup.add_argument("-c", "--channel", help="Discord channel ID")
     p_setup.add_argument("-m", "--mount", help="Drive letter (e.g. Z:)")
-    p_setup.add_argument("-p", "--passphrase", help="Encryption password for zero-knowledge encryption")
-    p_setup.add_argument("-k", "--key", help="Raw 256-bit encryption key (hex)")
+    p_setup.add_argument("-k", "--key", help="The drive's recovery phrase (24 words, in quotes) or its key in hex")
 
     # status
     subparsers.add_parser("status", help="Show current status and sync statistics")
@@ -2273,7 +2265,10 @@ def main():
     subparsers.add_parser("menu", help="Open the interactive menu (what run.bat / run.sh show)")
     subparsers.add_parser("start", help="Start the drive in the background")
     subparsers.add_parser("menu-start", help=argparse.SUPPRESS)
-    subparsers.add_parser("export-key", help="Show the encryption key, to copy it to another device")
+    subparsers.add_parser("export-key", help="Show the encryption key in hex (see also recovery-phrase)")
+    p_phrase = subparsers.add_parser("recovery-phrase", aliases=["phrase"],
+                                     help="Show this drive's 24-word recovery phrase (its key, as words)")
+    p_phrase.add_argument("--check", action="store_true", help="Type your phrase to check you wrote it down right")
     subparsers.add_parser("approve-keys", help="Send the key to a new device that asked for it")
     p_auto = subparsers.add_parser("autostart", help="Start the drive automatically at startup: on, off or status")
     p_auto.add_argument("action", nargs="?", choices=["on", "off", "status"])
@@ -2415,6 +2410,8 @@ def main():
         return cmd_request_key(args)
     elif args.command == "export-key":
         return cmd_export_key(args)
+    elif args.command in ("recovery-phrase", "phrase"):
+        return cmd_recovery_phrase(args)
     elif args.command == "menu":
         from .menu import main as menu_main
         try:

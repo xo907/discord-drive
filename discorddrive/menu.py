@@ -696,7 +696,7 @@ def tools_menu():
             ("2", "Show recent problems"),
             ("3", "Show the log"),
             (None, None),
-            ("4", "Show my encryption key (to set up another device)"),
+            ("4", "Show my recovery phrase (the 24 words that are this drive's key)"),
             ("5", "Add an older encryption key"),
             ("6", "Rebuild this device's file list from Discord"),
             ("7", "Save an index checkpoint now"),
@@ -735,13 +735,13 @@ def tools_menu():
         elif pick == "3":
             cli("log", "-n", "40")
         elif pick == "4":
-            warn("Anyone with this key and your bot token can read your files. Don't share it publicly.")
+            warn("These 24 words are the key to your drive: anyone who has them can read your files.")
+            info("Make sure nobody is looking at your screen.")
             print()
-            if confirm("Show it?", default=False):
-                print()
-                cli("export-key")
+            if confirm("Show them?", default=False):
+                cli("recovery-phrase")
         elif pick == "5":
-            info("Paste the key (64 hex characters): on the device that has it, 'export-key' shows it.")
+            info("Type the recovery phrase (24 words) of the earlier key, or paste the key in hex.")
             print()
             value = ask("Key or file")
             if value:
@@ -845,7 +845,7 @@ MAIN_OPTIONS = [
     ("3", "Status (everything in detail)"),
     ("4", "Update DiscordDrive"),
     (None, None),
-    ("5", "Setup (bot token, channel, encryption password)"),
+    ("5", "Setup (bot token, channel, recovery phrase)"),
     ("6", "Settings (cache, limits, drive letter...)"),
     ("7", "Files: old versions, deleted files, offline"),
     ("8", "Copy files onto the drive (help)"),

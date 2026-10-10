@@ -3,6 +3,26 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.2.0 (2026-10-09)
+
+- Recovery phrase instead of an encryption password. A drive's key is shown as 24 ordinary words (the
+  standard BIP39 way, with a checksum that catches a mistyped word). New drives get a random key and
+  show its phrase once setup is done; `recovery-phrase` shows it again on a device that has the drive
+  (menu 9), and `recovery-phrase --check` lets you test what you wrote down. Existing drives keep
+  their key: the phrase is that same key written as words, nothing is re-encrypted.
+- Setting up another device: let a device that has the drive approve it (as before), or type the 24
+  words. Setup no longer asks for or accepts an encryption password; `setup -k` takes the phrase (or
+  the key in hex), and so do `add-old-key` and `unprotect --forgot`.
+- Passkeys for the dashboard: sign in with a fingerprint, face, PIN, phone or security key (Settings →
+  Sign-in → Add a passkey). Only each passkey's public key is stored. A passkey works at the address
+  it was made for, and browsers allow them only on https or on `http://localhost` (the dashboard's own
+  links now use localhost instead of 127.0.0.1 for that reason).
+- The recovery phrase also signs in to the dashboard, as the backup when a passkey is lost or where
+  passkeys aren't possible. The phrase itself is only ever shown on the computer that runs the drive.
+- The password is now optional: set, change or remove it under Settings → Sign-in, and switch off
+  signing in with it. It remains the way in for other apps over WebDAV. The first visit on the
+  computer running the drive asks only for a name.
+
 ## 1.1.1 (2026-10-09)
 
 - Bookmarks can be pinned: the star on a card (or "Pin to the top" in its menu) puts it in a Pinned

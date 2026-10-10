@@ -1385,8 +1385,8 @@ async function renderSettings() {
          h("div", { class: "set-row" }, h("div", { class: "set-text" }, h("div", { class: "t" }, label), hint && h("div", { class: "s" }, hint),
            data.restart.includes(key) && h("div", { class: "s faint" }, "Takes effect after a restart")),
            h("div", { class: "set-ctl" + (type === "bool" ? "" : " wide") }, control(key, type)))))]).flat(),
-       h("h2", {}, "Sign-in"),
-       h("p", { class: "muted" }, `Signed in as ${status && status.user ? status.user : "you"}. Change the user name or password in the DiscordDrive menu (Settings → Web dashboard sign-in) or with `, h("code", {}, "web-password"), "."));
+       h("div", { id: "signin-settings" }));
+  signInSection($("#signin-settings"));
 }
 
 // ------------------------------------------------------------------ notes
@@ -2708,6 +2708,94 @@ document.addEventListener("paste", (e) => {
   const t = ((e.clipboardData && e.clipboardData.getData("text")) || "").trim();
   if (t && t.split(/\s+/).some(looksLikeLink)) { e.preventDefault(); addMark(t); }
 });
+
+// ------------------------------------------------------------------ signing in: passkeys, phrase, password
+const b64uBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const b64uText = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function addPasskey(redraw) {
+  if (!window.PublicKeyCredential) return toast("This browser doesn't support passkeys");
+  const name = await ask({ title: "Add a passkey", value: /Windows/.test(navigator.userAgent) ? "Windows Hello" : /iPhone|iPad|Mac/.test(navigator.userAgent) ? "Apple device" : "This device",
+                           ok: "Continue", text: "Give it a name you'll recognise. Your browser then asks for your fingerprint, face, PIN, phone or security key." });
+  if (!name) return;
+  try {
+    const o = await api("/api/signin/passkey/options", {});
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: b64uBytes(o.challenge), rp: o.rp, user: { id: b64uBytes(o.user.id), name: o.user.name, displayName: o.user.displayName },
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+      authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" }, attestation: "none", timeout: 120000,
+      excludeCredentials: o.exclude.map((id) => ({ type: "public-key", id: b64uBytes(id) })) } });
+    await api("/api/signin/passkey/register", { name, clientDataJSON: b64uText(cred.response.clientDataJSON),
+                                              attestationObject: b64uText(cred.response.attestationObject) });
+    toast("Passkey added. Use it the next time you sign in here.");
+    redraw();
+  } catch (e) {
+    toast(e && e.name === "NotAllowedError" ? "Cancelled" : e && e.name === "InvalidStateError" ? "This device already has a passkey here" : (e.message || "The passkey could not be added"));
+  }
+}
+
+function setPasswordDialog(info, redraw) {
+  const user = h("input", { value: info.user || "", autocomplete: "username", spellcheck: "false" });
+  const a = pwInput("New password (at least 8 characters)"), b = pwInput("The same password again");
+  const go_ = h("button", { class: "btn", type: "button", onclick: async () => {
+    if (a.value.length < 8) return toast("Use at least 8 characters");
+    if (a.value !== b.value) return toast("The two passwords are different");
+    if (await attempt(() => api("/api/signin/password", { user: user.value.trim(), password: a.value }), "Password set. Other browsers have to sign in again.")) { m.close(); redraw(); }
+  } }, info.password ? "Change the password" : "Set the password");
+  const m = modal(info.password ? "Change the password" : "Set a password",
+    h("p", { class: "muted", style: "margin:0 0 16px" }, "A fallback for places where passkeys don't work (plain http on your home network) and for other apps over WebDAV."),
+    field("User name", user), field("Password", a), field("Again", b), h("div", { class: "modal-actions" }, go_));
+  a.focus();
+}
+
+async function showPhrase() {
+  if (!await ask({ title: "Show the recovery phrase?", ok: "Show it",
+                   text: "These 24 words are the key to your drive: anyone who sees them can read your files. Make sure nobody is looking at your screen." })) return;
+  const r = await attempt(() => api("/api/signin/phrase", {}));
+  if (!r) return;
+  const words = r.phrase.split(" ");
+  modal("Your recovery phrase",
+    h("p", { class: "muted", style: "margin:0 0 14px" }, "Write these 24 words down in this order and keep them somewhere safe and offline. They set up a new device, sign in here, and are the only way back if every device is lost."),
+    h("ol", { class: "phrase" }, words.map((w) => h("li", {}, w))),
+    h("div", { class: "modal-actions" }, h("button", { class: "btn ghost", type: "button", onclick: async () => {
+      try { await navigator.clipboard.writeText(r.phrase); toast("Copied. Paste it into a password manager, then clear your clipboard."); } catch { toast("Could not copy"); }
+    } }, "Copy")));
+}
+
+async function signInSection(into) {
+  const info = await api("/api/signin").catch(() => null);
+  if (!info) return;
+  const redraw = () => signInSection(into);
+  const row = (t, s, ctl) => h("div", { class: "set-row" }, h("div", { class: "set-text" }, h("div", { class: "t" }, t), s && h("div", { class: "s" }, s)), h("div", { class: "set-ctl" }, ctl));
+  const why = !window.PublicKeyCredential ? "This browser doesn't support passkeys."
+            : !info.rp ? `Passkeys need a name in the address. On this computer open http://localhost:${location.port || 80}/ instead of the number address.`
+            : !info.can_passkey ? "Browsers only allow passkeys on https (your domain through a reverse proxy) or on localhost." : "";
+  into.replaceChildren(
+    h("h2", {}, "Sign-in"),
+    h("p", { class: "muted", style: "margin:0 0 12px" }, `Signed in as ${info.user || "you"}. Passkeys are the easy way in; your drive's recovery phrase always works as the backup.`),
+    h("div", { class: "settings" },
+      row("Passkeys", why || `Sign in with a fingerprint, face, PIN, phone or security key. A passkey works at the address it was made for (this one: ${info.rp}).`,
+          h("button", { class: "btn small", disabled: !!why, onclick: () => addPasskey(redraw) }, "Add a passkey")),
+      info.passkeys.map((p) => h("div", { class: "set-row sub" },
+        h("div", { class: "set-text" }, h("div", { class: "t" }, icon("lock", "tag-ico"), " ", p.name, !p.here && h("span", { class: "tag", style: "margin-left:8px" }, p.rp)),
+          h("div", { class: "s" }, `Added ${p.created ? when(p.created) : ""}${p.last ? " · last used " + ago(p.last) : " · not used yet"}${p.here ? "" : " · for another address"}`)),
+        h("div", { class: "set-ctl" }, h("button", { class: "btn ghost small", onclick: async () => {
+          if (await ask({ title: `Remove “${p.name}”?`, ok: "Remove", danger: true, text: "It can no longer sign in here. Delete it from your device's passkey list too." })
+              && await attempt(() => api("/api/signin/passkey/remove", { id: p.id }), "Passkey removed")) redraw();
+        } }, "Remove")))),
+      info.phrase && row("Recovery phrase", info.local ? "The 24 words that are your drive's key. They sign in here and set up new devices."
+                                                       : "The 24 words that are your drive's key. They are only shown on the computer that runs the drive (or with recovery-phrase in its terminal).",
+          h("button", { class: "btn ghost small", disabled: !info.local, onclick: showPhrase }, "Show")),
+      row("Password", info.password ? "A fallback for plain http and for other apps (WebDAV)." : "None set. Not needed with a passkey; other apps over WebDAV need one.",
+          h("div", { style: "display:flex;gap:8px;justify-content:flex-end" },
+            h("button", { class: "btn ghost small", onclick: () => setPasswordDialog(info, redraw) }, info.password ? "Change" : "Set"),
+            info.password && h("button", { class: "btn ghost small", onclick: async () => {
+              if (await ask({ title: "Remove the password?", ok: "Remove", danger: true, text: "Signing in is then by passkey or recovery phrase only. Other apps over WebDAV stop working." })
+                  && await attempt(() => api("/api/signin/password", { password: "" }), "Password removed")) redraw();
+            } }, "Remove"))),
+      info.password && row("Allow signing in with the password", "Off: only passkeys and the recovery phrase open the dashboard. The password then only serves other apps (WebDAV).",
+          switchEl(info.password_login, async (on) => { await attempt(() => api("/api/signin/password-login", { on }), on ? "Password sign-in is on" : "Password sign-in is off"); }, "Allow signing in with the password"))));
+}
 
 // ------------------------------------------------------------------ stars
 async function setStar(it, on) {

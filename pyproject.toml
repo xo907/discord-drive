@@ -20,7 +20,7 @@ discorddrive = "discorddrive.cli:main"
 packages = ["discorddrive", "discorddrive._vendor"]
 
 [tool.setuptools.package-data]
-discorddrive = ["web/*", "scripts/linux/*", "scripts/windows/*"]
+discorddrive = ["web/*", "scripts/linux/*", "scripts/windows/*", "wordlist.txt"]
 
 [tool.setuptools.dynamic]
 version = { attr = "discorddrive.__version__" }

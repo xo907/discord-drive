@@ -34,6 +34,7 @@ from .actions import default_restore_folder, snapshot_restore_ops, undelete_ops,
 from .config import Config, config_path, launcher as _launcher
 from .crypto import check_password, hash_password
 from .index import ROOT_ID, new_uid
+from . import passkeys
 from .shares import Shares
 from .bookmarks import BookmarkHandlers
 from .webplus import ApiErrorProxy, Fetches, PlusHandlers
@@ -105,6 +106,7 @@ class WebServer:
         self.contacts_lock = threading.Lock()
         self._open_locks = {}             # browser session -> [ids of the locks it has open, last use]
         self.fetches = Fetches(drive)     # files being saved from a web address
+        self.challenges = passkeys.Challenges()
         self._book = (None, [])           # (mtime, size) of the address book file, its contacts
 
     # ------------------------------------------------------------ lifecycle
@@ -136,7 +138,7 @@ class WebServer:
             pass
 
     def local_url(self):
-        return f"http://127.0.0.1:{self.port}/"
+        return f"http://localhost:{self.port}/"
 
     # ------------------------------------------------------------ auth
     def credentials(self):
@@ -151,6 +153,7 @@ class WebServer:
                 try:
                     saved = Config.load()
                     self.cfg.web_user, self.cfg.web_password = saved.web_user, saved.web_password
+                    self.cfg.web_passkeys, self.cfg.web_password_login = saved.web_passkeys, saved.web_password_login
                 except (Exception, SystemExit) as e:
                     log.warning("Could not read the dashboard sign-in from the config: %s", e)
         return self.cfg.web_user or "", self.cfg.web_password or ""
@@ -160,6 +163,34 @@ class WebServer:
         if not getattr(self.drive, "local_test_dir", None):
             saved = Config.load()
             saved.web_user, saved.web_password = self.cfg.web_user, self.cfg.web_password
+            saved.save()
+            self._cfg_mtime = os.path.getmtime(config_path())
+
+    # ------------------------------------------------------------ signing in: passkeys, phrase, password
+    def user_name(self):
+        return self.credentials()[0] or ("owner" if self.sign_in_ready() else "")
+
+    def sign_in_ready(self):
+        """True once somebody has set up a way to sign in (a name, a password or a passkey)."""
+        user, pw = self.credentials()
+        return bool(user or pw or self.cfg.web_passkeys)
+
+    def password_allowed(self):
+        user, pw = self.credentials()
+        return bool(user and pw and getattr(self.cfg, "web_password_login", True))
+
+    def phrase_key(self):
+        """The drive's key when the recovery phrase can sign in (the drive is encrypted), else None."""
+        key = self.cfg.encryption_key if self.cfg.encryption_enabled else ""
+        return key or None
+
+    def save_cfg(self, **changes):
+        for k, v in changes.items():
+            setattr(self.cfg, k, v)
+        if not getattr(self.drive, "local_test_dir", None):
+            saved = Config.load()
+            for k, v in changes.items():
+                setattr(saved, k, v)
             saved.save()
             self._cfg_mtime = os.path.getmtime(config_path())
 
@@ -177,8 +208,8 @@ class WebServer:
 
     def session_user(self, value):
         """The signed-in user of a session cookie, or None."""
-        user, pw = self.credentials()
-        if not value or not user or not pw:
+        user = self.user_name()
+        if not value or not user:
             return None
         try:
             payload, sig = value.split(".", 1)
@@ -305,14 +336,132 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
         self._send(303, b"", "text/plain", headers)
 
     def _signin(self, error="", status=200):
-        user, pw = self.app.credentials()
-        if user and pw:
+        app = self.app
+        rp, _ = self._rp()
+        ways = dict(passkey=bool(rp and self._here(rp)), phrase=bool(app.phrase_key()), password=app.password_allowed())
+        if not app.sign_in_ready() and self._local_request():
+            mode = "setup"                       # the first visit on the computer itself
+        elif any(ways.values()):
             mode = "login"
-        elif self._local_request():
-            mode = "setup"
         else:
             mode = "remote"
-        self._send(status, _signin_page(mode, error).encode("utf-8"), "text/html; charset=utf-8", _PAGE_HEADERS)
+        self._send(status, _signin_page(mode, error, **ways).encode("utf-8"), "text/html; charset=utf-8", _PAGE_HEADERS)
+
+    # ------------------------------------------------------------ signing in
+    def _rp(self):
+        """(passkey address of this request or None, the origins a passkey answer may come from)."""
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0].strip()
+        rp = passkeys.rp_id(host)
+        return rp, {f"https://{host}", f"http://{host}"} if rp else set()
+
+    def _here(self, rp):
+        return [p for p in self.drive.cfg.web_passkeys or [] if p.get("rp") == rp]
+
+    def _passkey_options(self):
+        """What the browser needs to sign in with a passkey (asked before signing in)."""
+        rp, _ = self._rp()
+        mine = self._here(rp) if rp else []
+        if not mine:
+            return self._error(404, "No passkey is set up for this address")
+        self._json({"challenge": self.app.challenges.new("login"), "rpId": rp, "allow": [p["id"] for p in mine]})
+
+    def _passkey_login(self):
+        addr = self.client_address[0]
+        wait = self.app.locked_for(addr)
+        if wait:
+            return self._error(429, f"Too many failed tries. Wait {int(wait) + 1} seconds.")
+        body = self._body_json()
+        rp, origins = self._rp()
+        key = next((p for p in self._here(rp) if p["id"] == body.get("id")), None) if rp else None
+        try:
+            if key is None:
+                raise passkeys.PasskeyError("this passkey isn't registered here")
+            count = passkeys.verify(key, passkeys.unb64u(body.get("authenticatorData")), passkeys.unb64u(body.get("clientDataJSON")),
+                                    passkeys.unb64u(body.get("signature")), rp, origins, self.app.challenges)
+        except passkeys.PasskeyError as e:
+            self.app.note_login(addr, False)
+            log.warning("Web dashboard: a passkey sign-in from %s failed: %s", addr, e)
+            return self._error(401, f"That passkey didn't work: {e}.")
+        self.app.note_login(addr, True)
+        keys = [dict(p, count=count, last=time.time()) if p is key else p for p in self.drive.cfg.web_passkeys]
+        self.app.save_cfg(web_passkeys=keys)
+        self._send(200, b'{"ok":true}', "application/json; charset=utf-8",
+                   {"Set-Cookie": self._cookie_for(self.app.new_session(self.app.user_name() or "owner"))})
+
+    def _get_api_signin(self):
+        rp, _ = self._rp()
+        cfg = self.drive.cfg
+        secure = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip() == "https" or rp == "localhost"
+        self._json({
+            "user": self.app.user_name(), "rp": rp, "can_passkey": bool(rp) and secure, "local": self._local_request(),
+            "passkeys": [{"id": p["id"], "name": p.get("name") or "Passkey", "rp": p.get("rp"), "created": p.get("created"),
+                          "last": p.get("last"), "here": p.get("rp") == rp} for p in cfg.web_passkeys or []],
+            "password": bool(cfg.web_password), "password_login": bool(cfg.web_password_login),
+            "phrase": bool(self.app.phrase_key()), "webdav": bool(cfg.webdav_enabled),
+        })
+
+    def _post_api_signin_passkey_options(self):
+        rp, _ = self._rp()
+        if not rp:
+            raise ApiError(400, "Passkeys need a name in the address: open the dashboard as http://localhost:"
+                                f"{self.app.port}/ on this computer, or through your https address.")
+        user = self.app.user_name() or "owner"
+        self._json({"challenge": self.app.challenges.new("register"), "rp": {"id": rp, "name": "DiscordDrive"},
+                    "user": {"id": _b64(hashlib.sha256(b"dd-user:" + user.encode()).digest()[:16]), "name": user,
+                             "displayName": user},
+                    "exclude": [p["id"] for p in self._here(rp)]})
+
+    def _post_api_signin_passkey_register(self):
+        body = self._body_json()
+        rp, origins = self._rp()
+        try:
+            if not rp:
+                raise passkeys.PasskeyError("passkeys don't work at this address")
+            key = passkeys.register(passkeys.unb64u(body.get("attestationObject")), passkeys.unb64u(body.get("clientDataJSON")),
+                                    rp, origins, self.app.challenges)
+        except passkeys.PasskeyError as e:
+            raise ApiError(400, f"The passkey could not be added: {e}.") from None
+        if any(p["id"] == key["id"] for p in self.drive.cfg.web_passkeys or []):
+            raise ApiError(409, "That passkey is already added")
+        key.update(rp=rp, name=str(body.get("name") or "Passkey").strip()[:60] or "Passkey", created=time.time(), last=None)
+        self.app.save_cfg(web_passkeys=list(self.drive.cfg.web_passkeys or []) + [key])
+        log.info("Web dashboard: a passkey was added for %s", rp)
+        self._json({"ok": True})
+
+    def _post_api_signin_passkey_remove(self):
+        pid = str(self._body_json().get("id") or "")
+        keys = [p for p in self.drive.cfg.web_passkeys or [] if p["id"] != pid]
+        if len(keys) == len(self.drive.cfg.web_passkeys or []):
+            raise ApiError(404, "That passkey is already gone")
+        self.app.save_cfg(web_passkeys=keys)
+        self._json({"ok": True})
+
+    def _post_api_signin_password(self):
+        """Set, change or (empty) remove the password. Other browsers are signed out; this one stays in."""
+        body = self._body_json()
+        password = str(body.get("password") or "")
+        name = str(body.get("user") or self.app.user_name() or "owner").strip()[:64]
+        if password and len(password) < 8:
+            raise ApiError(400, "Use a password of at least 8 characters")
+        self.app.save_cfg(web_user=name, web_password=hash_password(password) if password else "")
+        self._send(200, b'{"ok":true}', "application/json; charset=utf-8",
+                   {"Set-Cookie": self._cookie_for(self.app.new_session(name))})
+
+    def _post_api_signin_password_login(self):
+        self.app.save_cfg(web_password_login=bool(self._body_json().get("on")))
+        self._json({"ok": True})
+
+    def _post_api_signin_phrase(self):
+        """The recovery phrase, shown only on the computer that runs the drive."""
+        if not self._local_request():
+            raise ApiError(403, "The recovery phrase is only shown on the computer that runs the drive "
+                                f"(open the dashboard there, or run '{_launcher()} recovery-phrase').")
+        key = self.app.phrase_key()
+        if not key:
+            raise ApiError(404, "This drive isn't encrypted, so it has no recovery phrase")
+        from . import words
+        self._json({"phrase": words.key_to_phrase(bytes.fromhex(key))})
+
 
     def _send(self, status, body=b"", ctype="application/json; charset=utf-8", headers=None):
         self.send_response(status)
@@ -378,10 +527,14 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
                 return self._login()
             if method == "POST" and route == "/setup":
                 return self._setup()
+            if method == "POST" and route == "/passkey/options":
+                return self._passkey_options()
+            if method == "POST" and route == "/passkey/login":
+                return self._passkey_login()
             if route.startswith("/s/") and method in ("GET", "POST"):
                 return self._shared(route[3:], method)
             if method == "GET" and route in ("/", "/index.html", "/app.css", "/app.js", "/logo.svg", "/icon.png",
-                                             "/manifest.webmanifest", "/share-upload.js"):
+                                             "/manifest.webmanifest", "/share-upload.js", "/signin.js"):
                 if route in ("/", "/index.html") and not self._authed():
                     return self._signin()
                 return self._static(route.lstrip("/") or "index.html")
@@ -434,10 +587,27 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
         wait = self.app.locked_for(addr)
         form = self._form()
         if wait:
-            return self._signin(f"Too many wrong passwords. Try again in {int(wait) + 1} seconds.", 429)
+            return self._signin(f"Too many failed tries. Try again in {int(wait) + 1} seconds.", 429)
         user, pw = self.app.credentials()
+        if form.get("phrase"):
+            # the recovery phrase is the drive's key: whoever has it may sign in (and set up a passkey again)
+            from . import words
+            key = self.app.phrase_key()
+            try:
+                given = words.phrase_to_key(form["phrase"]).hex()
+            except ValueError as e:
+                self.app.note_login(addr, False)
+                return self._signin(f"That phrase isn't right: {e}.", 401)
+            ok = bool(key) and hmac.compare_digest(given, key)
+            self.app.note_login(addr, ok)
+            if not ok:
+                log.warning("Web dashboard: a wrong recovery phrase from %s", addr)
+                return self._signin("Those are 24 valid words, but not this drive's recovery phrase.", 401)
+            if not self.app.sign_in_ready():
+                self.app.save_cfg(web_user="owner")
+            return self._redirect("/", self._cookie_for(self.app.new_session(self.app.user_name() or "owner")))
         given = (form.get("user") or "").strip()
-        ok = bool(user and pw) and hmac.compare_digest(given.lower(), user.lower()) \
+        ok = self.app.password_allowed() and hmac.compare_digest(given.lower(), user.lower()) \
             and check_password(form.get("password") or "", pw)
         self.app.note_login(addr, ok)
         if not ok:
@@ -446,21 +616,24 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
         self._redirect("/", self._cookie_for(self.app.new_session(user)))
 
     def _setup(self):
-        user, pw = self.app.credentials()
-        if (user and pw) or not self._local_request():
+        """The first visit, on the computer that runs the drive: choose a name (and, if wanted, a password)."""
+        if self.app.sign_in_ready() or not self._local_request():
             return self._signin("", 403)
         form = self._form()
         name = (form.get("user") or "").strip()
         password = form.get("password") or ""
         if not name or len(name) > 64:
-            return self._signin("Choose a user name.", 400)
-        if len(password) < 8:
-            return self._signin("Use a password of at least 8 characters.", 400)
-        if password != form.get("password2"):
+            return self._signin("Choose a name.", 400)
+        if password and len(password) < 8:
+            return self._signin("Use a password of at least 8 characters (or leave it empty).", 400)
+        if password != (form.get("password2") or ""):
             return self._signin("The two passwords are different.", 400)
-        self.app.set_credentials(name, password)
+        if password:
+            self.app.set_credentials(name, password)
+        else:
+            self.app.save_cfg(web_user=name)
         log.info("Web dashboard: sign-in created for %s", name)
-        self._redirect("/", self._cookie_for(self.app.new_session(name)))
+        self._redirect("/#/settings", self._cookie_for(self.app.new_session(name)))
 
     def _post_api_logout(self):
         self.app.open_locks_clear(self._cookie())
@@ -509,7 +682,7 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
         scrub = d.maintenance.scrub_state() if d.maintenance else {}
         self._json({
             "version": __version__,
-            "user": self.app.credentials()[0],
+            "user": self.app.user_name(),
             "mount": d.cfg.mount_point,
             "device": d.cfg.device_id,
             "encrypted": d.crypto is not None,
@@ -1680,33 +1853,58 @@ _PAGE_HEADERS = {
 }
 
 
-def _signin_page(mode, error=""):
+def _signin_page(mode, error="", passkey=False, phrase=False, password=False):
     err = f'<p class="err" role="alert">{_esc(error)}</p>' if error else ""
     if mode == "login":
-        body = f"""<h1>Sign in</h1>
-  <p class="muted">DiscordDrive</p>
-  {err}
-  <form method="post" action="/login">
-    <label>User name<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
+        phrase_form = """<form method="post" action="/login">
+    <label>Recovery phrase<textarea name="phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false"
+      placeholder="the 24 words of your drive" required></textarea></label>
+    <button class="btn" type="submit">Sign in with the phrase</button>
+  </form>"""
+        password_form = """<form method="post" action="/login">
+    <label>User name<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
     <button class="btn" type="submit">Sign in</button>
   </form>"""
+        parts = []
+        if passkey:
+            parts.append('<div id="pk" hidden><button class="btn big" id="pk-go" type="button">Sign in with a passkey</button>'
+                         '<p class="muted small">Your fingerprint, face, PIN, phone or security key.</p>'
+                         '<p class="err" id="pk-err" role="alert" hidden></p></div>')
+        others = [(n, f) for n, f, on in (("Use a password", password_form, password),
+                                           ("Use your recovery phrase", phrase_form, phrase)) if on]
+        if passkey:
+            parts += [f"<details{' open' if error else ''}><summary>{n}</summary>{f}</details>" for n, f in others]
+        elif len(others) == 2:
+            parts += [others[0][1], f"<details{' open' if error and 'phrase' in error else ''}><summary>{others[1][0]}</summary>{others[1][1]}</details>"]
+        else:
+            parts += [f for _, f in others]
+        if not parts:
+            parts = ['<p class="muted">No way to sign in is set up. On the computer that runs the drive, run '
+                     '<code>web-password</code>.</p>']
+        script = '<script src="/signin.js"></script>' if passkey else ""
+        body = f"""<h1>Sign in</h1>
+  <p class="muted">DiscordDrive</p>
+  {err}
+  {''.join(parts)}{script}"""
     elif mode == "setup":
-        body = f"""<h1>Create your sign-in</h1>
-  <p class="muted">Pick a user name and password for the dashboard. You need them on every browser
-  and phone you open it on. Change them later with <code>web-password</code>.</p>
+        body = f"""<h1>Welcome</h1>
+  <p class="muted">You are on the computer that runs the drive. Choose a name; next you can add a
+  <b>passkey</b> (fingerprint, face, PIN or security key) to sign in with. Your drive's 24-word
+  recovery phrase always signs in too.</p>
   {err}
   <form method="post" action="/setup">
-    <label>User name<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
-    <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
-    <label>Password again<input name="password2" type="password" autocomplete="new-password" minlength="8" required></label>
-    <button class="btn" type="submit">Create and sign in</button>
+    <label>Your name<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
+    <details><summary>Also set a password (optional)</summary>
+    <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8"></label>
+    <label>Password again<input name="password2" type="password" autocomplete="new-password" minlength="8"></label>
+    </details>
+    <button class="btn" type="submit">Continue</button>
   </form>"""
     else:
         body = """<h1>Set up a sign-in first</h1>
-  <p class="muted">No user name and password are set for this dashboard yet. Set them on the computer
-  running the drive: open the dashboard there, or in the DiscordDrive menu choose
-  <b>Web dashboard</b>, or run <code>web-password</code>.</p>"""
+  <p class="muted">Nothing is set up for signing in to this dashboard yet. Open it once on the computer
+  running the drive, or run <code>web-password</code> there.</p>"""
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark"><title>DiscordDrive</title>

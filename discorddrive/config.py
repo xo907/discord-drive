@@ -143,6 +143,8 @@ class Config:
     web_token: str = ""                # secret that signs dashboard sessions and share links (generated)
     web_user: str = ""                 # dashboard sign-in: user name...
     web_password: str = ""             # ...and a scrypt hash of the password (set with 'web-password')
+    web_password_login: bool = True    # the password may be used to sign in (off: passkeys and the recovery phrase only)
+    web_passkeys: list = field(default_factory=list)  # passkeys that sign in to the dashboard (public keys only)
     webdav_enabled: bool = False       # the drive for other apps at /dav/ (the dashboard's user name and password)
     fetch_private: bool = False        # "save from a link" may also fetch from this computer and the home network
     lock_timeout_minutes: float = 15.0  # password-locked folders lock again after this long (0 = until the drive restarts)
