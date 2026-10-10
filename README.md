@@ -8,8 +8,6 @@
   with a dashboard that rivals the big cloud drives.
 </p>
 <p align="center">
-  <a href="https://github.com/xo907/discord-drive/actions/workflows/tests.yml"><img src="https://github.com/xo907/discord-drive/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
-  <a href="https://github.com/xo907/discord-drive/releases"><img src="https://img.shields.io/github/v/release/xo907/discord-drive?label=release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9 or newer">
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20Raspberry%20Pi-informational" alt="Windows, Linux, Raspberry Pi">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT license"></a>
