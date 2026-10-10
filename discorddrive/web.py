@@ -35,6 +35,7 @@ from .config import Config, config_path, launcher as _launcher
 from .crypto import check_password, hash_password
 from .index import ROOT_ID, new_uid
 from .shares import Shares
+from .webplus import ApiErrorProxy, Fetches, PlusHandlers
 
 log = logging.getLogger("discorddrive.web")
 
@@ -102,6 +103,7 @@ class WebServer:
         self.shares = Shares(drive.index, getattr(drive.cfg, "device_id", ""))
         self.contacts_lock = threading.Lock()
         self._open_locks = {}             # browser session -> [ids of the locks it has open, last use]
+        self.fetches = Fetches(drive)     # files being saved from a web address
         self._book = (None, [])           # (mtime, size) of the address book file, its contacts
 
     # ------------------------------------------------------------ lifecycle
@@ -244,7 +246,7 @@ class WebServer:
         return _b64(hmac.new(self._secret(b"share"), msg, hashlib.sha256).digest())
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(PlusHandlers, BaseHTTPRequestHandler):
     server_version = "DiscordDrive"
     protocol_version = "HTTP/1.1"
 
@@ -352,19 +354,33 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._dispatch("POST")
 
+    def _do_other(self):
+        self._dispatch(self.command)
+
+    do_OPTIONS = do_PROPFIND = do_PROPPATCH = do_MKCOL = do_PUT = do_DELETE = do_MOVE = do_COPY = do_LOCK = do_UNLOCK = _do_other
+
+    @staticmethod
+    def _media_ext():
+        return _MEDIA_EXT
+
     def _dispatch(self, method):
         try:
             self.drive.fs.scope.unlocked = frozenset()     # locked folders: nothing is open until we know who asks
             if not self._host_ok():
                 return self._send(421, b"Misdirected request", "text/plain")
             route = urllib.parse.urlparse(self.path).path
+            if route == "/dav" or route.startswith("/dav/"):
+                return self._dav(self.command)
+            if method not in ("GET", "POST"):
+                return self._send(405, b"Method not allowed", "text/plain")
             if method == "POST" and route == "/login":
                 return self._login()
             if method == "POST" and route == "/setup":
                 return self._setup()
             if route.startswith("/s/") and method in ("GET", "POST"):
                 return self._shared(route[3:], method)
-            if method == "GET" and route in ("/", "/index.html", "/app.css", "/app.js", "/logo.svg"):
+            if method == "GET" and route in ("/", "/index.html", "/app.css", "/app.js", "/logo.svg", "/icon.png",
+                                             "/manifest.webmanifest", "/share-upload.js"):
                 if route in ("/", "/index.html") and not self._authed():
                     return self._signin()
                 return self._static(route.lstrip("/") or "index.html")
@@ -378,7 +394,7 @@ class _Handler(BaseHTTPRequestHandler):
             if fn is None:
                 return self._error(404, "not found")
             fn()
-        except ApiError as e:
+        except (ApiError, ApiErrorProxy) as e:
             self._error(e.status, str(e))
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -401,6 +417,10 @@ class _Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             return self._error(404, "not found")
         ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        if name.endswith(".webmanifest"):
+            ctype = "application/manifest+json"
+        if name.endswith(".js"):
+            ctype = "application/javascript"
         if ctype.startswith("text/") or ctype in ("application/javascript", "image/svg+xml"):
             ctype += "; charset=utf-8"
         self._send(200, body, ctype, _PAGE_HEADERS)
@@ -509,6 +529,7 @@ class _Handler(BaseHTTPRequestHandler):
             "public": self.public_base(),
             "snapshots": {"interval": d.cfg.snapshot_interval_hours, "keep": d.cfg.snapshot_keep_days},
             "locks": {"count": d.locks.count(), "open": len(d.fs.scope.unlocked)},
+            "fetches": self._fetch_list(),
         })
 
     # ------------------------------------------------------------ activity and log
@@ -594,10 +615,16 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_api_list(self):
         path, node = self._node(self._query().get("path"), want_dir=True)
         items = []
+        stars = self.drive.index.stars_all()
+        _, sizes = self._tree()
         for c in self.drive.index.children(node["id"]):
             cpath = posixpath.join(path, c["name"])
             if not self.drive.fs._hidden(cpath):
                 e = self._entry(cpath, c)
+                if c["uid"] in stars:
+                    e["starred"] = True
+                if c["is_dir"]:
+                    e["size"], e["files"] = sizes.get(c["id"], (0, 0))
                 if not c["is_dir"] and c["name"].rpartition(".")[2].lower() in _MEDIA_EXT:
                     e["thumb"] = self._thumb_state(c)
                 items.append(e)
@@ -716,7 +743,14 @@ class _Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "path": path, "size": offset, "mtime": node["mtime"] if node else None})
 
     def _get_api_zip(self):
-        path, node = self._node(self._query().get("path"), want_dir=True)
+        q = self._query()
+        if q.get("paths"):                       # a selection: several files and folders in one ZIP
+            try:
+                paths = [str(p) for p in json.loads(q["paths"])]
+            except (ValueError, TypeError):
+                raise ApiError(400, "bad selection") from None
+            return self._zip_many(paths)
+        path, node = self._node(q.get("path"), want_dir=True)
         self._zip(node, path)
 
     def _zip(self, node, path):
@@ -837,14 +871,14 @@ class _Handler(BaseHTTPRequestHandler):
         node = self.drive.index.get_by_uid(rec["u"])
         pub = self.public_base()
         direct = ""
-        if node is not None and not node["is_dir"] and not rec.get("pw"):
+        if node is not None and not node["is_dir"] and not rec.get("pw") and not rec.get("up"):
             direct = f"/s/{sid}/{urllib.parse.quote(node['name'])}"     # the file itself, for embedding
         return {"id": sid, "path": f"/s/{sid}", "url": f"{pub}/s/{sid}" if pub else "",
                 "direct_path": direct, "direct": f"{pub}{direct}" if pub and direct else "",
                 "lan": [f"http://{ip}:{self.app.port}/s/{sid}" for ip in lan_addresses()] if self.drive.cfg.web_lan else [],
                 "item": self.drive.index.path_of(node["id"]) if node else None, "dir": rec.get("d", False),
                 "created": rec.get("c"), "expires": rec.get("e"), "password": bool(rec.get("pw")),
-                "download": rec.get("dl", True), "views": rec.get("v", 0)}
+                "download": rec.get("dl", True), "views": rec.get("v", 0), "upload": bool(rec.get("up"))}
 
     def _post_api_share(self):
         body = self._body_json()
@@ -852,7 +886,15 @@ class _Handler(BaseHTTPRequestHandler):
         if node["id"] == ROOT_ID:
             raise ApiError(400, "Share a folder or file, not the whole drive")
         hours = body.get("hours", 24 * 7)
-        sid, rec = self.app.shares.create(node["uid"], node["is_dir"], hours=hours,
+        upload = None
+        if body.get("upload"):                   # a file request: people upload into the folder and see nothing of it
+            if not node["is_dir"]:
+                raise ApiError(400, "A file request needs a folder for the files to arrive in")
+            try:
+                upload = max(1, min(100 * 1024, int(body.get("max_mb") or 2048))) * 1024 * 1024
+            except (TypeError, ValueError):
+                raise ApiError(400, "bad size limit") from None
+        sid, rec = self.app.shares.create(node["uid"], node["is_dir"], hours=hours, upload=upload,
                                           password=str(body.get("password") or ""), download=body.get("download", True))
         self._json(self._share_json(sid, rec))
 
@@ -1360,6 +1402,7 @@ class _Handler(BaseHTTPRequestHandler):
         "cache_mode": (str, True, lambda v: v in ("disk", "memory")),
         "hidden_folders": (list, False, None),
         "lock_timeout_minutes": (float, False, lambda v: 0 <= v <= 100000),
+        "webdav_enabled": (bool, False, None),
     }
 
     def _get_api_settings(self):
@@ -1521,8 +1564,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(404, _share_message("This link has expired", "Ask for a new one.").encode(),
                               "text/html; charset=utf-8", _SHARE_HEADERS)
         self.drive.fs.scope.unlocked = frozenset(self.drive.locks.covering(self.drive.index.path_of(root["id"])))
+        sending = tail == "upload" and method == "POST"       # a file arriving through a file request
         if rec.get("pw"):
-            if method == "POST":
+            if method == "POST" and not sending:
                 addr = "share:" + self.client_address[0]
                 wait = self.app.locked_for(addr)
                 ok = not wait and self.app.shares.password_ok(rec, self._form().get("password"))
@@ -1535,9 +1579,23 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._redirect(f"/s/{sid}", cookie)
             jar = {k.strip(): v for k, _, v in (p.partition("=") for p in (self.headers.get("Cookie") or "").split(";"))}
             if not hmac.compare_digest(jar.get(f"dds_{sid}", ""), self.app.share_unlock_value(sid, rec)):
+                if sending:
+                    return self._error(403, "Type the link's password first (reload the page)")
                 return self._send(200, _share_password(sid, rec).encode(), "text/html; charset=utf-8", _SHARE_HEADERS)
-        elif method == "POST":
+        elif method == "POST" and not sending:
             return self._redirect(f"/s/{sid}")
+        if rec.get("up"):
+            if not root["is_dir"]:
+                return self._send(404, _share_message("This link has expired", "Ask for a new one.").encode(),
+                                  "text/html; charset=utf-8", _SHARE_HEADERS)
+            if sending:
+                return self._request_upload(sid, rec, root)
+            if tail:
+                return self._send(404, _share_message("Not found", "This link is for sending files.").encode(),
+                                  "text/html; charset=utf-8", _SHARE_HEADERS)
+            return self._request_page(sid, rec, root)
+        if sending:
+            return self._error(404, "This link doesn't take files")
         direct = tail not in ("", "raw", "zip")
         if direct:
             # /s/<id>/<file name>: the file itself (an image, GIF, video or song embeds where it is posted).

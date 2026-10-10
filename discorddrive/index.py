@@ -144,6 +144,20 @@ CREATE TABLE IF NOT EXISTS share_views(id TEXT NOT NULL, device TEXT NOT NULL, n
                                        PRIMARY KEY(id, device));
 -- Password-locked folders and files (synced between devices): uid of the item -> {"pw": hash, "c": created}.
 CREATE TABLE IF NOT EXISTS locks(uid TEXT PRIMARY KEY, rec TEXT NOT NULL);
+-- Starred items (synced between devices).
+CREATE TABLE IF NOT EXISTS stars(uid TEXT PRIMARY KEY, at REAL NOT NULL);
+-- What happened on the drive, as this device saw it (kept here only; the newest few thousand).
+CREATE TABLE IF NOT EXISTS activity(
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      REAL NOT NULL,
+    device  TEXT NOT NULL DEFAULT '',      -- '' = this device
+    kind    TEXT NOT NULL,                 -- add | edit | mkdir | move | delete | restore
+    path    TEXT NOT NULL,
+    src     TEXT,                          -- move: where it was
+    size    INTEGER NOT NULL DEFAULT 0,
+    is_dir  INTEGER NOT NULL DEFAULT 0,
+    uid     TEXT
+);
 """
 
 # Tables that point at stored pieces; a "fix" (a piece re-uploaded after Discord lost it) updates them all.
@@ -174,6 +188,7 @@ class Index:
         self.path = path
         self.lock = threading.RLock()
         self.keep_versions = True
+        self.device = ""                 # this device's id (set by the drive): its own changes read back aren't logged twice
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -318,6 +333,7 @@ class Index:
             nid = cur.lastrowid
             if is_dir:
                 self._queue(db, {"t": "mkdir", "u": uid, "p": self._uid(db, parent_id), "n": name, "m": now})
+                self._act(db, "mkdir", self._path(db, nid), 0, True, uid)
         return self.get(nid)
 
     def makedirs(self, path):
@@ -358,9 +374,12 @@ class Index:
 
     def rename(self, nid, new_parent, new_name):
         with self.tx() as db:
-            row = db.execute("SELECT uid, jstate FROM nodes WHERE id=?", (nid,)).fetchone()
+            row = db.execute("SELECT uid, jstate, size, is_dir FROM nodes WHERE id=?", (nid,)).fetchone()
+            src = self._path(db, nid)
             db.execute("UPDATE nodes SET parent=?, name=?, ctime=? WHERE id=?",
                        (new_parent, new_name, time.time(), nid))
+            if row and row["jstate"] >= J_QUEUED:
+                self._act(db, "move", self._path(db, nid), row["size"], row["is_dir"], row["uid"], src=src)
             # A file that was never published is published later under its new name.
             if row and row["jstate"] >= J_QUEUED:
                 self._queue(db, {"t": "mv", "u": row["uid"], "p": self._uid(db, new_parent), "n": new_name})
@@ -372,6 +391,8 @@ class Index:
             if row is None:
                 return
             old = self._chunk_list(db, nid)
+            if row["jstate"] >= J_QUEUED:
+                self._act(db, "delete", self._path(db, nid), row["size"], row["is_dir"], row["uid"])
             if old:
                 # Record the version before deleting, while its path still resolves.
                 vid = self._add_version(db, row, old, "deleted")
@@ -463,6 +484,8 @@ class Index:
             if parity:
                 op["x"] = parity
             self._queue(db, op)
+            if not old or [c[0] for c in old] != new_mids:
+                self._act(db, "edit" if old else "add", self._path(db, nid), size, False, row["uid"])
         return True
 
     def update_chunk_url(self, message_id, url):
@@ -725,6 +748,72 @@ class Index:
                     self._queue(db, {"t": "purge", "u": uid})
                     n += 1
         return n
+
+    # ------------------------------------------------------------ stars
+    def stars_all(self):
+        with self.lock:
+            return {r[0]: r[1] for r in self.db.execute("SELECT uid, at FROM stars")}
+
+    def star_set(self, uid, on):
+        """Star or unstar an item here and on every device."""
+        with self.tx() as db:
+            if on:
+                db.execute("INSERT OR REPLACE INTO stars(uid, at) VALUES(?, ?)", (uid, time.time()))
+            else:
+                db.execute("DELETE FROM stars WHERE uid=?", (uid,))
+            self._queue(db, {"t": "star", "u": uid, "on": 1 if on else 0})
+
+    def _op_star(self, db, op, busy, changed):
+        if op.get("on"):
+            db.execute("INSERT OR IGNORE INTO stars(uid, at) VALUES(?, ?)", (str(op["u"]), time.time()))
+        else:
+            db.execute("DELETE FROM stars WHERE uid=?", (str(op["u"]),))
+
+    # ------------------------------------------------------------ activity
+    def _act(self, db, kind, path, size=0, is_dir=False, uid=None, device="", src=None):
+        if not path or path == "/":
+            return
+        cur = db.execute("INSERT INTO activity(at, device, kind, path, src, size, is_dir, uid) VALUES(?,?,?,?,?,?,?,?)",
+                         (time.time(), device or "", kind, path, src, int(size or 0), 1 if is_dir else 0, uid))
+        if cur.lastrowid % 200 == 0:
+            db.execute("DELETE FROM activity WHERE id <= ?", (cur.lastrowid - 5000,))
+
+    def activity(self, limit=100, before=None):
+        """The newest entries first: [{id, at, device, kind, path, src, size, is_dir, uid}]."""
+        return [dict(r) for r in self._all("SELECT * FROM activity WHERE id < ? ORDER BY id DESC LIMIT ?",
+                                           (before or 1 << 62, int(limit)))]
+
+    def _act_before(self, db, t, op):
+        """What a journal operation from another device is about to do (looked at before it is applied)."""
+        if t not in ("put", "mkdir", "mv", "rm"):
+            return None
+        nid = self._nid(db, op.get("u"))
+        row = db.execute("SELECT * FROM nodes WHERE id=?", (nid,)).fetchone() if nid is not None else None
+        if t == "rm":
+            return None if row is None else {"kind": "delete", "path": self._path(db, nid), "size": row["size"],
+                                             "is_dir": row["is_dir"]}
+        if t == "mkdir":
+            return None if row is not None else {"kind": "mkdir"}
+        if t == "mv":
+            return None if row is None else {"kind": "move", "src": self._path(db, nid)}
+        had = row is not None and db.execute("SELECT 1 FROM chunks WHERE node_id=? LIMIT 1", (nid,)).fetchone()
+        return {"kind": "restore" if op.get("r") else ("edit" if had else "add"),
+                "old": [c[0] for c in self._chunk_list(db, nid)] if had else None}
+
+    def _act_after(self, db, note, op, device):
+        uid = op.get("u")
+        if note["kind"] == "delete":
+            return self._act(db, "delete", note["path"], note["size"], note["is_dir"], uid, device)
+        nid = self._nid(db, uid)
+        row = db.execute("SELECT * FROM nodes WHERE id=?", (nid,)).fetchone() if nid is not None else None
+        if row is None:
+            return
+        path = self._path(db, nid)
+        if note["kind"] == "move" and note["src"] == path:
+            return
+        if note.get("old") is not None and note["old"] == [c[0] for c in self._chunk_list(db, nid)]:
+            return                          # the same content again (e.g. read back, or only its time changed)
+        self._act(db, note["kind"], path, row["size"], row["is_dir"], uid, device, note.get("src"))
 
     # ------------------------------------------------------------ password locks
     def locks_all(self):
@@ -1052,9 +1141,9 @@ class Index:
         return self._free_name(db, parent, conflict_name(name, uid))
 
     # Operations a device running an older version skipped: replayed after an upgrade (see Journal.catch_up).
-    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge", "share", "unshare", "sharev", "lock", "unlock")
+    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge", "share", "unshare", "sharev", "lock", "unlock", "star")
 
-    def apply_ops(self, ops, cursor, busy=None, extras_only=False):
+    def apply_ops(self, ops, cursor, busy=None, extras_only=False, device=None):
         """Apply journal operations (from message `cursor`) and advance the cursor.
         Returns the set of local node ids that changed (including deleted ones).
 
@@ -1076,7 +1165,11 @@ class Index:
                     continue
                 db.execute("SAVEPOINT op")
                 try:
+                    # what other devices did goes into the activity list (ours is noted when we do it)
+                    note = self._act_before(db, t, op) if device and device != self.device and not extras_only else None
                     fn(db, op, busy, changed)
+                    if note:
+                        self._act_after(db, note, op, device)
                     db.execute("RELEASE op")
                 except (KeyError, TypeError, ValueError, IndexError, sqlite3.IntegrityError) as e:
                     db.execute("ROLLBACK TO op")

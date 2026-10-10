@@ -15,9 +15,10 @@ encrypted, and uploaded as attachments to your channel, together with a few **sp
 let the drive rebuild anything Discord loses. Reading only downloads the pieces that cover the
 requested byte range, so videos stream and seek without downloading the whole file first.
 
-Version 0.2 adds self-healing, compression and de-duplication, faster uploads with extra bots, a
-web dashboard you can also open on your phone, snapshots of the whole drive, and stronger
-password protection. See [What's new in 0.2](#whats-new-in-02).
+It heals itself when Discord loses data, compresses and de-duplicates, keeps earlier versions and
+snapshots, syncs and backs up folders, and comes with a web dashboard for your browser and phone:
+files, a photo gallery, sharing and file requests, activity, storage insights, password-locked
+folders and more. See [Web dashboard](#web-dashboard) and the [changelog](CHANGELOG.md).
 
 <p align="center"><img src="docs/images/overview.svg" alt="Your devices sync through DiscordDrive, which stores encrypted pieces in a private Discord channel" width="100%"></p>
 
@@ -191,8 +192,13 @@ other devices**:
   sizes, and when they were uploaded.
 - **Self-healing.** Spare pieces rebuild what Discord loses; a background check finds losses early.
 - **Compression and de-duplication** before encryption; extra bots and parallel uploads for speed.
-- **Web dashboard** for your browser and phone, with expiring share links and a photo and video
-  gallery with thumbnails.
+- **Web dashboard** for your browser and phone (installable as an app): a home page, a photo and video
+  gallery, starred and recent files, an activity list, storage insights with a duplicate finder,
+  in-browser text editing, and Ctrl+K to find anything.
+- **Sharing both ways**: expiring, password-protected links to give files out, and **file requests**
+  that let others send files into a folder without seeing it.
+- **Save from a link**: the drive downloads a web address straight into a folder.
+- **Other apps (WebDAV)**: open the drive from phone file managers, "Map network drive", Finder, rclone.
 - **Snapshots** of the whole drive, restorable folder by folder.
 - **Password-locked folders**: gone from the drive letter and the dashboard until unlocked
   ([more](#password-locked-folders)).
@@ -402,6 +408,27 @@ devices).
   thumbnail the first time a picture is shown (or all at once with **Create all thumbnails**, which
   reads each photo once from Discord), and the drive keeps them in `<data dir>/thumbs`, encrypted with
   your key. Formats your browser can't show (e.g. HEIC outside Safari, MKV) keep their icon.
+- **Home, Starred, Recent, Activity**: the dashboard opens on an overview. Star files and folders
+  (synced to every device); Activity lists what was added, changed, moved and deleted, and on which
+  device.
+- **Storage**: space by kind, the biggest folders and files, and identical files (keep the oldest and
+  delete the copies in one click). Folders show their size in Files.
+- **File requests**: right-click a folder → **Request files…**. Whoever has the link can send files into
+  it from a simple page, cannot see what is in the folder, and never overwrites anything. Choose how
+  long it works, an optional password and the largest file. Shared lists it with the files received.
+- **Edit text files** (notes, code, config) in the browser: **Edit**, Ctrl+S saves, the version before
+  is kept.
+- **Save from a link**: paste a web address and the drive fetches the file itself into the open folder
+  (nothing passes through your browser or phone). Only addresses on the internet are fetched.
+- **Find anything**: Ctrl+K searches files, pages and actions. Paste a screenshot or copied files
+  anywhere to upload them; select several items and **Download** gives one ZIP.
+- **Install as an app**: "Add to Home Screen" on a phone, or the install button in the browser's address
+  bar, gives the dashboard its own icon and window.
+- **Other apps (WebDAV)**: turn on Settings → **Other apps (WebDAV)** and connect file managers, "Map
+  network drive" (Windows), "Connect to Server" (Finder), rclone or backup apps to
+  `https://your-address/dav/` with the dashboard's user name and password. Use your https address:
+  over plain http the password is sent unencrypted and Windows refuses to connect. Password-locked
+  folders are never shown over WebDAV.
 - **Sync**: folders on the computer running the drive kept in step with folders on the drive (backup,
   mirror, two-way, move, download), with live progress, Sync now, pause and recent runs. See
   [Sync and back up folders](#sync-and-back-up-folders).

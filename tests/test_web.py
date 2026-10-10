@@ -585,6 +585,209 @@ class WebTest(helpers.DriveTest):
         self.assertEqual(self.post("/api/locks/unlock", {"password": "hunter2"})[0], 429)
 
 
+    # ------------------------------------------------------------ 1.0: home, stars, activity, insights, requests, WebDAV
+    def get(self, path):
+        status, _, data = self.req("GET", path)
+        self.assertEqual(status, 200, data[:300])
+        return json.loads(data)
+
+    def test_stars_recent_and_home(self):
+        self.login()
+        self.write(self.d, "/Docs/plan.txt", b"the plan")
+        self.write(self.d, "/Docs/old.txt", b"older")
+        self.write(self.d, "/Pics/cat.jpg", b"\xff\xd8\xff cat")
+        self.upload(self.d)
+        self.assertEqual(self.post("/api/star", {"path": "/Docs/plan.txt", "on": True})[0], 200)
+        self.assertEqual(self.post("/api/star", {"path": "/Pics", "on": True})[0], 200)
+        self.assertEqual({i["path"] for i in self.get("/api/starred")["items"]}, {"/Docs/plan.txt", "/Pics"})
+        docs = {i["name"]: i for i in self.get("/api/list?path=%2FDocs")["items"]}
+        self.assertTrue(docs["plan.txt"].get("starred"))
+        self.assertFalse(docs["old.txt"].get("starred"))
+        root = {i["name"]: i for i in self.get("/api/list?path=%2F")["items"]}
+        self.web._tree_cache = None
+        root = {i["name"]: i for i in self.get("/api/list?path=%2F")["items"]}
+        self.assertEqual((root["Docs"]["size"], root["Docs"]["files"]), (13, 2))             # folder sizes
+        self.assertEqual(len(self.get("/api/recent?limit=2")["items"]), 2)
+        home = self.get("/api/home")
+        self.assertEqual((home["stats"]["files"], len(home["starred"]), len(home["recent"])), (3, 2, 3))
+        b = self.drive("bbbb")                                                               # stars reach other devices
+        self.sync(self.d, b)
+        self.assertEqual(len(b.index.stars_all()), 2)
+        self.post("/api/star", {"path": "/Pics", "on": False})
+        self.sync(self.d, b)
+        self.assertEqual(len(b.index.stars_all()), 1)
+        self.post("/api/locks/add", {"path": "/Docs", "password": "hunter2"})                # locked: not in any of them
+        self.post("/api/locks/lock", {})
+        self.assertEqual(self.get("/api/starred")["items"], [])
+        self.assertEqual([i["path"] for i in self.get("/api/recent")["items"]], ["/Pics/cat.jpg"])
+
+    def test_activity(self):
+        self.login()
+        b = self.drive("bbbb")
+        self.write(self.d, "/Docs/a.txt", b"one")
+        self.upload(self.d)
+        self.write(self.d, "/Docs/a.txt", b"two!")
+        self.upload(self.d)
+        self.d.fs.rename("/Docs/a.txt", "/Docs/b.txt")
+        self.sync(self.d, b)
+        self.write(b, "/Docs/from-b.txt", b"hello from b")
+        self.upload(b)
+        b.fs.unlink("/Docs/b.txt")
+        self.sync(b, self.d)
+        items = self.get("/api/history")["items"]
+        seen = [(i["kind"], i["path"], i["me"]) for i in reversed(items)]
+        self.assertEqual(seen, [("mkdir", "/Docs", True), ("add", "/Docs/a.txt", True), ("edit", "/Docs/a.txt", True),
+                                ("move", "/Docs/b.txt", True), ("add", "/Docs/from-b.txt", False),
+                                ("delete", "/Docs/b.txt", False)])
+        self.assertEqual(items[2]["src"], "/Docs/a.txt")
+        other = [(i["kind"], i["path"]) for i in b.index.activity() if i["device"] == "aaaa"]
+        self.assertIn(("add", "/Docs/a.txt"), other)                                         # b saw what a did
+        older = self.get(f"/api/history?limit=2&before={items[1]['id']}")["items"]
+        self.assertEqual([i["id"] for i in older], [items[2]["id"], items[3]["id"]])
+
+    def test_storage_insights_and_zip_of_a_selection(self):
+        self.login()
+        same = os.urandom(5000)
+        self.write(self.d, "/A/one.bin", same)
+        self.write(self.d, "/B/copy.bin", same)
+        self.write(self.d, "/B/song.mp3", b"m" * 300)
+        self.write(self.d, "/big.mp4", b"v" * 9000)
+        self.upload(self.d)
+        ins = self.get("/api/insights")
+        self.assertEqual(ins["total"], {"files": 4, "bytes": 19300})
+        self.assertEqual(ins["kinds"][0]["kind"], "file")
+        self.assertEqual(ins["largest"][0]["path"], "/big.mp4")
+        self.assertEqual([(f["path"], f["bytes"]) for f in ins["folders"]], [("/B", 5300), ("/A", 5000)])
+        self.assertEqual(len(ins["duplicates"]), 1)
+        self.assertEqual({f["path"] for f in ins["duplicates"][0]["files"]}, {"/A/one.bin", "/B/copy.bin"})
+        self.assertEqual(ins["duplicate_bytes"], 5000)
+        status, _, data = self.req("GET", "/api/zip?paths=" + urllib.parse.quote(json.dumps(["/B", "/big.mp4"])))
+        self.assertEqual(status, 200)
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            self.assertEqual(sorted(zf.namelist()), ["B/", "B/copy.bin", "B/song.mp3", "big.mp4"])
+            self.assertEqual(zf.read("B/copy.bin"), same)
+
+    def test_file_request(self):
+        self.login()
+        self.write(self.d, "/Inbox/already-here.txt", b"private")
+        self.assertEqual(self.post("/api/share", {"path": "/Inbox/already-here.txt", "upload": True})[0], 400)
+        status, link = self.post("/api/share", {"path": "/Inbox", "upload": True, "max_mb": 1, "hours": 24})
+        self.assertEqual((status, link["upload"]), (200, True))
+        self.cookie = None                                                                    # a visitor
+        status, _, page = self.req("GET", link["path"], auth=False)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Send files to", page)
+        self.assertNotIn(b"already-here", page)                                               # sees nothing of the folder
+        self.assertEqual(self.req("GET", link["path"] + "/raw?p=already-here.txt", auth=False)[0], 404)
+        self.assertEqual(self.req("GET", link["path"] + "/zip", auth=False)[0], 404)
+        up = link["path"] + "/upload?name="
+        status, _, data = self.req("POST", up + "holiday.jpg", body=b"JPEGDATA", headers={"X-DD": ""}, auth=False)
+        self.assertEqual((status, json.loads(data)["name"]), (200, "holiday.jpg"))
+        status, _, data = self.req("POST", up + "holiday.jpg", body=b"another", auth=False)
+        self.assertEqual(json.loads(data)["name"], "holiday (2).jpg")                         # never overwrites
+        status, _, data = self.req("POST", up + urllib.parse.quote("../../evil/..\\x.txt"), body=b"x", auth=False)
+        self.assertEqual(json.loads(data)["name"], "x.txt")                                   # stays inside the folder
+        self.assertEqual(self.req("POST", up + "huge.bin", body=b"x" * (1024 * 1024 + 1), auth=False)[0], 413)
+        self.assertEqual(self.read(self.d, "/Inbox/holiday.jpg", cold=False), b"JPEGDATA")
+        self.assertEqual(sorted(n for n, _, _ in self.d.fs.readdir("/Inbox", None) if n[0] != "."),
+                         ["already-here.txt", "holiday (2).jpg", "holiday.jpg", "x.txt"])
+        self.assertIsNone(self.d.index.resolve("/evil"))
+        # an ordinary share link takes no files
+        self.login()
+        _, plain = self.post("/api/share", {"path": "/Inbox"})
+        self.assertEqual(self.req("POST", plain["path"] + "/upload?name=a.txt", body=b"x", auth=False)[0], 404)
+
+    def test_save_from_a_web_address(self):
+        import http.server
+        import threading
+
+        class Site(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"downloaded content" * 100
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Disposition", 'attachment; filename="report final.pdf"')
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        site = http.server.HTTPServer(("127.0.0.1", 0), Site)
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        try:
+            self.login()
+            url = f"http://127.0.0.1:{site.server_address[1]}/get?id=7"
+            status, r = self.post("/api/fetch", {"url": url, "path": "/"})
+            self.assertEqual(status, 400)                                                     # this computer: refused
+            self.assertEqual(self.post("/api/fetch", {"url": "file:///etc/passwd", "path": "/"})[0], 400)
+            self.d.cfg.fetch_private = True
+            self.assertEqual(self.post("/api/fetch", {"url": url, "path": "/"})[0], 200)
+            for _ in range(100):
+                fetches = self.get("/api/status")["fetches"]
+                if fetches and fetches[0]["state"] != "running":
+                    break
+                time.sleep(0.05)
+            self.assertEqual((fetches[0]["state"], fetches[0]["name"]), ("done", "report final.pdf"))
+            self.assertEqual(self.read(self.d, "/report final.pdf", cold=False), b"downloaded content" * 100)
+        finally:
+            site.shutdown()
+            site.server_close()
+
+    def dav(self, method, path, body=None, headers=None, auth="Dennis:correct horse"):
+        import base64
+        h = dict(headers or {})
+        if auth:
+            h["Authorization"] = "Basic " + base64.b64encode(auth.encode()).decode()
+        conn = http.client.HTTPConnection("127.0.0.1", self.web.port, timeout=10)
+        conn.request(method, urllib.parse.quote(path), body=body, headers=h)
+        r = conn.getresponse()
+        data = r.read()
+        conn.close()
+        return r.status, data
+
+    def test_webdav(self):
+        self.assertEqual(self.dav("PROPFIND", "/dav/")[0], 404)                               # off unless turned on
+        self.d.cfg.webdav_enabled = True
+        self.assertEqual(self.dav("OPTIONS", "/dav/", auth=None)[0], 200)
+        self.assertEqual(self.dav("PROPFIND", "/dav/", auth=None)[0], 401)
+        self.assertEqual(self.dav("PROPFIND", "/dav/", auth="Dennis:wrong")[0], 401)
+        self.assertEqual(self.dav("MKCOL", "/dav/Docs")[0], 201)
+        self.assertEqual(self.dav("MKCOL", "/dav/Docs")[0], 405)
+        self.assertEqual(self.dav("PUT", "/dav/Docs/my notes.txt", body=b"from another app")[0], 201)
+        self.assertEqual(self.dav("PUT", "/dav/Docs/my notes.txt", body=b"changed")[0], 204)
+        self.assertEqual(self.dav("PUT", "/dav/Nope/x.txt", body=b"x")[0], 409)
+        self.assertEqual(self.dav("GET", "/dav/Docs/my notes.txt"), (200, b"changed"))
+        status, xml = self.dav("PROPFIND", "/dav/Docs", headers={"Depth": "1"})
+        self.assertEqual(status, 207)
+        self.assertIn(b"<D:href>/dav/Docs/</D:href>", xml)
+        self.assertIn(b"<D:href>/dav/Docs/my%20notes.txt</D:href>", xml)
+        self.assertIn(b"<D:getcontentlength>7</D:getcontentlength>", xml)
+        self.assertEqual(xml.count(b"<D:response>"), 2)
+        self.assertEqual(self.dav("PROPFIND", "/dav/Docs", headers={"Depth": "0"})[1].count(b"<D:response>"), 1)
+        dest = {"Destination": f"http://127.0.0.1:{self.web.port}/dav/Docs/renamed.txt"}
+        self.assertEqual(self.dav("COPY", "/dav/Docs/my notes.txt", headers=dest)[0], 201)
+        self.assertEqual(self.dav("MOVE", "/dav/Docs/my notes.txt", headers=dict(dest, Overwrite="F"))[0], 412)
+        self.assertEqual(self.dav("MOVE", "/dav/Docs/my notes.txt", headers=dest)[0], 204)
+        self.assertEqual(self.dav("GET", "/dav/Docs/my notes.txt")[0], 404)
+        self.assertEqual(self.read(self.d, "/Docs/renamed.txt", cold=False), b"changed")
+        self.assertEqual(self.dav("LOCK", "/dav/Docs/renamed.txt", body=b"<lockinfo/>")[0], 200)
+        # a password-locked folder is never reachable this way
+        self.d.locks.add(self.d.index.resolve("/Docs"), "hunter2")
+        self.assertEqual(self.dav("GET", "/dav/Docs/renamed.txt")[0], 404)
+        self.assertNotIn(b"Docs", self.dav("PROPFIND", "/dav/")[1])
+        self.d.locks.remove(self.d.index.resolve("/Docs")["uid"])
+        self.assertEqual(self.dav("DELETE", "/dav/Docs")[0], 204)
+        self.assertIsNone(self.d.index.resolve("/Docs"))
+        self.assertEqual(self.dav("DELETE", "/dav/")[0], 403)
+
+    def test_installable(self):
+        status, headers, body = self.req("GET", "/manifest.webmanifest", auth=False)
+        self.assertEqual((status, headers["Content-Type"]), (200, "application/manifest+json"))
+        self.assertEqual(json.loads(body)["display"], "standalone")
+        self.assertEqual(self.req("GET", "/icon.png", auth=False)[0], 200)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

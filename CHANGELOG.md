@@ -3,6 +3,30 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.0.0 (2026-10-09)
+
+- Home: the dashboard opens on an overview with what is on the drive, how well it is protected, folder
+  sync and shared links, your starred items, the most recent files and the latest activity.
+- Starred: star any file or folder (right-click, or in its details). Stars sync to all your devices.
+- Activity: what was added, changed, renamed, moved and deleted, when, and on which device. Recent: the
+  files changed last, anywhere on the drive.
+- Storage: space by kind of file, the biggest folders and files, and identical files with one click to
+  keep the oldest and delete the copies. Folders show their size in Files.
+- File requests: right-click a folder, "Request files". People with the link send files into that folder
+  from a simple page, without seeing what is in it; names never overwrite. With an expiry, an optional
+  password and a size limit; listed under Shared with the number of files received.
+- Edit text files in the browser (notes, code, config files): Edit in the menu or the details, Ctrl+S
+  saves, and the version before is kept.
+- Save from a link: paste a web address and the drive downloads the file itself into a folder, with
+  progress and Cancel. Addresses on this computer or the home network are refused.
+- Find anything with Ctrl+K: files, pages and actions from one box. Paste a screenshot or copied files
+  anywhere to upload them. Download a selection of files and folders as one ZIP.
+- Install as an app: the dashboard can be added to a phone's home screen or installed from the browser
+  on a computer, and opens in its own window.
+- Other apps (WebDAV): the drive can be opened by file managers on phones, "Map network drive", Finder,
+  rclone and backup apps at /dav/, with the dashboard's user name and password. Off until turned on in
+  Settings; password-locked folders are never shown there.
+
 ## 0.12.0 (2026-10-09)
 
 - The config file no longer holds its secrets readable. Bot tokens, encryption keys and the dashboard

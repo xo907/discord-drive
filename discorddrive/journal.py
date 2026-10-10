@@ -33,7 +33,7 @@ OP_INLINE_MAX = 1900       # Discord message content limit is 2000 characters
 GC_INTERVAL = 3600.0
 HEARTBEAT = 12 * 3600.0    # a device that posted nothing for this long says it is still around
 CATCH_UP_DAYS = 14         # after an upgrade, re-read this much history for what older versions skipped
-FEATURES = "5"             # kv "features": this index has applied the journal with the current op set
+FEATURES = "6"             # kv "features": this index has applied the journal with the current op set
 
 
 def _hostname():
@@ -52,6 +52,7 @@ class Journal:
         self.staging_dir = staging_dir
         self.fs = None
         self.device = getattr(cfg, "device_id", "") or "unknown"
+        index.device = self.device
 
         self._sync_lock = threading.Lock()   # one flush/poll/checkpoint at a time
         self._wake = threading.Event()
@@ -143,7 +144,7 @@ class Journal:
                     env, ops = self._read_entry(m)
                     if env is not None and env.get("d"):
                         seen[str(env["d"])] = (self._time_of(m["id"]), str(env.get("h") or ""))
-                    changed_total += self._apply(ops, m["id"])
+                    changed_total += self._apply(ops, m["id"], str(env.get("d") or "") if env else "")
                 cursor = m["id"]
             self.index.kv_set("journal_cursor", cursor)
             self.index.note_devices(seen)
@@ -207,12 +208,12 @@ class Journal:
         log.info("Snapshot taken: %d file(s)%s.", files, f" ({label})" if label else "")
         return ops[0]["i"]
 
-    def _apply(self, ops, mid) -> int:
+    def _apply(self, ops, mid, device="") -> int:
         fs = self.fs
         if fs is None:
-            return len(self.index.apply_ops(ops, mid))
+            return len(self.index.apply_ops(ops, mid, device=device))
         with fs.lock:  # keep FUSE operations from interleaving with the batch
-            changed = self.index.apply_ops(ops, mid, busy=fs.is_busy)
+            changed = self.index.apply_ops(ops, mid, busy=fs.is_busy, device=device)
             fs.on_remote_change(changed)
         return len(changed)
 

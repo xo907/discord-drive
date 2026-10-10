@@ -56,10 +56,14 @@ class Shares:
             return None
         return rec
 
-    def create(self, uid, is_dir, hours=24 * 7, password="", download=True):
+    def create(self, uid, is_dir, hours=24 * 7, password="", download=True, upload=None):
+        """upload: make it a file request instead: people send files into the folder (up to this many
+        bytes each) and can't see what is in it."""
         sid = secrets.token_urlsafe(12)
         rec = {"u": uid, "d": bool(is_dir), "c": time.time(), "e": _expiry(hours),
                "pw": hash_password(password) if password else "", "dl": bool(download)}
+        if upload:
+            rec["up"] = int(upload)
         self.index.share_put(sid, rec)
         return sid, dict(rec, v=0)
 
