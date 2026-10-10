@@ -37,7 +37,7 @@ from .index import ROOT_ID, new_uid
 from . import passkeys
 from .shares import Shares
 from .bookmarks import BookmarkHandlers
-from .webplus import ApiErrorProxy, Fetches, PlusHandlers
+from .webplus import ApiErrorProxy, Fetches, PlusHandlers, housekeeping
 
 log = logging.getLogger("discorddrive.web")
 
@@ -1454,8 +1454,8 @@ class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
             if folder is None or not (folder + "/").replace("//", "/").startswith(prefix):
                 continue
             p = posixpath.join(folder, r["name"])
-            if fs._hidden(p):
-                continue
+            if fs._hidden(p) or (housekeeping(p) and not housekeeping(prefix)):
+                continue                         # bookmark banners aren't photos (unless that folder itself is opened)
             total += 1
             if offset < total <= offset + limit:
                 items.append(dict(self._entry(p, r), thumb=self._thumb_state(r)))

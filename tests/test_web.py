@@ -850,6 +850,11 @@ class WebTest(helpers.DriveTest):
             self.assertTrue(r["bookmark"]["pinned"])                                           # a refresh keeps the pin
             self.assertEqual((status, r["bookmark"]["title"], r["bookmark"]["site"]), (200, "Bread", "Bread Weekly"))  # your title stays
             self.assertEqual(json.loads(self.read(self.d, "/Bookmarks/Bookmarks.json", cold=False))["items"][1]["note"], "try it")
+            # the preview pictures and the list are housekeeping: not in Recent, Activity or the Gallery
+            self.assertEqual([i["path"] for i in self.get("/api/recent")["items"]], [])
+            self.assertEqual(self.get("/api/media")["total"], 0)
+            self.assertEqual(self.get("/api/history")["items"], [])
+            self.assertEqual(self.get("/api/media?path=%2FBookmarks")["total"], 2)             # still there when asked for
             self.assertEqual(self.post("/api/bookmarks/delete", {"ids": [b["id"]]})[1]["removed"], 1)
             self.assertIsNone(self.d.index.resolve(b["image"]))
             self.assertEqual(len(self.get("/api/bookmarks")["items"]), 1)

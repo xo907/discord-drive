@@ -3,6 +3,13 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.2.2 (2026-10-09)
+
+- The pictures and the list that Bookmarks keeps in /Bookmarks no longer show up in Recent, Activity
+  and the Gallery (they are still ordinary files in Files, and the Gallery of /Bookmarks itself still
+  shows them).
+- A new front page for the project: what you get, screenshots of the dashboard, and how it compares.
+
 ## 1.2.1 (2026-10-09)
 
 - Signing in with a passkey works: it failed with "Unexpected token '<' ... is not valid JSON". The

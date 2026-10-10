@@ -1,30 +1,138 @@
 <h1 align="center">
-    <img src="docs/images/logo-128.png" height="64" width="64" alt=""><br>
+    <img src="docs/images/logo-128.png" height="72" width="72" alt=""><br>
     DiscordDrive
 </h1>
-<p align="center"><b>An encrypted virtual drive backed by a private Discord channel.</b><br>Made by <b>XO.ST</b> · <a href="https://github.com/xo907/discord-drive">github.com/xo907/discord-drive</a></p>
+<p align="center">
+  <b>Your own private cloud drive.</b><br>
+  Encrypted on your computer, stored in a Discord channel, synced across your devices,<br>
+  with a dashboard that rivals the big cloud drives.
+</p>
+<p align="center">
+  <a href="https://github.com/xo907/discord-drive/actions/workflows/tests.yml"><img src="https://github.com/xo907/discord-drive/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/xo907/discord-drive/releases"><img src="https://img.shields.io/github/v/release/xo907/discord-drive?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9 or newer">
+  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20Raspberry%20Pi-informational" alt="Windows, Linux, Raspberry Pi">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT license"></a>
+</p>
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-you-get">What you get</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#how-it-compares">How it compares</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
----
+<p align="center"><img src="docs/images/screens/home.png" alt="The DiscordDrive dashboard: what is on the drive, starred files with thumbnails, recent files and activity from several devices" width="100%"></p>
 
-DiscordDrive turns a private Discord channel into an encrypted drive: a drive letter on Windows
-(e.g. `Z:\`) or a folder on Linux (e.g. `/mnt/discord`). It works on Windows, Linux servers and
-Raspberry Pi, and keeps all your devices in sync.
+DiscordDrive turns a private Discord channel into a drive of your own: a drive letter on Windows
+(`Z:\`), a folder on Linux, and a web app in your browser and on your phone. Everything is encrypted
+on your computer before it leaves, so Discord only ever stores random-looking pieces. There is no
+subscription, no storage plan and no account with anyone but Discord, and the whole thing is one small
+open-source program in plain Python that runs on your own PC, server or Raspberry Pi.
 
-Files you save to the drive are staged locally, split into pieces, compressed when that helps,
-encrypted, and uploaded as attachments to your channel, together with a few **spare pieces** that
-let the drive rebuild anything Discord loses. Reading only downloads the pieces that cover the
-requested byte range, so videos stream and seek without downloading the whole file first.
+<table>
+<tr>
+<td width="33%" valign="top">
 
-It heals itself when Discord loses data, compresses and de-duplicates, keeps earlier versions and
-snapshots, syncs and backs up folders, and comes with a web dashboard for your browser and phone:
-files, a photo gallery, sharing and file requests, activity, storage insights, password-locked
-folders and more. See [Web dashboard](#web-dashboard) and the [changelog](CHANGELOG.md).
+**Private by design**
 
-<p align="center"><img src="docs/images/overview.svg" alt="Your devices sync through DiscordDrive, which stores encrypted pieces in a private Discord channel" width="100%"></p>
+AES-256-GCM encryption happens on your machine. File names, folders and contents never reach Discord
+in readable form. The key is yours alone: 24 words you write down.
+
+</td>
+<td width="33%" valign="top">
+
+**A real drive**
+
+Open, save and stream from any program. Videos seek without downloading whole files. Files take no
+local space until you open them, and every device stays in sync within seconds.
+
+</td>
+<td width="33%" valign="top">
+
+**Looks after itself**
+
+Spare pieces rebuild anything Discord loses. Earlier versions, deleted files and whole-drive
+snapshots can be brought back. A background check finds problems before you do.
+
+</td>
+</tr>
+</table>
 
 > **Heads-up:** using Discord as general-purpose file storage may violate Discord's Terms of
 > Service, and Discord can delete messages, attachments, or your bot/account at any time. Treat
 > DiscordDrive as an experiment, **not** as your only copy of anything important.
+
+## What you get
+
+| | |
+|---|---|
+| **Drive** | A drive letter or mount folder that every app can use · streaming and seeking · files on demand · offline pinning · live sync between Windows, Linux and Raspberry Pi |
+| **Dashboard** | Home overview · files with a grid view · **photo and video gallery** with thumbnails and a full-screen viewer · notes · contacts · **bookmarks with link previews** · starred and recent · find anything with Ctrl+K · installable as an app on your phone |
+| **Sharing** | Links with an expiry, a password and view-only mode · direct links that embed in Discord · **file requests**: let others upload into a folder they can't see |
+| **Backup and sync** | Keep folders on your computer backed up, mirrored or two-way synced, live or on a schedule · save a file straight from a web link · WebDAV for other apps |
+| **Safety net** | Self-healing with spare pieces (Reed-Solomon) · versions of every file · undelete · daily snapshots of the whole drive · an activity list of what changed, when, on which device |
+| **Security** | Zero-knowledge encryption · **passkeys** (fingerprint, face, security key) for the dashboard · a 24-word recovery phrase · password-locked folders that vanish until unlocked · secrets in the config encrypted for your machine |
+| **Insight** | What takes the space, by kind and by folder · the largest files · a duplicate finder · health and repair status |
+| **Efficiency** | Compression · identical pieces stored once · parallel uploads with extra bots · gentle pacing that stays inside Discord's limits |
+
+All of it is described further down: [Web dashboard](#web-dashboard) ·
+[Sync and back up folders](#sync-and-back-up-folders) · [Password-locked folders](#password-locked-folders) ·
+[Self-healing](#self-healing) · [Snapshots](#snapshots) · [The config file](#the-config-file).
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/screens/gallery.png" alt="Gallery: photos and videos by month, with thumbnails"><br><sub><b>Gallery.</b> Every photo and video, newest first. Thumbnails are made once and kept encrypted.</sub></td>
+<td width="50%"><img src="docs/images/screens/bookmarks.png" alt="Bookmarks: cards with banners, pinned ones at the top, tags"><br><sub><b>Bookmarks.</b> Paste a link; the title, icon and banner are saved on your drive. Pin, tag and filter.</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/screens/files.png" alt="Files shown as a grid of thumbnails"><br><sub><b>Files.</b> List or grid, drag and drop, right-click for everything, folder sizes at a glance.</sub></td>
+<td><img src="docs/images/screens/storage.png" alt="Storage: space by kind of file, biggest folders, identical files"><br><sub><b>Storage.</b> Space by kind and folder, the largest files, and identical copies to clean up.</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/screens/palette.png" alt="The find box opened with Ctrl+K, showing matching files"><br><sub><b>Find anything.</b> Ctrl+K searches files, pages and actions from one box.</sub></td>
+<td><img src="docs/images/screens/viewer.png" alt="A photo opened in the full-screen viewer"><br><sub><b>Viewer.</b> Full screen, arrow keys for next and previous. Videos stream and seek.</sub></td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/screens/phone.png" alt="The dashboard on a phone: home" width="270">
+  &nbsp;&nbsp;
+  <img src="docs/images/screens/phone-gallery.png" alt="The dashboard on a phone: gallery" width="270">
+  <br><sub><b>On your phone.</b> The same dashboard, installable to the home screen.</sub>
+</p>
+
+<sub>Screenshots show a demo drive with generated pictures.</sub>
+
+## How it compares
+
+| | DiscordDrive | Typical cloud drive |
+|---|---|---|
+| Price | Free and open source | Free for a few GB, then a subscription |
+| Storage limit | None of its own (Discord's rules apply) | 2 to 15 GB free |
+| Who can read your files | Only you: encrypted before upload, key never leaves your devices | The provider holds the keys |
+| File names visible to the provider | No | Yes |
+| Versions, undelete, snapshots | Yes | Usually, often on paid plans |
+| Sharing links, file requests | Yes | Yes |
+| Photo gallery, notes, contacts, bookmarks | Yes | Varies |
+| Passkey sign-in | Yes | Varies |
+| Repairs data the storage loses | Yes, automatically | Not your concern: the provider guarantees it |
+| Guarantee that your data stays | **None.** Discord can remove it; keep another copy | Service agreement |
+| Runs on | Your own PC, server or Raspberry Pi | The provider's servers |
+
+DiscordDrive gives you the features and the privacy; it cannot give you a provider's promise. That is
+what the heads-up above is about.
+
+<p align="center"><img src="docs/images/overview.svg" alt="Your devices sync through DiscordDrive, which stores encrypted pieces in a private Discord channel" width="100%"></p>
+
+Files you save are staged locally, split into pieces, compressed when that helps, encrypted, and
+uploaded as attachments to your channel together with a few spare pieces. Reading downloads only the
+pieces that cover what is being read. More in [How it works](#how-it-works).
+
+<p align="center">Made by <b>XO.ST</b> · <a href="https://github.com/xo907/discord-drive">github.com/xo907/discord-drive</a></p>
 
 ---
 
@@ -153,36 +261,31 @@ other devices**:
 
 ---
 
-## What's new in 0.2
+## Built to survive Discord
 
 - **Self-healing.** Every group of 10 pieces is stored with 2 spare pieces (Reed-Solomon, the same
   idea as RAID 6), so any 2 lost pieces of a group can be rebuilt. If Discord deletes a piece, the
   file still opens: the piece is rebuilt on the fly, uploaded again, and every device learns where
   it now lives. A background check confirms every piece is still there (one full pass a week) and
-  repairs what isn't, before losses can pile up. Files uploaded with older versions get spare
-  pieces added in the background. Everything stays 100% on Discord: spare pieces are ordinary
-  encrypted attachments in your channel. They cost about 20% extra space on big files.
+  repairs what isn't, before losses can pile up. Spare pieces are ordinary encrypted attachments in
+  your channel and cost about 20% extra space on big files.
 - **Compression and de-duplication.** Pieces that shrink (documents, text, logs, many app files)
   are compressed before they are encrypted; lossless, and the encryption is exactly as strong.
   Pieces the drive already stores (a copied file, the same photo in two folders) are not uploaded
   again.
 - **Faster uploads.** Several pieces upload at once, and you can add extra bots: Discord limits
   how fast *one* bot may post, so each extra bot adds speed (menu 6 → Bots, or `bots add`).
-- **Web dashboard.** Browse, preview (photos, video, music, PDF, text), upload, rename, share and
-  restore files in your browser, see what is uploading and how healthy the drive is. Turn on
-  "Web dashboard on your network" to use it from your phone. See [Web dashboard](#web-dashboard).
 - **Snapshots.** The whole drive as it was at one moment, taken every 24 hours and kept 14 days.
   Bring back a folder (or everything) as it was on Tuesday, into a new folder so nothing current
   is touched.
-- **Selective sync.** Folders marked "available offline" now stay downloaded as they change,
-  including new files added on other devices. Folders can be hidden on one device only (`hide`),
-  e.g. `/Movies` on the Raspberry Pi.
-- **Stronger password protection** for new drives: passwords are turned into keys with scrypt,
-  which makes guessing them far more expensive than before (existing drives keep working).
-- **Tests** run on Windows and Linux for every change, and releases come with installers.
+- **Selective sync.** Folders marked "available offline" stay downloaded as they change, including
+  new files added on other devices. Folders can be hidden on one device only (`hide`), e.g.
+  `/Movies` on the Raspberry Pi.
+- **Tested.** More than a hundred automated tests run on Windows and Linux for every change, and
+  releases come with installers.
 
-> **Update every device.** Pieces uploaded by 0.2 can be compressed, which older versions can't
-> read. Update all your devices (menu option 4) before copying new files onto the drive.
+> **Keep every device on the same version.** Update all of them (menu option 4) before relying on a
+> new feature: locks, stars and other newer records are only understood by versions that know them.
 
 ## Features
 

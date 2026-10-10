@@ -31,6 +31,12 @@ FETCH_KEEP = 90.0                    # finished "save from a link" downloads sta
 DAV_METHODS = ("OPTIONS", "PROPFIND", "PROPPATCH", "MKCOL", "PUT", "DELETE", "MOVE", "COPY", "LOCK", "UNLOCK")
 
 
+def housekeeping(path):
+    """True for files the dashboard keeps for itself (bookmark previews): they stay out of Recent, Activity
+    and the Gallery, where they would only be noise. They are ordinary files in Files."""
+    return (path or "").lower().startswith("/bookmarks/")
+
+
 def clean_name(name, fallback="file"):
     """A file name somebody else chose, made safe to store: no folders, no control characters."""
     name = urllib.parse.unquote(str(name or "")).replace("\\", "/").rsplit("/", 1)[-1]
@@ -232,7 +238,7 @@ class PlusHandlers:
         app._tree_cache = (time.time(), paths, sizes)
         return paths, sizes
 
-    def _files(self, where="", args=(), order="mtime DESC", limit=None):
+    def _files(self, where="", args=(), order="mtime DESC", limit=None, skip_own=False):
         """Entries of the files matching an SQL condition, without hidden and locked ones."""
         paths, _ = self._tree()
         stars = self.drive.index.stars_all()
@@ -242,7 +248,7 @@ class PlusHandlers:
             if folder is None:
                 continue
             p = posixpath.join(folder, r["name"])
-            if self.drive.fs._hidden(p):
+            if self.drive.fs._hidden(p) or (skip_own and housekeeping(p)):
                 continue
             e = self._entry(p, r)
             if r["uid"] in stars:
@@ -281,7 +287,7 @@ class PlusHandlers:
         self._json({"items": self._starred()})
 
     def _recent(self, limit):
-        items = self._files(limit=limit)
+        items = self._files(limit=limit, skip_own=True)
         ext = self._media_ext()
         for e in items:
             if e["name"].rpartition(".")[2].lower() in ext:
@@ -308,7 +314,7 @@ class PlusHandlers:
                 break
             for r in rows:
                 cursor = r["id"]
-                if self.drive.fs._hidden(r["path"]) or (r["src"] and self.drive.fs._hidden(r["src"])):
+                if self.drive.fs._hidden(r["path"]) or (r["src"] and self.drive.fs._hidden(r["src"]))                         or housekeeping(r["path"]) or r["path"].lower() == "/bookmarks":
                     continue
                 dev = r["device"] or me
                 r["device_name"] = (devices.get(dev) or {}).get("name") or (socket.gethostname() if dev == me else dev)
