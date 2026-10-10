@@ -35,6 +35,7 @@ from .config import Config, config_path, launcher as _launcher
 from .crypto import check_password, hash_password
 from .index import ROOT_ID, new_uid
 from .shares import Shares
+from .bookmarks import BookmarkHandlers
 from .webplus import ApiErrorProxy, Fetches, PlusHandlers
 
 log = logging.getLogger("discorddrive.web")
@@ -246,7 +247,7 @@ class WebServer:
         return _b64(hmac.new(self._secret(b"share"), msg, hashlib.sha256).digest())
 
 
-class _Handler(PlusHandlers, BaseHTTPRequestHandler):
+class _Handler(PlusHandlers, BookmarkHandlers, BaseHTTPRequestHandler):
     server_version = "DiscordDrive"
     protocol_version = "HTTP/1.1"
 

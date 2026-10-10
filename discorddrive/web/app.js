@@ -68,6 +68,7 @@ const ICONS = {
   globe: '<circle cx="10" cy="10" r="7"/><path d="M3 10h14M10 3c2 2.2 3 4.5 3 7s-1 4.8-3 7c-2-2.2-3-4.5-3-7s1-4.8 3-7z"/>',
   minus: '<path d="M5 10h10"/>',
   play: '<path d="M7 4.5v11l9-5.5z"/>',
+  bookmark: '<path d="M5.5 3.5h9a1 1 0 0 1 1 1v12.5l-5.500-3.500-5.500 3.500V4.500a1 1 0 0 1 1-1z"/>',
   star: '<path d="m10 3 2.1 4.4 4.8.6-3.5 3.3.9 4.8L10 13.8 5.7 16.1l.9-4.8L3.1 8l4.8-.6z"/>',
   grid: '<rect x="3.5" y="3.5" width="5.5" height="5.5" rx="1"/><rect x="11" y="3.5" width="5.5" height="5.5" rx="1"/><rect x="3.5" y="11" width="5.5" height="5.5" rx="1"/><rect x="11" y="11" width="5.5" height="5.5" rx="1"/>',
   list: '<path d="M4 5.5h12M4 10h12M4 14.5h12"/>',
@@ -377,7 +378,7 @@ function render() {
                   snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
                   settings: renderSettings, log: renderLog, check: renderCheck, contacts: renderContacts, sync: renderSync,
                   gallery: renderGallery, home: renderHome, starred: renderStarred, recent: renderRecent,
-                  history: renderHistory, storage: renderStorage };
+                  history: renderHistory, storage: renderStorage, bookmarks: renderBookmarks };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -2545,6 +2546,154 @@ function syncForm(j) {
   m.dlg.classList.add("wide");
 }
 
+// ------------------------------------------------------------------ bookmarks
+// Web addresses saved with a preview. Kept in /Bookmarks on the drive (the list and the pictures), so
+// they are encrypted, synced and versioned, and showing them loads nothing from the sites themselves.
+let marks = [];
+let markTag = "";
+let markFilter = "";
+const markPending = new Map();      // temporary id -> address being read
+const hostOf = (url) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; } };
+const looksLikeLink = (t) => /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?(\/\S*)?$/i.test(t.trim()) || /^https?:\/\/\S+$/i.test(t.trim());
+
+function hue(text) {
+  let n = 0;
+  for (const c of text) n = (n * 31 + c.charCodeAt(0)) % 360;
+  return n;
+}
+
+function markCard(b) {
+  const host = hostOf(b.url);
+  const v = Math.floor(b.added || 0);
+  const banner = h("div", { class: "bm-banner" + (b.image ? "" : " plain"), style: b.image ? null
+      : `background:linear-gradient(135deg, hsl(${hue(host)} 55% 42%), hsl(${(hue(host) + 48) % 360} 60% 30%))` },
+    b.image ? h("img", { src: fileUrl(b.image) + "&v=" + v, alt: "", loading: "lazy", onerror: (e) => { e.target.remove(); banner.classList.add("plain"); banner.style.cssText = `background:linear-gradient(135deg, hsl(${hue(host)} 55% 42%), hsl(${(hue(host) + 48) % 360} 60% 30%))`; banner.prepend(h("span", { class: "bm-letter" }, host.slice(0, 1).toUpperCase())); } })
+            : b.icon ? h("span", { class: "bm-badge" }, h("img", { src: fileUrl(b.icon) + "&v=" + v, alt: "", loading: "lazy",
+                         onerror: (e) => e.target.parentNode.replaceWith(h("span", { class: "bm-letter" }, host.slice(0, 1).toUpperCase())) }))
+            : h("span", { class: "bm-letter" }, host.slice(0, 1).toUpperCase()));
+  const menu = () => [
+    { label: "Open", icon: "open", run: () => window.open(b.url, "_blank", "noopener,noreferrer") },
+    { label: "Copy the link", icon: "link", run: async () => { try { await navigator.clipboard.writeText(b.url); toast("Link copied"); } catch { await ask({ title: "Link", value: b.url, ok: "Done" }); } } },
+    { label: "Edit…", icon: "rename", run: () => markEdit(b) },
+    { label: "Read the preview again", icon: "refresh", run: async () => {
+      toast("Reading the page…");
+      const r = await attempt(() => api("/api/bookmarks/refresh", { id: b.id }), "Preview updated");
+      if (r) { Object.assign(b, r.bookmark, { added: Date.now() / 1000 }); drawMarks(); }
+    } },
+    "-",
+    { label: "Delete", icon: "trash", danger: true, run: async () => {
+      if (await attempt(() => api("/api/bookmarks/delete", { ids: [b.id] }), "Bookmark deleted")) { marks = marks.filter((x) => x.id !== b.id); drawMarks(); }
+    } },
+  ];
+  const card = h("a", { class: "bm-card", href: b.url, target: "_blank", rel: "noopener noreferrer", title: b.url },
+    banner,
+    h("div", { class: "bm-body" },
+      h("div", { class: "bm-site" },
+        b.icon ? h("img", { class: "bm-icon", src: fileUrl(b.icon) + "&v=" + v, alt: "", loading: "lazy", onerror: (e) => e.target.replaceWith(icon("globe", "bm-icon")) })
+               : icon("globe", "bm-icon"),
+        h("span", { class: "s" }, b.site || host), h("span", { class: "d" }, ago(b.added))),
+      h("div", { class: "bm-title" }, b.title || host),
+      b.description && h("div", { class: "bm-desc" }, b.description),
+      b.note && h("div", { class: "bm-note" }, b.note),
+      (b.tags || []).length ? h("div", { class: "bm-tags" }, b.tags.map((t) =>
+        h("button", { class: "bm-tag", type: "button", onclick: (e) => { e.preventDefault(); e.stopPropagation(); markTag = markTag === t ? "" : t; drawMarks(); } }, t))) : null),
+    h("button", { class: "icon-btn bm-more", "aria-label": `Actions for ${b.title || host}`, title: "Actions",
+                  onclick: (e) => { e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openMenu(menu(), r.right - 220, r.bottom + 4, b.title || host, host); } }, icon("more")));
+  bindMenu(card, menu, b.title || host, host, (e) => !!e.target.closest(".bm-more"));
+  return card;
+}
+
+function drawMarks() {
+  const grid = $("#bm-grid");
+  if (!grid) return;
+  const tags = new Map();
+  for (const b of marks) for (const t of b.tags || []) tags.set(t, (tags.get(t) || 0) + 1);
+  if (markTag && !tags.has(markTag)) markTag = "";
+  const f = markFilter.toLowerCase();
+  const shown = marks.filter((b) => (!markTag || (b.tags || []).includes(markTag))
+    && (!f || [b.title, b.description, b.site, b.url, b.note, ...(b.tags || [])].some((x) => (x || "").toLowerCase().includes(f))));
+  $("#bm-tags").replaceChildren(...(tags.size ? [h("button", { class: "bm-chip" + (markTag ? "" : " on"), onclick: () => { markTag = ""; drawMarks(); } }, "All", h("i", {}, marks.length)),
+    ...[...tags].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t, n]) =>
+      h("button", { class: "bm-chip" + (markTag === t ? " on" : ""), onclick: () => { markTag = markTag === t ? "" : t; drawMarks(); } }, t, h("i", {}, n)))] : []));
+  const loading = [...markPending.values()].map((url) => h("div", { class: "bm-card loading" },
+    h("div", { class: "bm-banner" }), h("div", { class: "bm-body" }, h("div", { class: "bm-site" }, h("span", { class: "s" }, hostOf(url))),
+      h("div", { class: "bm-title" }, "Reading the page…"), h("div", { class: "bm-line" }), h("div", { class: "bm-line short" }))));
+  grid.replaceChildren(...loading, ...shown.map(markCard));
+  $("#bm-empty").hidden = loading.length + shown.length > 0;
+  $("#bm-empty").replaceChildren(...(marks.length ? [h("b", {}, "Nothing matches"), "Try another word or tag."]
+    : [h("b", {}, "No bookmarks yet"), "Paste a link above, or press Ctrl+V anywhere on this page."]));
+  $("#bm-count").textContent = marks.length ? plural(marks.length, "bookmark") : "";
+}
+
+async function addMark(text) {
+  const urls = text.split(/\s+/).map((t) => t.trim()).filter(looksLikeLink).slice(0, 20);
+  if (!urls.length) return toast("That doesn't look like a web address");
+  await Promise.all(urls.map(async (url) => {
+    const key = Math.random().toString(36).slice(2);
+    markPending.set(key, url);
+    drawMarks();
+    const r = await api("/api/bookmarks/add", { url, tags: markTag ? [markTag] : [] }).catch((e) => { toast(e.message); return null; });
+    markPending.delete(key);
+    if (r) {
+      marks = [r.bookmark, ...marks.filter((b) => b.id !== r.bookmark.id)];
+      if (r.existed) toast("Already saved: moved to the front");
+      else if (!r.preview) toast("Saved. The page gave no preview.");
+    }
+    drawMarks();
+  }));
+}
+
+function markEdit(b) {
+  const title = h("input", { value: b.title || "", spellcheck: "true" });
+  const desc = h("textarea", { class: "bm-area", rows: "3" });
+  desc.value = b.description || "";
+  const tags = h("input", { value: (b.tags || []).join(", "), placeholder: "e.g. recipes, to read", spellcheck: "false" });
+  const note = h("textarea", { class: "bm-area", rows: "3", placeholder: "Why you saved it, what to look at…" });
+  note.value = b.note || "";
+  const save = h("button", { class: "btn", type: "button", onclick: async () => {
+    save.disabled = true;
+    const r = await attempt(() => api("/api/bookmarks/save", { id: b.id, title: title.value, description: desc.value, note: note.value,
+                                                             tags: tags.value.split(",").map((t) => t.trim()).filter(Boolean) }), "Saved");
+    save.disabled = false;
+    if (r) { Object.assign(b, r.bookmark); m.close(); drawMarks(); }
+  } }, "Save");
+  const m = modal("Edit bookmark", h("p", { class: "muted bm-url" }, b.url),
+    field("Title", title), field("Description", desc), field("Tags", tags, "Separate with commas. Click a tag on a card to show only those."),
+    field("Note", note), h("div", { class: "modal-actions" }, save));
+  title.focus();
+}
+
+async function renderBookmarks() {
+  const input = h("input", { id: "bm-input", type: "url", placeholder: "Paste a link to save it", spellcheck: "false", autocomplete: "off",
+                             onkeydown: (e) => { if (e.key === "Enter" && input.value.trim()) { const v = input.value; input.value = ""; addMark(v); } },
+                             onpaste: (e) => { const t = (e.clipboardData.getData("text") || "").trim(); if (looksLikeLink(t) || /\s/.test(t)) { e.preventDefault(); input.value = ""; addMark(t); } } });
+  const filter = h("input", { class: "bm-filter", type: "search", placeholder: "Filter", value: markFilter, spellcheck: "false",
+                              oninput: (e) => { markFilter = e.target.value.trim(); drawMarks(); } });
+  page(h("div", { class: "bar" }, h("h1", { style: "margin:0" }, "Bookmarks"), h("span", { class: "muted g-count", id: "bm-count" }),
+         h("div", { class: "actions" }, filter)),
+       h("div", { class: "bm-add" }, icon("link"), input,
+         h("button", { class: "btn", onclick: () => { if (input.value.trim()) { const v = input.value; input.value = ""; addMark(v); } else input.focus(); } }, "Save")),
+       h("div", { class: "bm-chips", id: "bm-tags" }),
+       h("div", { class: "bm-grid", id: "bm-grid" }),
+       h("div", { class: "empty", id: "bm-empty", hidden: true }));
+  const d = await api("/api/bookmarks").catch((e) => { toast(e.message); return null; });
+  if (route.name !== "bookmarks") return;
+  if (d && d.locked) {
+    $("#bm-empty").hidden = false;
+    $("#bm-empty").replaceChildren(h("b", {}, "Bookmarks are locked"), `${d.folder} is hidden or password-locked here. Unlock it with the padlock at the top.`);
+    return;
+  }
+  marks = d ? d.items : [];
+  drawMarks();
+}
+
+// Ctrl+V anywhere on the Bookmarks page saves the copied link.
+document.addEventListener("paste", (e) => {
+  if (route.name !== "bookmarks" || (e.target.closest && e.target.closest("input, textarea, [contenteditable]"))) return;
+  const t = ((e.clipboardData && e.clipboardData.getData("text")) || "").trim();
+  if (t && t.split(/\s+/).some(looksLikeLink)) { e.preventDefault(); addMark(t); }
+});
+
 // ------------------------------------------------------------------ stars
 async function setStar(it, on) {
   if (await attempt(() => api("/api/star", { path: it.path, on }), on ? "Starred" : "Star removed")) { it.starred = on; render(); }
@@ -2817,7 +2966,7 @@ async function connectApps() {
 function openPalette() {
   if (document.querySelector("dialog.palette")) return;
   const pages = [["Home", "#/home"], ["Files", "#/files/"], ["Gallery", "#/gallery/"], ["Starred", "#/starred"], ["Recent", "#/recent"],
-                 ["Activity", "#/history"], ["Storage", "#/storage"], ["Notes", "#/notes"], ["Contacts", "#/contacts"], ["Shared links", "#/shared"],
+                 ["Activity", "#/history"], ["Storage", "#/storage"], ["Notes", "#/notes"], ["Bookmarks", "#/bookmarks"], ["Contacts", "#/contacts"], ["Shared links", "#/shared"],
                  ["Folder sync", "#/sync"], ["Deleted files", "#/deleted"], ["Snapshots", "#/snapshots"], ["Log", "#/log"], ["Health", "#/health"],
                  ["Settings", "#/settings"]].map(([label, href]) => ({ label, hint: "Go to", icon: "enter", run: () => go(href) }));
   const actions = [

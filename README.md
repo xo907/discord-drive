@@ -193,7 +193,7 @@ other devices**:
 - **Self-healing.** Spare pieces rebuild what Discord loses; a background check finds losses early.
 - **Compression and de-duplication** before encryption; extra bots and parallel uploads for speed.
 - **Web dashboard** for your browser and phone (installable as an app): a home page, a photo and video
-  gallery, starred and recent files, an activity list, storage insights with a duplicate finder,
+  gallery, bookmarks with link previews, starred and recent files, an activity list, storage insights,
   in-browser text editing, and Ctrl+K to find anything.
 - **Sharing both ways**: expiring, password-protected links to give files out, and **file requests**
   that let others send files into a folder without seeing it.
@@ -411,6 +411,10 @@ devices).
 - **Home, Starred, Recent, Activity**: the dashboard opens on an overview. Star files and folders
   (synced to every device); Activity lists what was added, changed, moved and deleted, and on which
   device.
+- **Bookmarks**: paste a link and it is saved as a card with the page's title, description, icon and
+  banner picture (the same tags link previews use). Tags, notes, a filter, and Ctrl+V anywhere on the
+  page. Kept in `/Bookmarks` on the drive with their pictures: encrypted, synced, versioned, and
+  nothing is loaded from the sites when you look at them.
 - **Storage**: space by kind, the biggest folders and files, and identical files (keep the oldest and
   delete the copies in one click). Folders show their size in Files.
 - **File requests**: right-click a folder → **Request files…**. Whoever has the link can send files into

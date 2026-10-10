@@ -3,6 +3,21 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 1.1.0 (2026-10-09)
+
+- Bookmarks: a new tab in the dashboard. Paste a link (in the box, or Ctrl+V anywhere on the page;
+  several at once work too) and it is saved as a card with the page's title, description, site name,
+  icon and banner picture, read the way link previews are (Open Graph / Twitter card tags). Pages
+  without a banner get a coloured card with the site's icon.
+- Tags, notes and your own titles: Edit on a card; click a tag to show only those; a filter box
+  searches titles, descriptions, sites, notes and tags. "Read the preview again" refreshes a card and
+  keeps your title.
+- Bookmarks live on the drive in /Bookmarks (the list and the pictures), so they are encrypted, synced
+  to every device and versioned, and looking at them loads nothing from the sites themselves. Locking
+  /Bookmarks with a password hides them like any folder.
+- A link to something on this computer or the home network is saved without a preview (nothing is
+  fetched from there).
+
 ## 1.0.2 (2026-10-09)
 
 - Folder sync, backup mode: each file is copied once. The job remembers what it has backed up, so a

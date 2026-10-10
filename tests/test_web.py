@@ -788,6 +788,75 @@ class WebTest(helpers.DriveTest):
         self.assertEqual(self.req("GET", "/icon.png", auth=False)[0], 200)
 
 
+    def test_bookmarks(self):
+        import http.server
+        import threading
+        png = b"\x89PNG\r\n\x1a\n" + b"pixels" * 50
+        page = ("""<!doctype html><html><head><meta charset="utf-8"><title>Plain title</title>
+            <meta property="og:title" content="How to bake bread &amp; more">
+            <meta property="og:description" content="A   long guide
+            to baking.">
+            <meta property="og:site_name" content="Bread Weekly"><meta name="theme-color" content="#aa5500">
+            <meta property="og:image" content="/img/banner.png"><link rel="icon" href="icon.png" sizes="32x32">
+            </head><body><meta property="og:title" content="ignored, not in the head"></body></html>""").encode()
+
+        class Site(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.endswith(".png"):
+                    body, ctype = png, "image/png"
+                elif self.path.startswith("/bare"):
+                    body, ctype = b"just text", "text/plain"
+                else:
+                    body, ctype = page, "text/html; charset=utf-8"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        site = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Site)
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{site.server_address[1]}"
+        try:
+            self.login()
+            self.assertEqual(self.get("/api/bookmarks")["items"], [])
+            self.assertEqual(self.post("/api/bookmarks/add", {"url": "not a link"})[0], 400)
+            self.assertEqual(self.post("/api/bookmarks/add", {"url": "javascript:alert(1)"})[0], 400)
+            # an address on this computer is saved, but nothing is fetched from it
+            status, r = self.post("/api/bookmarks/add", {"url": base + "/recipes/bread"})
+            self.assertEqual((status, r["preview"], r["bookmark"]["image"]), (200, False, ""))
+            self.post("/api/bookmarks/delete", {"ids": [r["bookmark"]["id"]]})
+            self.d.cfg.fetch_private = True
+            status, r = self.post("/api/bookmarks/add", {"url": base + "/recipes/bread", "tags": ["food"]})
+            b = r["bookmark"]
+            self.assertEqual((b["title"], b["description"], b["site"], b["color"], b["tags"]),
+                             ("How to bake bread & more", "A long guide to baking.", "Bread Weekly", "#aa5500", ["food"]))
+            self.assertEqual(self.read(self.d, b["image"], cold=False), png)                   # the banner is on the drive
+            self.assertEqual(self.read(self.d, b["icon"], cold=False), png)
+            self.assertTrue(self.post("/api/bookmarks/add", {"url": base + "/recipes/bread/"})[1]["existed"])
+            _, bare = self.post("/api/bookmarks/add", {"url": base + "/bare.txt"})
+            self.assertEqual(bare["bookmark"]["title"], "bare.txt")
+            self.assertEqual([x["title"] for x in self.get("/api/bookmarks")["items"]], ["bare.txt", "How to bake bread & more"])
+            status, r = self.post("/api/bookmarks/save", {"id": b["id"], "title": "Bread", "tags": "food, #Baking, food", "note": "try it"})
+            self.assertEqual((r["bookmark"]["title"], r["bookmark"]["tags"], r["bookmark"]["note"]), ("Bread", ["food", "Baking"], "try it"))
+            status, r = self.post("/api/bookmarks/refresh", {"id": b["id"]})
+            self.assertEqual((status, r["bookmark"]["title"], r["bookmark"]["site"]), (200, "Bread", "Bread Weekly"))  # your title stays
+            self.assertEqual(json.loads(self.read(self.d, "/Bookmarks/Bookmarks.json", cold=False))["items"][1]["note"], "try it")
+            self.assertEqual(self.post("/api/bookmarks/delete", {"ids": [b["id"]]})[1]["removed"], 1)
+            self.assertIsNone(self.d.index.resolve(b["image"]))
+            self.assertEqual(len(self.get("/api/bookmarks")["items"]), 1)
+            self.post("/api/locks/add", {"path": "/Bookmarks", "password": "hunter2"})
+            self.post("/api/locks/lock", {})
+            self.assertTrue(self.get("/api/bookmarks")["locked"])
+            self.assertEqual(self.post("/api/bookmarks/add", {"url": "example.com"})[0], 404)
+        finally:
+            site.shutdown()
+            site.server_close()
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
