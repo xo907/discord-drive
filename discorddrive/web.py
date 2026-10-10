@@ -45,6 +45,7 @@ SESSION_DAYS = 30
 MAX_FAILURES = 5          # wrong passwords from one address before it has to wait
 LOCKOUT = 60.0            # seconds, doubled for every further wrong password (up to an hour)
 NOTES = "/Notes"          # where notes are kept on the drive (ordinary files, so they sync and keep versions)
+_MEDIA_EXT = ("jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic", "mp4", "m4v", "webm", "mov", "mkv", "avi")
 NOTE_IDLE = 20.0          # a note is uploaded this long after the last autosave ("Save" uploads right away)
 
 
@@ -105,7 +106,22 @@ class WebServer:
     def start(self):
         self._thread = threading.Thread(target=self.httpd.serve_forever, name="WebDashboard", daemon=True)
         self._thread.start()
+        threading.Thread(target=self._clean_thumbs, name="Thumbs", daemon=True).start()
         return self
+
+    def _clean_thumbs(self):
+        """Drop the thumbnails of files that are no longer on the drive."""
+        root = os.path.join(self.cfg.resolved_data_dir, "thumbs")
+        try:
+            for folder in os.listdir(root):
+                for name in os.listdir(os.path.join(root, folder)):
+                    if name.endswith(".tmp") or self.drive.index.get_by_uid(name[:-4]) is None:
+                        try:
+                            os.remove(os.path.join(root, folder, name))
+                        except OSError:
+                            pass
+        except Exception as e:           # nothing made yet, or the drive is stopping
+            log.debug("thumbnail clean-up: %s", e)
 
     def stop(self):
         try:
@@ -522,7 +538,10 @@ class _Handler(BaseHTTPRequestHandler):
         for c in self.drive.index.children(node["id"]):
             cpath = posixpath.join(path, c["name"])
             if not self.drive.fs._hidden(cpath):
-                items.append(self._entry(cpath, c))
+                e = self._entry(cpath, c)
+                if not c["is_dir"] and c["name"].rpartition(".")[2].lower() in _MEDIA_EXT:
+                    e["thumb"] = self._thumb_state(c)
+                items.append(e)
         items.sort(key=lambda e: (not e["dir"], e["name"].lower()))
         self._json({"path": path, "items": items})
 
@@ -935,6 +954,116 @@ class _Handler(BaseHTTPRequestHandler):
             st["bad"] = [b for b in st["bad"] if b["uid"] not in uids]
         self.drive.journal.wake()
         self._json({"ok": True, "removed": removed})
+
+    # ------------------------------------------------------------ gallery and thumbnails
+    # Thumbnails are made in the browser (it can decode photos and video; the drive has no image
+    # library) and kept here in <data dir>/thumbs, encrypted with the drive's key like everything else.
+    # A file's thumbnail is tied to its size and time, so a changed file gets a new one.
+    def _thumb_file(self, node):
+        uid = str(node["uid"])
+        if not re.fullmatch(r"[0-9A-Za-z_-]{4,64}", uid):
+            raise ApiError(400, "no thumbnail for this file")
+        return os.path.join(self.drive.cfg.resolved_data_dir, "thumbs", uid[:2], uid + ".bin")
+
+    @staticmethod
+    def _thumb_key(node):
+        return f"{node['size']}:{int(node['mtime'])}".encode()
+
+    def _thumb_read(self, node):
+        """The thumbnail of a file: image bytes, b"" when none can be made (remembered), None when not made yet."""
+        try:
+            with open(self._thumb_file(node), "rb") as f:
+                blob = f.read()
+            if self.drive.crypto is not None:
+                blob = self.drive.crypto.decrypt(blob, b"thumb")
+        except (OSError, ApiError):
+            return None
+        except Exception:                 # another key, or damaged: make it again
+            return None
+        key, _, data = blob.partition(b"\n")
+        return data if key == self._thumb_key(node) else None
+
+    def _get_api_thumb(self):
+        path, node = self._node(self._query().get("path"), want_dir=False)
+        data = self._thumb_read(node)
+        if not data:
+            return self._error(404, "no thumbnail yet")
+        ctype = "image/webp" if data[:4] == b"RIFF" else "image/png" if data[:4] == b"\x89PNG" else "image/jpeg"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=2592000, immutable")   # the address changes with the file
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _post_api_thumb(self):
+        """Store the thumbnail the browser made (an empty body: none can be made, don't try again)."""
+        path, node = self._node(self._query().get("path"), want_dir=False)
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 400 * 1024:
+            raise ApiError(413, "thumbnail too large")
+        data = self.rfile.read(n)
+        if data and not (data[:3] == b"\xff\xd8\xff" or data[:4] == b"\x89PNG" or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")):
+            raise ApiError(400, "not an image")
+        blob = self._thumb_key(node) + b"\n" + data
+        if self.drive.crypto is not None:
+            blob = self.drive.crypto.encrypt(blob, b"thumb")
+        target = self._thumb_file(node)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        tmp = f"{target}.{threading.get_ident()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(blob)
+        os.replace(tmp, target)
+        self._json({"ok": True})
+
+    def _thumb_state(self, node):
+        data = self._thumb_read(node)
+        return None if data is None else (1 if data else -1)
+
+    def _get_api_media(self):
+        """Photos and videos under a folder (everything below it), newest first."""
+        q = self._query()
+        path, root = self._node(q.get("path") or "/", want_dir=True)
+        try:
+            offset, limit = max(0, int(q.get("offset") or 0)), max(1, min(1000, int(q.get("limit") or 300)))
+        except ValueError:
+            raise ApiError(400, "bad offset or limit") from None
+        idx, fs = self.drive.index, self.drive.fs
+        # every folder's path, worked out once (instead of walking up from each file)
+        dirs = {r["id"]: (r["parent"], r["name"]) for r in idx._all("SELECT id, parent, name FROM nodes WHERE is_dir=1")}
+        paths = {ROOT_ID: "/"}
+
+        def dir_path(nid):
+            if nid not in paths:
+                chain = []
+                while nid not in paths and nid in dirs:
+                    chain.append(nid)
+                    nid = dirs[nid][0]
+                base = paths.get(nid)
+                for d in reversed(chain):
+                    base = None if base is None else posixpath.join(base, dirs[d][1])
+                    paths[d] = base
+                return paths.get(chain[0]) if chain else None
+            return paths[nid]
+
+        like = " OR ".join("name LIKE ?" for _ in _MEDIA_EXT)
+        rows = idx._all(f"SELECT * FROM nodes WHERE is_dir=0 AND ({like}) ORDER BY mtime DESC, id DESC",
+                        tuple("%." + e for e in _MEDIA_EXT))
+        prefix = path.rstrip("/") + "/"
+        items, total = [], 0
+        for r in rows:
+            folder = dir_path(r["parent"])
+            if folder is None or not (folder + "/").replace("//", "/").startswith(prefix):
+                continue
+            p = posixpath.join(folder, r["name"])
+            if fs._hidden(p):
+                continue
+            total += 1
+            if offset < total <= offset + limit:
+                items.append(dict(self._entry(p, r), thumb=self._thumb_state(r)))
+        self._json({"path": path, "total": total, "offset": offset, "items": items})
 
     # ------------------------------------------------------------ sync folders
     # Choosing folders on this computer (and what is done with them) reads and writes files outside the

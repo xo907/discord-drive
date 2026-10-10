@@ -67,6 +67,10 @@ const ICONS = {
   cake: '<path d="M4 16.5h12v-6H4zM4 13c2 1 4-1 6 0s4-1 6 0M10 10.5V7.5M10 5.5v-.5"/>',
   globe: '<circle cx="10" cy="10" r="7"/><path d="M3 10h14M10 3c2 2.2 3 4.5 3 7s-1 4.8-3 7c-2-2.2-3-4.5-3-7s1-4.8 3-7z"/>',
   minus: '<path d="M5 10h10"/>',
+  play: '<path d="M7 4.5v11l9-5.5z"/>',
+  grid: '<rect x="3.5" y="3.5" width="5.5" height="5.5" rx="1"/><rect x="11" y="3.5" width="5.5" height="5.5" rx="1"/><rect x="3.5" y="11" width="5.5" height="5.5" rx="1"/><rect x="11" y="11" width="5.5" height="5.5" rx="1"/>',
+  list: '<path d="M4 5.5h12M4 10h12M4 14.5h12"/>',
+  gallery: '<rect x="3" y="3.5" width="14" height="13" rx="1.5"/><circle cx="7.5" cy="8" r="1.3"/><path d="m3.5 14 4-3.5 3 2.5 2.5-2 3.5 3"/>',
 };
 const icon = (name, cls = "") => h("svg", { viewBox: "0 0 20 20", class: `ico ${cls}`, "aria-hidden": "true", html: ICONS[name] });
 
@@ -275,6 +279,8 @@ function itemMenu(it) {
   return [
     it.dir ? { label: "Open", icon: "enter", run: () => go("#/files" + enc(it.path)) }
            : { label: "Preview", icon: "open", run: () => openItem(it) },
+    it.dir && { label: "Open as gallery", icon: "gallery", run: () => go("#/gallery" + enc(it.path)) },
+    !it.dir && route.name === "gallery" && { label: "Show in Files", icon: "enter", run: () => go("#/files" + enc(parent(it.path))) },
     it.dir ? { label: "Download as ZIP", icon: "download", run: () => download("/api/zip" + q({ path: it.path }), it.name + ".zip") }
            : { label: "Download", icon: "download", run: () => download(fileUrl(it.path, true), it.name) },
     { label: "Share…", icon: "link", run: () => shareDialog(it) },
@@ -355,7 +361,8 @@ function render() {
   if (route.name !== "files" || route.path !== currentDir) sel.clear();
   const views = { files: renderFiles, search: renderSearch, deleted: renderDeleted, snapshots: renderSnapshots,
                   snapshot: renderSnapshot, health: renderHealth, notes: renderNotes, shared: renderShared,
-                  settings: renderSettings, log: renderLog, check: renderCheck, contacts: renderContacts, sync: renderSync };
+                  settings: renderSettings, log: renderLog, check: renderCheck, contacts: renderContacts, sync: renderSync,
+                  gallery: renderGallery };
   (views[route.name] || renderFiles)();
 }
 window.addEventListener("hashchange", render);
@@ -400,6 +407,7 @@ function itemRow(it, opts = {}) {
                 h("span", { class: "date" }, when(it.mtime)), more);
   bindMenu(row, () => itemMenu(it), it.name, sub);
   if (route.name === "files") {
+    if (gridView()) row.prepend(thumbBox(it));
     makeDraggable(row, it);
     const box = h("button", { class: "cb row-cb", role: "checkbox", "aria-checked": String(sel.has(it.path)),
                               "aria-label": `Select ${it.name}`, tabindex: "-1",
@@ -409,6 +417,8 @@ function itemRow(it, opts = {}) {
   if (it.dir) dropTarget(row, it.path);
   return row;
 }
+
+const gridView = () => { try { return localStorage.getItem("dd-view") === "grid"; } catch { return false; } };
 
 function listHead() {
   return h("div", { class: "row head" }, h("span", {}, "Name"), h("span", { class: "size" }, "Size"),
@@ -426,11 +436,16 @@ async function renderFiles() {
   const bar = h("div", { class: "bar" },
     crumbs(path, "Drive", (p) => "#/files" + enc(p)),
     h("div", { class: "actions" },
+      h("button", { class: "icon-btn", title: gridView() ? "Show as a list" : "Show as a grid with thumbnails",
+                    "aria-label": gridView() ? "Show as a list" : "Show as a grid",
+                    onclick: () => { try { localStorage.setItem("dd-view", gridView() ? "list" : "grid"); } catch { /* private mode */ } renderFiles(); } },
+        icon(gridView() ? "list" : "grid")),
+      h("a", { class: "icon-btn", title: "Photos and videos in this folder", "aria-label": "Gallery of this folder", href: "#/gallery" + enc(path) }, icon("gallery")),
       h("button", { class: "btn ghost", onclick: newFolder }, "New folder"),
       h("button", { class: "btn", onclick: () => $("#pick").click() }, "Upload")));
   listed = data.items;
   const rows = data.items.map((it) => itemRow(it));
-  const body = rows.length ? h("div", { class: "list" }, listHead(), rows)
+  const body = rows.length ? h("div", { class: "list" + (gridView() ? " grid" : "") }, listHead(), rows)
     : h("div", { class: "empty" }, h("b", {}, "Nothing here yet"), "Drop files anywhere on this page, or use Upload.");
   page(bar, selBar, body, h("div", { class: "spacer" }));
   for (const a of bar.querySelectorAll(".crumbs a")) {
@@ -935,6 +950,11 @@ function uploadFile(file, dir) {
       sub.textContent = ok ? "On the drive · uploading to Discord next" : "Not uploaded";
       if (!ok) { try { toast(JSON.parse(xhr.responseText).error); } catch { toast("Upload failed"); } }
       setTimeout(() => item.remove(), ok ? 1500 : 6000);
+      const up = { name: file.name, path: join(dir, file.name), dir: false };
+      if (ok && isMedia(up) && file.size < 2 ** 31) {
+        const src = URL.createObjectURL(file);
+        makeThumb(src, kind(file.name)).then((b) => b && storeThumb(up.path, b)).catch(() => null).finally(() => URL.revokeObjectURL(src));
+      }
       resolve(ok);
     };
     xhr.onerror = () => { pct.textContent = "Failed"; setTimeout(() => item.remove(), 6000); resolve(false); };
@@ -1954,6 +1974,247 @@ async function renderCheck() {
     if (st.running) checkTimer = setTimeout(tick, 1000);
   }
   tick();
+}
+
+// ------------------------------------------------------------------ thumbnails
+// The browser makes them (it can decode photos and grab a video frame) the first time a picture is
+// shown, and hands them to the drive, which keeps them encrypted; after that they load from there.
+const THUMB_PX = 400;
+const isMedia = (it) => !it.dir && ["image", "video"].includes(kind(it.name)) && !/\.svg$/i.test(it.name);
+const thumbUrl = (it) => "/api/thumb" + q({ path: it.path, v: `${it.size}-${Math.floor(it.mtime)}` });
+const thumbMade = new Map();        // path -> object URL of a thumbnail made in this tab (null: can't be made)
+const thumbJobs = new Map();        // path -> {it, cbs}: waiting to be made
+let thumbActive = 0;
+let thumbBatch = null;              // "create all": {todo, done, stop}
+
+function once(el, name, ms = 30000) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("timeout")), ms);
+    el.addEventListener(name, () => { clearTimeout(t); resolve(); }, { once: true });
+    el.addEventListener("error", () => { clearTimeout(t); reject(new Error("can't be shown")); }, { once: true });
+  });
+}
+
+function shrink(el, w, ht) {
+  const s = Math.min(1, THUMB_PX / Math.max(w, ht, 1));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(w * s));
+  c.height = Math.max(1, Math.round(ht * s));
+  c.getContext("2d").drawImage(el, 0, 0, c.width, c.height);
+  return new Promise((resolve) => c.toBlob((b) => (b && b.type === "image/webp") ? resolve(b) : c.toBlob(resolve, "image/jpeg", 0.8),
+                                          "image/webp", 0.78));
+}
+
+async function makeThumb(url, k) {
+  if (k === "image") {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return shrink(img, img.naturalWidth, img.naturalHeight);
+  }
+  const v = document.createElement("video");
+  v.muted = true; v.playsInline = true; v.preload = "metadata";
+  try {
+    v.src = url;
+    await once(v, "loadedmetadata");
+    v.currentTime = Math.min(3, (v.duration || 0) * 0.1);
+    await once(v, "seeked");
+    if (!v.videoWidth) throw new Error("no picture");
+    return await shrink(v, v.videoWidth, v.videoHeight);
+  } finally { v.removeAttribute("src"); v.load(); }
+}
+
+async function storeThumb(path, blob) {
+  await fetch("/api/thumb" + q({ path }), { method: "POST", credentials: "same-origin", headers: { "X-DD": "1" },
+                                           body: blob || new Blob([]) }).catch(() => null);
+}
+
+function wantThumb(it, cb, first, batch) {
+  if (thumbMade.has(it.path)) { if (cb) cb(thumbMade.get(it.path)); return; }
+  let job = thumbJobs.get(it.path);
+  if (!job) { job = { it, cbs: [] }; thumbJobs.set(it.path, job); }
+  if (first) job.first = true;
+  if (batch) job.batch = true;
+  if (cb) job.cbs.push(cb);
+  pumpThumbs();
+}
+
+function pumpThumbs() {
+  while (thumbActive < 2 && thumbJobs.size) {
+    // what is on screen goes before the rest of a "create all"
+    const job = [...thumbJobs.values()].reverse().find((j) => j.first) || thumbJobs.values().next().value;
+    if (!job.first && thumbBatch && thumbBatch.stop) { thumbJobs.delete(job.it.path); continue; }
+    thumbJobs.delete(job.it.path);
+    thumbActive++;
+    (async () => {
+      let blob = null;
+      try { blob = await makeThumb(fileUrl(job.it.path), kind(job.it.name)); } catch { blob = null; }
+      await storeThumb(job.it.path, blob);
+      const url = blob ? URL.createObjectURL(blob) : null;
+      thumbMade.set(job.it.path, url);
+      job.it.thumb = blob ? 1 : -1;
+      for (const cb of job.cbs) cb(url);
+      if (thumbBatch && job.batch) { thumbBatch.done++; if (!blob) thumbBatch.failed++; thumbBatch.tick(); }
+      thumbActive--;
+      pumpThumbs();
+    })();
+  }
+  if (thumbBatch && !thumbJobs.size && !thumbActive) { const b = thumbBatch; thumbBatch = null; b.tick(true); }
+}
+
+const thumbSeen = new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { thumbSeen.unobserve(e.target); e.target.loadThumb(); }
+}, { root: main, rootMargin: "400px" });
+
+/** A square showing the file's thumbnail (made on first sight), or its icon. */
+function thumbBox(it) {
+  const k = it.dir ? "folder" : kind(it.name);
+  const box = h("span", { class: "thumb" }, icon(k === "pdf" ? "text" : k, it.dir ? "folder" : ""));
+  if (!isMedia(it) || it.thumb === -1) return box;
+  box.loadThumb = () => {
+    const show = (url) => {
+      if (!url) return;
+      const img = h("img", { alt: "", draggable: "false" });
+      img.onload = () => { box.replaceChildren(...[img, k === "video" && h("span", { class: "play" }, icon("play"))].filter(Boolean)); box.classList.add("has"); };
+      img.src = url;
+    };
+    if (thumbMade.get(it.path)) show(thumbMade.get(it.path));
+    else if (it.thumb === 1) show(thumbUrl(it));
+    else wantThumb(it, show, true);
+  };
+  thumbSeen.observe(box);
+  return box;
+}
+
+// ------------------------------------------------------------------ gallery
+// Every photo and video under a folder (the whole drive by default), newest first, month by month.
+const fmtMonth = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" });
+let gal = null;
+
+async function renderGallery() {
+  const path = route.path;
+  const g = gal = { path, items: [], total: null, loading: false, month: "", grid: null };
+  const body = h("div", { class: "gallery" });
+  const more = h("div", { class: "g-more" });
+  const info = h("span", { class: "muted g-count" });
+  const prog = h("div", { class: "g-progress", hidden: true });
+  const all = h("button", { class: "btn ghost", onclick: () => thumbsForAll(path, prog) }, "Create all thumbnails");
+  page(h("div", { class: "bar" },
+         path === "/" ? h("h1", { style: "margin:0" }, "Gallery") : crumbs(path, "Gallery", (p) => "#/gallery" + enc(p)),
+         info,
+         h("div", { class: "actions" }, path !== "/" && h("a", { class: "btn ghost", href: "#/files" + enc(path) }, "Open folder"), all)),
+       prog, body, more);
+  if (thumbBatch) thumbBatch.show(prog);
+
+  async function load() {
+    if (g.loading || gal !== g || (g.total !== null && g.items.length >= g.total)) return;
+    g.loading = true;
+    const data = await api("/api/media" + q({ path, offset: g.items.length, limit: 300 })).catch((e) => { toast(e.message); return null; });
+    g.loading = false;
+    if (!data || gal !== g) return;
+    g.total = data.total;
+    info.textContent = data.total ? plural(data.total, "photo and video", "photos and videos") : "";
+    if (!data.total) {
+      body.replaceChildren(h("div", { class: "empty" }, h("b", {}, "No photos or videos here"), "Pictures and videos you put on the drive show up here."));
+      return;
+    }
+    for (const it of data.items) {
+      const m = fmtMonth.format(new Date(it.mtime * 1000));
+      if (m !== g.month) {
+        g.month = m;
+        g.grid = h("div", { class: "g-grid" });
+        body.append(h("h2", { class: "g-month" }, m), g.grid);
+      }
+      const i = g.items.push(it) - 1;
+      const tile = h("button", { class: "g-tile", title: it.name, onclick: () => lightbox(g, i) }, thumbBox(it));
+      bindMenu(tile, () => itemMenu(it), it.name, `${size(it.size)} · ${when(it.mtime)}`);
+      g.grid.append(tile);
+    }
+    if (g.items.length < g.total) requestAnimationFrame(() => { if (more.getBoundingClientRect().top < innerHeight + 600) load(); });
+  }
+  g.load = load;
+  new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) load(); }, { root: main, rootMargin: "600px" }).observe(more);
+  await load();
+}
+
+async function thumbsForAll(path, prog) {
+  if (thumbBatch) { thumbBatch.show(prog); return; }
+  let todo = [], bytes = 0;
+  prog.hidden = false;
+  prog.textContent = "Looking for photos and videos without a thumbnail…";
+  for (let offset = 0; ; offset += 1000) {
+    const data = await api("/api/media" + q({ path, offset, limit: 1000 })).catch(() => null);
+    if (!data) break;
+    for (const it of data.items) if (it.thumb == null && !thumbMade.has(it.path)) { todo.push(it); if (kind(it.name) === "image") bytes += it.size; }
+    if (offset + data.items.length >= data.total || !data.items.length) break;
+  }
+  prog.hidden = true;
+  if (!todo.length) { toast("Every photo and video here already has a thumbnail"); return; }
+  const ok = await ask({ title: `Create ${plural(todo.length, "thumbnail")}?`, ok: "Create",
+                         text: `Each photo is read once from Discord (${size(bytes)} in total; videos only a small part), so this takes a while. `
+                             + "It runs while this page stays open, and you can keep using the dashboard. Thumbnails are stored encrypted on the computer running the drive." });
+  if (!ok) return;
+  const b = thumbBatch = { todo: todo.length, done: 0, failed: 0, stop: false, el: null,
+    show(el) { b.el = el; b.tick(); },
+    tick(finished) {
+      const el = b.el && b.el.isConnected ? b.el : document.querySelector(".g-progress");
+      if (finished) { if (el) el.hidden = true; toast(b.stop ? "Stopped. The thumbnails made so far are kept."
+                                               : `${plural(b.done - b.failed, "thumbnail")} created` + (b.failed ? `; ${plural(b.failed, "file")} can't be shown by this browser` : ""));
+                      return; }
+      if (!el) return;
+      el.hidden = false;
+      el.replaceChildren(h("span", {}, b.stop ? "Stopping…" : `Creating thumbnails: ${b.done.toLocaleString()} of ${b.todo.toLocaleString()}`),
+        h("div", { class: "meter" }, h("i", { style: `width:${((b.done / b.todo) * 100).toFixed(1)}%` })),
+        !b.stop && h("button", { class: "btn ghost small", onclick: () => { b.stop = true; b.tick(); pumpThumbs(); } }, "Stop"));
+    } };
+  b.show(prog);
+  for (const it of todo) wantThumb(it, null, false, true);
+}
+
+/** Full-screen viewer over the gallery: arrows (or the keyboard) go to the next and previous one. */
+function lightbox(g, start) {
+  let i = start;
+  const stage = h("div", { class: "lb-stage" });
+  const title = h("div", { class: "lb-title" });
+  const close = () => { document.removeEventListener("keydown", keys, true); stage.replaceChildren(); box.remove(); };
+  const step = (d) => {
+    const n = i + d;
+    if (n < 0 || n >= g.items.length) return;
+    i = n;
+    show();
+    if (i > g.items.length - 20 && g.load) g.load();
+  };
+  const keys = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === "ArrowRight") step(1);
+    else if (e.key === "ArrowLeft") step(-1);
+  };
+  const prev = h("button", { class: "lb-nav prev", "aria-label": "Previous", onclick: () => step(-1) }, icon("back"));
+  const next = h("button", { class: "lb-nav next", "aria-label": "Next", onclick: () => step(1) }, icon("back"));
+  const dl = h("a", { class: "icon-btn", title: "Download", "aria-label": "Download" }, icon("download"));
+  const box = h("div", { class: "lightbox", role: "dialog", "aria-label": "Viewer" },
+    h("div", { class: "lb-top" }, title,
+      dl,
+      h("button", { class: "icon-btn", title: "Details, sharing, versions", "aria-label": "Details", onclick: () => { const it = g.items[i]; close(); openItem(it); } }, icon("info")),
+      h("button", { class: "icon-btn", title: "Close", "aria-label": "Close", onclick: close }, icon("close"))),
+    stage, prev, next);
+  stage.addEventListener("click", (e) => { if (e.target === stage) close(); });
+  function show() {
+    const it = g.items[i];
+    title.replaceChildren(h("div", { class: "t" }, it.name),
+      h("div", { class: "s" }, `${fmtFull.format(new Date(it.mtime * 1000))} · ${size(it.size)} · ${parent(it.path)}`));
+    dl.href = fileUrl(it.path, true);
+    dl.setAttribute("download", it.name);
+    stage.replaceChildren(kind(it.name) === "video"
+      ? h("video", { src: fileUrl(it.path), controls: true, autoplay: true, playsinline: true })
+      : h("img", { src: fileUrl(it.path), alt: it.name }));
+    prev.hidden = i === 0;
+    next.hidden = i >= g.items.length - 1;
+  }
+  document.addEventListener("keydown", keys, true);
+  window.addEventListener("hashchange", close, { once: true });
+  document.body.append(box);
+  show();
 }
 
 // ------------------------------------------------------------------ sync folders

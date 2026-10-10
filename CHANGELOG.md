@@ -3,6 +3,20 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.10.0 (2026-10-09)
+
+- Gallery: a new tab in the dashboard with every photo and video on the drive, newest first, month by
+  month. Click one for a full-screen viewer (arrow keys or the buttons go to the next and previous;
+  download and details from there). Any folder opens as a gallery too: the picture button in Files, or
+  right-click a folder, "Open as gallery".
+- Thumbnails for photos and videos (a frame of the video). They are made the first time a picture
+  comes into view, and "Create all thumbnails" in the gallery makes them for everything at once, with
+  progress and Stop. Photos uploaded through the dashboard get theirs straight away.
+- Thumbnails are kept on the computer running the drive (<data dir>/thumbs), encrypted with the drive's
+  key, renewed when a file changes and removed when it is deleted.
+- Files can be shown as a grid with thumbnails (the grid button next to New folder); selecting,
+  dragging and right-click work as in the list.
+
 ## 0.9.1 (2026-10-09)
 
 - Sync: Windows folders that OneDrive (or Windows settings) moved elsewhere are recognised. Choosing

@@ -190,7 +190,8 @@ other devices**:
   sizes, and when they were uploaded.
 - **Self-healing.** Spare pieces rebuild what Discord loses; a background check finds losses early.
 - **Compression and de-duplication** before encryption; extra bots and parallel uploads for speed.
-- **Web dashboard** for your browser and phone, with expiring share links.
+- **Web dashboard** for your browser and phone, with expiring share links and a photo and video
+  gallery with thumbnails.
 - **Snapshots** of the whole drive, restorable folder by folder.
 - **Sync and back up folders** on your computer: backup, mirror, two-way sync, move, or a local copy
   of a drive folder; live, every N minutes, daily or by hand ([more](#sync-and-back-up-folders)).
@@ -391,6 +392,11 @@ devices).
 - **Contacts**: an encrypted address book (one vCard file, `/Contacts/Contacts.vcf`, synced and
   versioned). Import vCard (.vcf) or Google / Outlook CSV exports from your phone, iCloud, Google
   or Outlook; create and edit contacts; export them again as .vcf.
+- **Gallery**: every photo and video on the drive (or in one folder), newest first, with thumbnails and
+  a full-screen viewer. Files can also be shown as a grid with thumbnails. The browser makes a
+  thumbnail the first time a picture is shown (or all at once with **Create all thumbnails**, which
+  reads each photo once from Discord), and the drive keeps them in `<data dir>/thumbs`, encrypted with
+  your key. Formats your browser can't show (e.g. HEIC outside Safari, MKV) keep their icon.
 - **Sync**: folders on the computer running the drive kept in step with folders on the drive (backup,
   mirror, two-way, move, download), with live progress, Sync now, pause and recent runs. See
   [Sync and back up folders](#sync-and-back-up-folders).

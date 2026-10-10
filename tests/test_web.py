@@ -429,6 +429,40 @@ class WebTest(helpers.DriveTest):
             self.assertIn(key, st)
         self.assertTrue(any(d["me"] for d in st["devices"]))
 
+    def test_gallery_and_thumbnails(self):
+        self.login()
+        self.write(self.d, "/Photos/2025/a.jpg", b"\xff\xd8\xff photo a")
+        self.write(self.d, "/Photos/b.PNG", b"\x89PNG photo b")
+        self.write(self.d, "/Photos/clip.mp4", b"video")
+        self.write(self.d, "/Docs/notes.txt", b"not media")
+        self.write(self.d, "/Other/c.jpg", b"\xff\xd8\xff photo c")
+        media = json.loads(self.req("GET", "/api/media?path=%2FPhotos")[2])
+        self.assertEqual(media["total"], 3)
+        self.assertEqual({i["path"] for i in media["items"]}, {"/Photos/2025/a.jpg", "/Photos/b.PNG", "/Photos/clip.mp4"})
+        self.assertTrue(all(i["thumb"] is None for i in media["items"]))
+        self.assertEqual(json.loads(self.req("GET", "/api/media")[2])["total"], 4)             # the whole drive
+        page = json.loads(self.req("GET", "/api/media?offset=3&limit=2")[2])
+        self.assertEqual((page["total"], len(page["items"])), (4, 1))
+
+        thumb = b"RIFF\x00\x00\x00\x00WEBP small picture"
+        url = "/api/thumb?path=%2FPhotos%2F2025%2Fa.jpg"
+        self.assertEqual(self.req("GET", url)[0], 404)
+        self.assertEqual(self.req("POST", url, body=b"<script>")[0], 400)                      # only images
+        self.assertEqual(self.req("POST", url, body=thumb)[0], 200)
+        status, headers, body = self.req("GET", url)
+        self.assertEqual((status, headers["Content-Type"], body), (200, "image/webp", thumb))
+        stored = os.path.join(self.d.cfg.resolved_data_dir, "thumbs")
+        files = [os.path.join(dp, f) for dp, _, fs in os.walk(stored) for f in fs]
+        self.assertEqual(len(files), 1)
+        with open(files[0], "rb") as f:
+            self.assertNotIn(b"small picture", f.read())                                       # encrypted on disk
+        self.assertEqual(self.req("POST", "/api/thumb?path=%2FPhotos%2Fclip.mp4", body=b"")[0], 200)  # can't be made
+        states = {i["name"]: i.get("thumb") for i in json.loads(self.req("GET", "/api/list?path=%2FPhotos")[2])["items"]}
+        self.assertEqual((states["b.PNG"], states["clip.mp4"]), (None, -1))
+        self.assertEqual(json.loads(self.req("GET", "/api/media?path=%2FPhotos%2F2025")[2])["items"][0]["thumb"], 1)
+        self.write(self.d, "/Photos/2025/a.jpg", b"\xff\xd8\xff a different photo")           # changed: made again
+        self.assertEqual(self.req("GET", url)[0], 404)
+
     def test_sync_folders(self):
         self.login()
         here = os.path.join(self.tmp, "Downloads")
