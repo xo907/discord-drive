@@ -45,6 +45,7 @@ SESSION_DAYS = 30
 MAX_FAILURES = 5          # wrong passwords from one address before it has to wait
 LOCKOUT = 60.0            # seconds, doubled for every further wrong password (up to an hour)
 NOTES = "/Notes"          # where notes are kept on the drive (ordinary files, so they sync and keep versions)
+_BACKGROUND_ROUTES = ("/api/status", "/api/activity", "/api/log", "/api/sync", "/api/check", "/api/locks", "/api/notes")
 _MEDIA_EXT = ("jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic", "mp4", "m4v", "webm", "mov", "mkv", "avi")
 NOTE_IDLE = 20.0          # a note is uploaded this long after the last autosave ("Save" uploads right away)
 
@@ -100,6 +101,7 @@ class WebServer:
         self._failures = {}       # address -> (count, locked until)
         self.shares = Shares(drive.index, getattr(drive.cfg, "device_id", ""))
         self.contacts_lock = threading.Lock()
+        self._open_locks = {}             # browser session -> [ids of the locks it has open, last use]
         self._book = (None, [])           # (mtime, size) of the address book file, its contacts
 
     # ------------------------------------------------------------ lifecycle
@@ -164,7 +166,9 @@ class WebServer:
         return hashlib.sha256(b"DiscordDrive-web:" + (self.cfg.web_token or "").encode() + purpose + extra).digest()
 
     def new_session(self, user):
-        payload = _b64(json.dumps({"u": user, "t": int(time.time())}, separators=(",", ":")).encode())
+        # "n" makes every sign-in its own session (each browser unlocks locked folders for itself)
+        payload = _b64(json.dumps({"u": user, "t": int(time.time()), "n": _b64(os.urandom(9))},
+                                  separators=(",", ":")).encode())
         sig = _b64(hmac.new(self._secret(b"session"), payload.encode(), hashlib.sha256).digest())
         return f"{payload}.{sig}"
 
@@ -199,6 +203,40 @@ class WebServer:
             count += 1
             until = time.time() + min(3600.0, LOCKOUT * 2 ** (count - MAX_FAILURES)) if count >= MAX_FAILURES else 0.0
             self._failures[addr] = (count, until)
+
+    # ------------------------------------------------------------ password-locked folders
+    @staticmethod
+    def _session_key(cookie):
+        return hashlib.sha256((cookie or "").encode()).hexdigest()[:24]
+
+    def open_locks(self, cookie, touch=True):
+        """The locks this browser has open (they close after `lock_timeout_minutes` without use)."""
+        key = self._session_key(cookie)
+        with self._fail_lock:
+            entry = self._open_locks.get(key)
+            if entry is None:
+                return frozenset()
+            timeout = self.drive.locks.timeout()
+            if timeout and time.time() - entry[1] > timeout:
+                del self._open_locks[key]
+                return frozenset()
+            if touch:
+                entry[1] = time.time()
+            return frozenset(entry[0])
+
+    def open_locks_add(self, cookie, uids):
+        with self._fail_lock:
+            entry = self._open_locks.setdefault(self._session_key(cookie), [set(), time.time()])
+            entry[0].update(uids)
+            entry[1] = time.time()
+
+    def open_locks_clear(self, cookie, uids=None):
+        with self._fail_lock:
+            key = self._session_key(cookie)
+            if uids is None:
+                self._open_locks.pop(key, None)
+            elif key in self._open_locks:
+                self._open_locks[key][0].difference_update(uids)
 
     def share_unlock_value(self, sid, rec):
         """Cookie proving a visitor typed the password of share `sid` (void when the password changes)."""
@@ -316,6 +354,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method):
         try:
+            self.drive.fs.scope.unlocked = frozenset()     # locked folders: nothing is open until we know who asks
             if not self._host_ok():
                 return self._send(421, b"Misdirected request", "text/plain")
             route = urllib.parse.urlparse(self.path).path
@@ -333,6 +372,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._error(401, "Signed out. Reload the page to sign in.")
             if method == "POST" and self.headers.get("X-DD") != "1":
                 return self._error(403, "missing X-DD header")
+            # Pages that refresh by themselves don't count as using an unlocked folder.
+            self.drive.fs.scope.unlocked = self.app.open_locks(self._cookie(), touch=route not in _BACKGROUND_ROUTES)
             fn = getattr(self, f"_{method.lower()}_{route.strip('/').replace('/', '_').replace('-', '_')}", None)
             if fn is None:
                 return self._error(404, "not found")
@@ -401,6 +442,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._redirect("/", self._cookie_for(self.app.new_session(name)))
 
     def _post_api_logout(self):
+        self.app.open_locks_clear(self._cookie())
         self._send(200, b'{"ok":true}', "application/json; charset=utf-8", {"Set-Cookie": self._cookie_for("", 0)})
 
     # ------------------------------------------------------------ helpers
@@ -416,8 +458,18 @@ class _Handler(BaseHTTPRequestHandler):
         return path, node
 
     def _entry(self, path, n):
-        return {"name": n["name"], "path": path, "dir": bool(n["is_dir"]), "size": n["size"], "mtime": n["mtime"],
-                "state": n["state"], "pinned": bool(n["is_pinned"])}
+        e = {"name": n["name"], "path": path, "dir": bool(n["is_dir"]), "size": n["size"], "mtime": n["mtime"],
+             "state": n["state"], "pinned": bool(n["is_pinned"])}
+        if self.drive.locks.is_root(n["uid"]):
+            e["locked"] = True            # has a password lock (open in this browser, or it wouldn't be listed)
+        return e
+
+    def _shown(self, path):
+        """False for a path under a hidden or locked folder (for lists that don't go through _node)."""
+        return not self.drive.fs._hidden(path or "/")
+
+    def _names_locked(self, text):
+        return self.drive.locks.hides_text(text or "", self.drive.fs.scope.unlocked)
 
     def _publish(self, ops):
         self.drive.index.queue_ops(ops)
@@ -456,6 +508,7 @@ class _Handler(BaseHTTPRequestHandler):
             "lan": [f"http://{ip}:{self.app.port}/" for ip in lan_addresses()] if d.cfg.web_lan else [],
             "public": self.public_base(),
             "snapshots": {"interval": d.cfg.snapshot_interval_hours, "keep": d.cfg.snapshot_keep_days},
+            "locks": {"count": d.locks.count(), "open": len(d.fs.scope.unlocked)},
         })
 
     # ------------------------------------------------------------ activity and log
@@ -464,6 +517,8 @@ class _Handler(BaseHTTPRequestHandler):
         d = self.drive
         out, now = [], time.time()
         for p in list(d.uploader.progress.values()) if d.uploader else []:
+            if not self._shown(p.get("path")):
+                continue
             sent = p.get("bytes", 0) - p.get("base", 0)
             elapsed = max(0.5, now - p.get("started", now))
             speed = sent / elapsed if sent > 0 else 0.0
@@ -479,6 +534,8 @@ class _Handler(BaseHTTPRequestHandler):
         downloads = {}
         for mid, a in list(cache.active.items()):
             node = a.get("node")
+            if node and not self._shown(d.index.path_of(node)):
+                continue
             g = downloads.setdefault(node, {"path": d.index.path_of(node) if node else "(piece)", "pieces": 0,
                                             "bytes": 0, "since": a["started"]})
             g["pieces"] += 1
@@ -493,7 +550,8 @@ class _Handler(BaseHTTPRequestHandler):
             jobs.append({**job, "pct": round(100.0 * job["bytes"] / max(1, job["total"]), 1), "speed": speed,
                          "eta": (job["total"] - job["bytes"]) / speed if speed else None})
         uploads = self._uploads()
-        queue = d.uploader.queue_info() if d.uploader else []
+        queue = [x for x in (d.uploader.queue_info() if d.uploader else []) if self._shown(x.get("path"))]
+        jobs = [j for j in jobs if not self._names_locked(json.dumps(j))]
         up_speed = sum(u["speed"] for u in uploads)
         queued_bytes = sum(q["size"] for q in queue) + sum(max(0, u["size"] - u["bytes"]) for u in uploads)
         st = d.index.stats(max_age=2)
@@ -519,7 +577,8 @@ class _Handler(BaseHTTPRequestHandler):
             after = int(q.get("after") or 0)
         except ValueError:
             after = 0
-        self._json({"lines": BUFFER.since(after, 2000 if not after else 1000)})
+        self._json({"lines": [r for r in BUFFER.since(after, 2000 if not after else 1000)
+                              if not self._names_locked(r.get("m") or json.dumps(r))]})
 
     def _get_api_changelog(self):
         import sys
@@ -599,7 +658,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(max(0, end - start + 1)))
         # Share links may be cached by Discord's media proxy (and other link previewers).
-        self.send_header("Cache-Control", "public, max-age=3600" if public else "private, max-age=60")
+        if not public and self.drive.locks.covering(self.drive.index.path_of(node["id"]) or "/"):
+            self.send_header("Cache-Control", "no-store")          # locked: the browser keeps no copy
+        else:
+            self.send_header("Cache-Control", "public, max-age=3600" if public else "private, max-age=60")
         if public:
             self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -796,6 +858,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _get_api_shares(self):
         items = [self._share_json(sid, rec) for sid, rec in self.app.shares.all().items()]
+        items = [i for i in items if not i["item"] or self._shown(i["item"])]
         items.sort(key=lambda x: -(x["created"] or 0))
         self._json({"items": items})
 
@@ -925,6 +988,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_api_check(self):
         st = dict(self.drive.checker.state)
         st["now"] = time.time()
+        st["bad"] = [b for b in st.get("bad") or [] if self._shown(b.get("path"))]
+        if self._names_locked(str(st.get("current") or "")):
+            st["current"] = ""
         self._json(st)
 
     def _post_api_check_start(self):
@@ -954,6 +1020,75 @@ class _Handler(BaseHTTPRequestHandler):
             st["bad"] = [b for b in st["bad"] if b["uid"] not in uids]
         self.drive.journal.wake()
         self._json({"ok": True, "removed": removed})
+
+    # ------------------------------------------------------------ password-locked folders
+    def _lock_attempt(self, check):
+        """Run a password check, slowing down guessing like the sign-in does."""
+        addr = "lock:" + self.client_address[0]
+        wait = self.app.locked_for(addr)
+        if wait:
+            raise ApiError(429, f"Too many wrong passwords. Try again in {int(wait) + 1} seconds.")
+        result = check()
+        self.app.note_login(addr, bool(result))
+        return result
+
+    def _get_api_locks(self):
+        locks = self.drive.locks
+        mine = self.drive.fs.scope.unlocked
+        on_drive = locks.mount_unlocked()
+        open_here = []
+        for path, uid in locks.roots():
+            if uid in mine:
+                node = self.drive.index.get_by_uid(uid)
+                if node is not None:
+                    open_here.append({"path": self.drive.index.path_of(node["id"]), "dir": bool(node["is_dir"]),
+                                      "on_drive": uid in on_drive})
+        self._json({"count": locks.count(), "open": open_here, "minutes": self.drive.cfg.lock_timeout_minutes,
+                    "mount": self.drive.cfg.mount_point, "host": socket.gethostname()})
+
+    def _post_api_locks_add(self):
+        body = self._body_json()
+        path, node = self._node(body.get("path"))
+        password = str(body.get("password") or "")
+        if node["id"] == ROOT_ID:
+            raise ApiError(400, "Lock a folder or a file, not the whole drive")
+        if len(password) < 4:
+            raise ApiError(400, "Use a password of at least 4 characters")
+        if self.drive.locks.is_root(node["uid"]):
+            raise ApiError(409, "It already has a lock. Remove that one first to change the password.")
+        self.drive.locks.add(node, password)
+        self.app.open_locks_add(self._cookie(), [node["uid"]])       # still open here, where it was just locked
+        self.drive.journal.wake()
+        log.info("A password lock was added to a %s.", "folder" if node["is_dir"] else "file")
+        self._json({"ok": True, "minutes": self.drive.cfg.lock_timeout_minutes})
+
+    def _post_api_locks_unlock(self):
+        body = self._body_json()
+        uids = self._lock_attempt(lambda: self.drive.locks.matching(str(body.get("password") or "")))
+        if not uids:
+            raise ApiError(403, "No locked folder opens with that password")
+        self.app.open_locks_add(self._cookie(), uids)
+        if body.get("drive"):
+            self.drive.locks.mount_unlock(uids)
+        self._json({"ok": True, "opened": len(uids), "minutes": self.drive.cfg.lock_timeout_minutes})
+
+    def _post_api_locks_lock(self):
+        """Lock everything again: in this browser and on this device's drive."""
+        self.app.open_locks_clear(self._cookie())
+        self.drive.locks.mount_relock()
+        self._json({"ok": True})
+
+    def _post_api_locks_remove(self):
+        body = self._body_json()
+        path, node = self._node(body.get("path"))
+        if not self.drive.locks.is_root(node["uid"]):
+            raise ApiError(404, "It has no lock")
+        if not self._lock_attempt(lambda: self.drive.locks.check(node["uid"], str(body.get("password") or ""))):
+            raise ApiError(403, "Wrong password")
+        self.drive.locks.remove(node["uid"])
+        self.app.open_locks_clear(self._cookie(), [node["uid"]])
+        self.drive.journal.wake()
+        self._json({"ok": True})
 
     # ------------------------------------------------------------ gallery and thumbnails
     # Thumbnails are made in the browser (it can decode photos and video; the drive has no image
@@ -992,7 +1127,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "private, max-age=2592000, immutable")   # the address changes with the file
+        # the address changes with the file; pictures in a locked folder are not kept by the browser
+        self.send_header("Cache-Control", "no-store" if self.drive.locks.covering(path) else "private, max-age=2592000, immutable")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         if self.command != "HEAD":
@@ -1223,6 +1359,7 @@ class _Handler(BaseHTTPRequestHandler):
         "snapshot_keep_days": (float, False, lambda v: v >= 0),
         "cache_mode": (str, True, lambda v: v in ("disk", "memory")),
         "hidden_folders": (list, False, None),
+        "lock_timeout_minutes": (float, False, lambda v: 0 <= v <= 100000),
     }
 
     def _get_api_settings(self):
@@ -1273,7 +1410,7 @@ class _Handler(BaseHTTPRequestHandler):
         idx = self.drive.index
         folder = idx.resolve(NOTES)
         items = []
-        if folder is not None and folder["is_dir"]:
+        if folder is not None and folder["is_dir"] and self._shown(NOTES):
             for c in idx.children(folder["id"]):
                 if c["is_dir"]:
                     continue
@@ -1315,13 +1452,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._json({"ok": True})
 
     def _get_api_deleted(self):
-        rows = self.drive.index.deleted_files("/")
+        rows = [v for v in self.drive.index.deleted_files("/") if self._shown(v["path"])]
         self._json({"items": [{"uid": v["uid"], "path": v["path"], "size": v["size"], "at": v["superseded"]}
                               for v in rows[:5000]]})
 
     def _deleted_by_uid(self, body):
         """Deleted files picked by uid ({"uids": [...]}), or one by path ({"path": ...})."""
-        rows = self.drive.index.deleted_files("/")
+        rows = [v for v in self.drive.index.deleted_files("/") if self._shown(v["path"])]
         if body.get("uids"):
             wanted = set(map(str, body["uids"]))
             return [v for v in rows if v["uid"] in wanted]
@@ -1354,7 +1491,7 @@ class _Handler(BaseHTTPRequestHandler):
         entries = self.drive.index.snapshot_entries(sid, path)
         depth = 0 if path == "/" else path.count("/")
         items = [{"name": posixpath.basename(e["path"]), "path": e["path"], "dir": e["is_dir"], "size": e["size"],
-                  "mtime": e["mtime"]} for e in entries if e["path"].count("/") == depth + 1]
+                  "mtime": e["mtime"]} for e in entries if e["path"].count("/") == depth + 1 and self._shown(e["path"])]
         items.sort(key=lambda e: (not e["dir"], e["name"].lower()))
         self._json({"path": path, "items": items})
 
@@ -1383,6 +1520,7 @@ class _Handler(BaseHTTPRequestHandler):
         if root is None:
             return self._send(404, _share_message("This link has expired", "Ask for a new one.").encode(),
                               "text/html; charset=utf-8", _SHARE_HEADERS)
+        self.drive.fs.scope.unlocked = frozenset(self.drive.locks.covering(self.drive.index.path_of(root["id"])))
         if rec.get("pw"):
             if method == "POST":
                 addr = "share:" + self.client_address[0]

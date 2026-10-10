@@ -33,7 +33,7 @@ OP_INLINE_MAX = 1900       # Discord message content limit is 2000 characters
 GC_INTERVAL = 3600.0
 HEARTBEAT = 12 * 3600.0    # a device that posted nothing for this long says it is still around
 CATCH_UP_DAYS = 14         # after an upgrade, re-read this much history for what older versions skipped
-FEATURES = "4"             # kv "features": this index has applied the journal with the current op set
+FEATURES = "5"             # kv "features": this index has applied the journal with the current op set
 
 
 def _hostname():

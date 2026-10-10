@@ -1104,7 +1104,11 @@ class SyncManager:
         run = Run(self.d, job, self.dir, settle=settle, stop=lambda: self._cancel == jid or self._stop.is_set(),
                   progress=progress)
         result, error = None, ""
+        scope = self.d.fs.scope
+        before = getattr(scope, "unlocked", None)
         try:
+            from .locks import ALL
+            scope.unlocked = ALL          # a synced folder is copied whether or not it is password-locked
             result = run.run()
         except InterruptedError:
             error = "Stopped before it was finished."
@@ -1114,6 +1118,7 @@ class SyncManager:
             log.warning("Sync %s failed: %s", job["name"], e, exc_info=True)
             error = f"Failed: {e}"
         finally:
+            scope.unlocked = before
             self.running = None
         now = time.time()
         res = result or run.r

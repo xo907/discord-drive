@@ -286,6 +286,9 @@ function itemMenu(it) {
     { label: "Share…", icon: "link", run: () => shareDialog(it) },
     "-",
     { label: "Available offline", icon: "offline", checked: !!it.pinned, run: () => setPinned(it, !it.pinned) },
+    it.locked ? { label: "Lock again now", icon: "lock", run: lockAllNow }
+              : { label: "Lock with a password…", icon: "lock", run: () => lockDialog(it) },
+    it.locked && { label: "Remove the lock…", icon: "lock", run: () => removeLockDialog(it) },
     "-",
     { label: "Rename…", icon: "rename", run: () => rename(it) },
     { label: "Move to…", icon: "move", run: () => moveTo(it) },
@@ -333,6 +336,10 @@ async function refreshStatus() {
   $("#usage").textContent = `${plural(st.files, "file")} · ${size(st.bytes)}`;
   showDiscordUploads(status.uploads);
   if (note && route.name === "notes") noteUploadState();
+  const lk = $("#locks");
+  lk.hidden = !(status.locks && status.locks.count);
+  lk.classList.toggle("open", !!(status.locks && status.locks.open));
+  lk.title = status.locks && status.locks.open ? "Locked folders are open in this browser" : "Locked folders";
   const acct = $("#account");
   if (acct && status.user) { acct.textContent = status.user.slice(0, 1).toUpperCase(); acct.title = `Signed in as ${status.user}`; }
   if (route.name === "health" && !$("#sheet").classList.contains("open")) {
@@ -393,6 +400,7 @@ function itemRow(it, opts = {}) {
   const tags = [];
   if (it.state && it.state !== "synced") tags.push(h("span", { class: "tag busy" }, it.state === "error" ? "Retrying" : "Uploading"));
   if (it.pinned) tags.push(h("span", { class: "tag" }, "Offline"));
+  if (it.locked) tags.push(h("span", { class: "tag", title: "Has a password lock (open in this browser)" }, icon("lock", "tag-ico"), "Locked"));
   const label = h("span", { class: "label" }, it.name);
   const name = h("span", { class: "name" }, icon(k === "pdf" ? "text" : k, it.dir ? "folder" : ""),
                  opts.where ? h("span", { style: "min-width:0" }, label, h("div", { class: "where" }, parent(it.path))) : label,
@@ -1326,6 +1334,7 @@ const SETTING_ROWS = [
   ["This computer", [
     ["cache_mode", "Read cache", "Disk keeps opened files for faster reopening; memory stores nothing on disk.", ["disk", "memory"]],
     ["hidden_folders", "Hidden folders", "Folders this computer doesn't show, e.g. /Movies. Separate with commas.", "list"],
+    ["lock_timeout_minutes", "Lock folders again after (minutes)", "Password-locked folders close this long after they were last used. 0: only when you lock them or the drive restarts.", "num"],
   ]],
 ];
 
@@ -1975,6 +1984,89 @@ async function renderCheck() {
   }
   tick();
 }
+
+// ------------------------------------------------------------------ password-locked folders
+// A locked folder or file isn't listed anywhere until its password is typed (the padlock at the top).
+// Typing a password opens everything locked with it, in this browser only, for a while.
+function pwInput(placeholder) {
+  return h("input", { type: "password", autocomplete: "new-password", placeholder });
+}
+
+function lockDialog(it) {
+  const a = pwInput("Password"), b = pwInput("The same password again");
+  const go = h("button", { class: "btn", type: "button", onclick: async () => {
+    if (a.value.length < 4) return toast("Use at least 4 characters");
+    if (a.value !== b.value) return toast("The two passwords are different");
+    go.disabled = true;
+    const r = await attempt(() => api("/api/locks/add", { path: it.path, password: a.value }));
+    go.disabled = false;
+    if (r) { m.close(); toast(`Locked. It stays open in this browser until you lock it again${r.minutes ? ` or ${r.minutes} minutes pass without using it` : ""}.`); await refreshStatus(); render(); }
+  } }, "Lock");
+  const m = modal(`Lock “${it.name}”`,
+    h("p", { class: "muted", style: "margin:0 0 16px" }, `${it.dir ? "This folder and everything in it" : "This file"} disappears from the drive and from this dashboard, on all your devices, until its password is typed. `
+      + "Keep the password somewhere: it can't be looked up."),
+    field("Password", a), field("Again", b, "Locked folders that share a password open together."),
+    h("div", { class: "modal-actions" }, go));
+  a.addEventListener("keydown", (e) => { if (e.key === "Enter") b.focus(); });
+  b.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+  a.focus();
+}
+
+async function unlockDialog() {
+  const info = await api("/api/locks").catch(() => null);
+  const pw = pwInput("Password");
+  let drive = false;
+  const go = h("button", { class: "btn", type: "button", onclick: async () => {
+    go.disabled = true;
+    const r = await attempt(() => api("/api/locks/unlock", { password: pw.value, drive }));
+    go.disabled = false;
+    if (!r) { pw.select(); return; }
+    m.close();
+    toast(`${plural(r.opened, "locked item")} open${r.minutes ? ` until ${r.minutes} minutes pass without using ${r.opened === 1 ? "it" : "them"}` : ""}`);
+    await refreshStatus();
+    render();
+  } }, "Unlock");
+  const m = modal("Unlock",
+    h("p", { class: "muted", style: "margin:0 0 16px" }, "Type the password of a locked folder or file. Everything locked with it shows up in this browser."),
+    field("Password", pw),
+    info && h("div", { class: "toggle" },
+      h("div", {}, h("div", { class: "t" }, `Also show on the drive (${info.mount})`),
+        h("div", { class: "s" }, `On ${info.host}, for every program there, for the same time`)),
+      switchEl(false, (v) => { drive = v; }, "Also show on the drive")),
+    h("div", { class: "modal-actions" }, go));
+  pw.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+  pw.focus();
+}
+
+async function lockAllNow() {
+  if (await attempt(() => api("/api/locks/lock", {}), "Locked again")) { closeSheet(); await refreshStatus(); render(); }
+}
+
+function removeLockDialog(it) {
+  const pw = pwInput("Password of the lock");
+  const go = h("button", { class: "btn danger", type: "button", onclick: async () => {
+    go.disabled = true;
+    const r = await attempt(() => api("/api/locks/remove", { path: it.path, password: pw.value }), "Lock removed");
+    go.disabled = false;
+    if (r) { m.close(); await refreshStatus(); render(); } else pw.select();
+  } }, "Remove the lock");
+  const m = modal(`Remove the lock of “${it.name}”`,
+    h("p", { class: "muted", style: "margin:0 0 16px" }, "It will be visible again on the drive and in the dashboard, on all your devices."),
+    field("Password", pw), h("div", { class: "modal-actions" }, go));
+  pw.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+  pw.focus();
+}
+
+$("#locks").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  const open = status && status.locks ? status.locks.open : 0;
+  openMenu([
+    { label: open ? `${plural(open, "locked item")} open here` : "Locked folders are hidden", icon: "lock", disabled: true },
+    "-",
+    { label: "Unlock…", icon: "lock", run: unlockDialog },
+    { label: "Lock again now", icon: "check", disabled: !open, run: lockAllNow },
+  ], r.right - 220, r.bottom + 6, "Locked folders");
+});
 
 // ------------------------------------------------------------------ thumbnails
 // The browser makes them (it can decode photos and grab a video frame) the first time a picture is

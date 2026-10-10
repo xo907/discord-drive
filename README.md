@@ -193,6 +193,8 @@ other devices**:
 - **Web dashboard** for your browser and phone, with expiring share links and a photo and video
   gallery with thumbnails.
 - **Snapshots** of the whole drive, restorable folder by folder.
+- **Password-locked folders**: gone from the drive letter and the dashboard until unlocked
+  ([more](#password-locked-folders)).
 - **Sync and back up folders** on your computer: backup, mirror, two-way sync, move, or a local copy
   of a drive folder; live, every N minutes, daily or by hand ([more](#sync-and-back-up-folders)).
 - **Real drive / mount.** Uses [WinFsp](https://winfsp.dev/) on Windows and libfuse on Linux,
@@ -305,6 +307,8 @@ snapshot-restore <n> [path] [--to p] [--in-place]
                                      Bring back a folder (or everything) from snapshot n
 bots [add [token]|remove <n>]        Extra bots for faster uploads
 hide <folder> / unhide <folder>      Don't show a folder on this device (it stays everywhere else)
+lock <path> / unprotect <path>       Lock a folder or file with a password (hidden everywhere) / remove the lock
+unlock [--minutes N] / relock        Show locked folders on this device's drive for a while / hide them again
 sync [list|add|edit|remove|run|stop|pause|resume|status|modes]
                                      Folders kept in sync with the drive (see "Sync and back up folders")
 ```
@@ -429,6 +433,34 @@ and every extra bot adds the same again:
    checks the bot can post in the channel, and saves it). Restart the drive.
 
 Each device can use its own set of extra bots; any bot in the channel can read every piece.
+
+## Password-locked folders
+
+Lock a folder or a file with a password and it is gone, with everything in it, until the password is
+typed: from the drive letter / mount folder and from the dashboard (files, search, gallery, deleted
+files, snapshots, shared links, the log), on all your devices. Not even its name is shown.
+
+- **Lock**: in the dashboard right-click the folder or file → **Lock with a password…**; or
+  `lock <path>` (menu 7). Locks sync to your other devices like everything else.
+- **Unlock** by typing a password; everything locked with that password opens, so nothing has to list
+  what is locked. In the dashboard: the padlock at the top → **Unlock…**, which opens it in that browser
+  only (turn on "Also show on the drive" to see it on that computer's drive letter too). In the
+  terminal: `unlock` shows it on this device's drive (`--minutes 60`, or `--minutes 0` for until the
+  drive stops).
+- **It locks again by itself** after `lock_timeout_minutes` (15) without use, when you sign out, with
+  **Lock again now** / `relock`, and whenever the drive restarts.
+- **Remove a lock** with its password: right-click → **Remove the lock…**, or `unprotect <path>`. If
+  you forgot it, `unprotect <path> --forgot` asks for the dashboard's password instead.
+- Wrong passwords are slowed down like wrong sign-ins. Folder sync keeps copying into a locked folder,
+  and a link you shared to a locked item itself keeps working (locked things *inside* a shared folder
+  don't show).
+
+What it is and isn't: a lock is a gate, not a second layer of encryption. Locked files are encrypted
+with the drive's key like all others. It keeps out anyone using your computer, the drive letter or the
+dashboard; it does not stop someone who has your config file (the key) and technical skill. While a
+folder is unlocked on the drive letter, every program on that computer can read it, and Windows may
+remember file names it saw (recent files, Explorer's thumbnail cache). The log *file* on disk and the
+terminal commands (`deleted`, `versions`) still name locked files; the dashboard's Log tab does not.
 
 ## Sync and back up folders
 

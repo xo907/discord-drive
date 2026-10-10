@@ -3,12 +3,14 @@
 import http.client
 import io
 import json
+import logging
 import os
 import time
 import urllib.parse
 import zipfile
 
 import helpers
+from discorddrive import locks
 
 
 class WebTest(helpers.DriveTest):
@@ -506,6 +508,81 @@ class WebTest(helpers.DriveTest):
         self.assertEqual(self.req("POST", "/api/sync/remove", {"id": jid}, headers=remote)[0], 200)
         self.assertEqual(self.d.cfg.sync_jobs, [])
         self.assertIsNotNone(self.d.index.resolve("/Downloads/report.pdf"))  # removing a pair deletes nothing
+
+
+    # ------------------------------------------------------------ password-locked folders
+    def post(self, path, body):
+        status, _, data = self.req("POST", path, body)
+        return status, json.loads(data or b"{}")
+
+    def listing(self, path="/"):
+        status, _, data = self.req("GET", "/api/list?path=" + path)
+        return status, [i["name"] for i in json.loads(data).get("items", [])]
+
+    def test_locked_folders(self):
+        self.login()
+        self.write(self.d, "/Private/diary.txt", b"dear diary")
+        self.write(self.d, "/Private/pic.jpg", b"\xff\xd8\xff")
+        self.write(self.d, "/Public/readme.txt", b"hello")
+        self.upload(self.d)
+        self.assertEqual(self.post("/api/locks/add", {"path": "/Private", "password": "abc"})[0], 400)   # too short
+        self.assertEqual(self.post("/api/locks/add", {"path": "/Private", "password": "hunter2"})[0], 200)
+        self.assertEqual(self.listing()[1], ["Private", "Public"])       # still open where it was locked
+        self.assertEqual(self.post("/api/locks/lock", {})[0], 200)
+
+        # locked: not in any list, and its files can't be fetched
+        self.assertEqual(self.listing()[1], ["Public"])
+        self.assertEqual(self.listing("%2FPrivate")[0], 404)
+        self.assertEqual(self.req("GET", "/api/file?path=%2FPrivate%2Fdiary.txt")[0], 404)
+        self.assertEqual(json.loads(self.req("GET", "/api/search?q=diary")[2])["items"], [])
+        self.assertEqual(json.loads(self.req("GET", "/api/media")[2])["total"], 0)
+        self.assertEqual(self.req("POST", "/api/upload?path=%2FPrivate%2Fx.txt", body=b"x")[0], 404)
+        status = json.loads(self.req("GET", "/api/status")[2])
+        self.assertEqual(status["locks"], {"count": 1, "open": 0})
+        logging.getLogger("discorddrive.test").warning("Successfully uploaded /Private/diary.txt")
+        logging.getLogger("discorddrive.test").warning("Successfully uploaded /Public/readme.txt")
+        lines = " ".join(r["m"] for r in json.loads(self.req("GET", "/api/log")[2])["lines"])
+        self.assertNotIn("diary", lines)
+        self.assertIn("/Public/readme.txt", lines)
+
+        # unlock with the password: this browser only
+        self.assertEqual(self.post("/api/locks/unlock", {"password": "wrong"})[0], 403)
+        status, r = self.post("/api/locks/unlock", {"password": "hunter2"})
+        self.assertEqual((status, r["opened"]), (200, 1))
+        self.assertEqual(self.listing()[1], ["Private", "Public"])
+        self.assertEqual(self.req("GET", "/api/file?path=%2FPrivate%2Fdiary.txt")[2], b"dear diary")
+        entry = [i for i in json.loads(self.req("GET", "/api/list?path=%2F")[2])["items"] if i["name"] == "Private"][0]
+        self.assertTrue(entry["locked"])
+        with self.assertRaises(OSError):
+            self.d.fs.getattr("/Private")                                # the drive letter stays locked
+        other, self.cookie = self.cookie, None
+        self.login()                                                     # another browser: still locked
+        self.assertEqual(self.listing()[1], ["Public"])
+        self.cookie = other
+
+        # deleted files of a locked folder stay out of Deleted
+        self.d.fs.scope.unlocked = locks.ALL
+        self.d.fs.unlink("/Private/pic.jpg")
+        self.d.fs.scope.unlocked = None
+        self.assertEqual(len(json.loads(self.req("GET", "/api/deleted")[2])["items"]), 1)
+        self.post("/api/locks/lock", {})
+        self.assertEqual(json.loads(self.req("GET", "/api/deleted")[2])["items"], [])
+
+        # "also on the drive", then removing the lock
+        self.post("/api/locks/unlock", {"password": "hunter2", "drive": True})
+        self.assertIsNotNone(self.d.fs.getattr("/Private/diary.txt"))
+        self.assertEqual(self.post("/api/locks/remove", {"path": "/Private", "password": "nope"})[0], 403)
+        self.assertEqual(self.post("/api/locks/remove", {"path": "/Private", "password": "hunter2"})[0], 200)
+        self.assertEqual(json.loads(self.req("GET", "/api/status")[2])["locks"]["count"], 0)
+
+    def test_locked_folder_guessing_is_slowed_down(self):
+        self.login()
+        self.write(self.d, "/Private/a.txt", b"a")
+        self.post("/api/locks/add", {"path": "/Private", "password": "hunter2"})
+        self.post("/api/locks/lock", {})
+        for _ in range(5):
+            self.assertEqual(self.post("/api/locks/unlock", {"password": "guess"})[0], 403)
+        self.assertEqual(self.post("/api/locks/unlock", {"password": "hunter2"})[0], 429)
 
 
 if __name__ == "__main__":

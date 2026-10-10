@@ -451,6 +451,11 @@ def files_menu():
             ("8", "Snapshots of the whole drive"),
             ("9", "Restore a folder from a snapshot"),
             ("10", "Take a snapshot now"),
+            (None, None),
+            ("12", "Lock a folder or file with a password"),
+            ("13", "Unlock: show locked folders on this device's drive"),
+            ("14", "Lock them again now"),
+            ("15", "Remove a lock"),
         ])
         if pick is None:
             return
@@ -522,6 +527,30 @@ def files_menu():
         elif pick == "10":
             page(MAIN, title, "Take a snapshot")
             cli("snapshots", "create")
+        elif pick == "12":
+            page(MAIN, title, "Lock with a password")
+            info("A locked folder (or file) is gone from the drive and the dashboard, on every device, until it is")
+            info("unlocked with its password. Keep the password somewhere: it can't be looked up.")
+            print()
+            p = ask("Folder or file to lock (e.g. Z:\\Private or /Private)")
+            if p:
+                print()
+                cli("lock", p)
+        elif pick == "13":
+            page(MAIN, title, "Unlock")
+            info("Type a lock's password: everything locked with it shows up on this device's drive for a while.")
+            print()
+            cli("unlock")
+        elif pick == "14":
+            page(MAIN, title, "Lock again")
+            cli("relock")
+        elif pick == "15":
+            page(MAIN, title, "Remove a lock")
+            p = ask("Folder or file whose lock to remove")
+            if p:
+                forgot = not confirm("Do you know its password?")
+                print()
+                cli("unprotect", p, *(["--forgot"] if forgot else []))
         else:
             continue
         back(title)

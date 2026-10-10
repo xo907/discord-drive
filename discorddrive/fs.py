@@ -72,6 +72,8 @@ class DiscordDriveFS(Operations):
         self._space_warned = 0.0
         self._size_warned = {}
         self.change_listeners = []      # called (with self.lock held) after other devices changed something
+        self.locks = None               # password-locked folders (locks.Locks)
+        self.scope = threading.local()  # .unlocked: which locks are open for the current thread (see locks.py)
 
     # ================================================================ helpers
     def staging_path(self, nid):
@@ -203,15 +205,14 @@ class DiscordDriveFS(Operations):
     def _hidden(self, path):
         """Folders this device doesn't show (hidden_folders): they stay on the drive and on
         other devices, they are just not listed or reachable here."""
-        hidden = getattr(self.cfg, "hidden_folders", None)
-        if not hidden:
-            return False
         p = "/" + path.replace("\\", "/").strip("/").lower()
-        for h in hidden:
+        for h in getattr(self.cfg, "hidden_folders", None) or ():
             h = "/" + str(h).replace("\\", "/").strip("/").lower()
             if h != "/" and (p == h or p.startswith(h + "/")):
                 return True
-        return False
+        # Password-locked folders and files: not there until unlocked (for the drive letter: on this
+        # device; for the dashboard: in that browser; background copies such as sync see everything).
+        return self.locks is not None and self.locks.hidden(p, getattr(self.scope, "unlocked", None))
 
     def _get(self, path):
         if self._hidden(path):

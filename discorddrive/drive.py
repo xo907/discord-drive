@@ -116,6 +116,9 @@ class DiscordDrive:
                      f"; removed {freed / 2**20:.1f} MiB of previously cached data" if freed else "")
 
         self.fs = DiscordDriveFS(self.cfg, self.index, self.cache, staging_dir)
+        from .locks import Locks
+        self.locks = self.fs.locks = Locks(self.index, self.cfg)
+        self.locks.mount_relock()          # a restart locks everything again
         self.uploader = Uploader(self.cfg, self.index, self.backend, self.fs, crypto=self.crypto)
         self.fs.uploader = self.uploader
         self.uploader.journal = self.journal

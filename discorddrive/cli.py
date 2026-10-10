@@ -1879,6 +1879,98 @@ def cmd_sync(args):
     return _sync_follow(cfg, sync, job, n, asked)
 
 
+# --------------------------------------------------------------------- password-locked folders
+def _ask_password(prompt):
+    import getpass
+    try:
+        return getpass.getpass(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+
+def cmd_lock(args):
+    """lock <path>: protect a folder or file with a password | unlock: show locked items on this
+    device's drive | relock: hide them again | unprotect <path>: remove a lock."""
+    from .crypto import check_password
+    from .locks import Locks
+    setup_logging(args.verbose, log_to_file=False)
+    cfg = Config.load()
+    idx, j, crypto = _open_journal(cfg)
+    try:
+        locks = Locks(idx, cfg)
+        running = is_mounted(cfg.mount_point)
+        if args.command == "relock":
+            locks.mount_relock()
+            print(f"[OK] Locked folders are hidden on {cfg.mount_point} again.")
+            return 0
+        if args.command == "unlock":
+            if not locks.count():
+                print(f"[!] Nothing is locked. Lock a folder with: {launcher()} lock <folder>")
+                return 1
+            pw = _ask_password("Password of the locked folder (input is hidden): ")
+            uids = locks.matching(pw) if pw else []
+            if not uids:
+                print("[ERROR] No locked folder opens with that password.")
+                return 1
+            seconds = locks.mount_unlock(uids, args.minutes)
+            for uid in uids:
+                node = idx.get_by_uid(uid)
+                if node is not None:
+                    print(f"  {_shown_remote(cfg, idx.path_of(node['id']))}")
+            until = f"for {seconds / 60:.0f} minutes" if seconds else "until the drive is stopped"
+            print(f"[OK] Open on this device's drive {until}. Lock again sooner with: {launcher()} relock")
+            if not running:
+                print(f"[!] The drive isn't running; start it and unlock again ({launcher()} start).")
+            return 0
+        vpath = normalize_virtual_path(args.path, cfg.mount_point)
+        node = idx.resolve(vpath)
+        if node is None or vpath == "/":
+            print(f"[ERROR] Not found on the drive: {args.path}" if vpath != "/" else
+                  "[ERROR] Lock a folder or a file, not the whole drive.")
+            return 1
+        if args.command == "lock":
+            if locks.is_root(node["uid"]):
+                print(f"[ERROR] {vpath} already has a lock. Remove it first ({launcher()} unprotect) to change the password.")
+                return 1
+            pw = _ask_password("Password for it (at least 4 characters, input is hidden): ")
+            if not pw or len(pw) < 4:
+                print("[!] Too short; nothing locked.")
+                return 1
+            if _ask_password("The same password again: ") != pw:
+                print("[!] The two passwords are different; nothing locked.")
+                return 1
+            locks.add(node, pw)
+            if not running:
+                j.flush()
+            print(f"[OK] {vpath} is locked on every device: it is gone from the drive and the dashboard until it is")
+            print(f"     unlocked with this password ({launcher()} unlock, or the padlock in the dashboard).")
+            print("     There is no way to look the password up, so keep it somewhere.")
+            return 0
+        # unprotect
+        if not locks.is_root(node["uid"]):
+            print(f"[ERROR] {vpath} has no lock.")
+            return 1
+        if args.forgot:
+            if not cfg.web_password:
+                print(f"[ERROR] That needs the dashboard's password, and none is set ({launcher()} web-password).")
+                return 1
+            ok = check_password(_ask_password("The DASHBOARD's password (input is hidden): ") or "", cfg.web_password)
+        else:
+            ok = locks.check(node["uid"], _ask_password("Password of the lock (input is hidden): ") or "")
+        if not ok:
+            print("[ERROR] Wrong password. Nothing changed."
+                  + ("" if args.forgot else f" (Forgot it? {launcher()} unprotect <path> --forgot asks for the dashboard's password instead.)"))
+            return 1
+        locks.remove(node["uid"])
+        if not running:
+            j.flush()
+        print(f"[OK] The lock on {vpath} is removed, on every device.")
+        return 0
+    finally:
+        _close(idx, crypto)
+
+
 # --------------------------------------------------------------------- web, hidden folders
 def cmd_web(args):
     """Print (and open) the address of the web dashboard."""
@@ -2242,6 +2334,14 @@ def main():
     p_sync.add_argument("--local-folder", help="edit: another folder on this computer")
     p_sync.add_argument("--drive-folder", help="edit: another folder on the drive")
     p_sync.add_argument("--no-wait", action="store_true", help="run: don't wait for it to finish")
+    p_lock = subparsers.add_parser("lock", help="Lock a folder or file with a password (hidden everywhere until unlocked)")
+    p_lock.add_argument("path")
+    p_unlock = subparsers.add_parser("unlock", help="Show password-locked folders on this device's drive for a while")
+    p_unlock.add_argument("--minutes", type=float, help="How long (default: lock_timeout_minutes; 0 = until the drive stops)")
+    subparsers.add_parser("relock", help="Hide password-locked folders on this device's drive again now")
+    p_unprot = subparsers.add_parser("unprotect", help="Remove the password lock of a folder or file")
+    p_unprot.add_argument("path")
+    p_unprot.add_argument("--forgot", action="store_true", help="Forgot its password: ask for the dashboard's password instead")
     p_hide = subparsers.add_parser("hide", help="Don't show a folder on this device")
     p_hide.add_argument("path")
     p_unhide = subparsers.add_parser("unhide", help="Show a hidden folder on this device again")
@@ -2360,6 +2460,8 @@ def main():
         return cmd_hide(args)
     elif args.command == "sync":
         return cmd_sync(args)
+    elif args.command in ("lock", "unlock", "relock", "unprotect"):
+        return cmd_lock(args)
     else:
         parser.print_help()
         return 0

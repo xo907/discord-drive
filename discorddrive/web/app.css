@@ -885,3 +885,8 @@ dialog .picker-path { margin-bottom: 10px; }
   .g-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 3px; }
   .lb-nav { top: auto; bottom: 22px; }
 }
+
+/* ------------------------------------------------------------------ password-locked folders */
+.lock-btn[hidden] { display: none; }
+.lock-btn.open { color: var(--accent); }
+.modal-body .field input[type="password"] { font-family: var(--font); }

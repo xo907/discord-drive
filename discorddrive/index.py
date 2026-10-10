@@ -142,6 +142,8 @@ CREATE INDEX IF NOT EXISTS snapshot_chunks_message ON snapshot_chunks(message_id
 CREATE TABLE IF NOT EXISTS shares(id TEXT PRIMARY KEY, rec TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS share_views(id TEXT NOT NULL, device TEXT NOT NULL, n INTEGER NOT NULL,
                                        PRIMARY KEY(id, device));
+-- Password-locked folders and files (synced between devices): uid of the item -> {"pw": hash, "c": created}.
+CREATE TABLE IF NOT EXISTS locks(uid TEXT PRIMARY KEY, rec TEXT NOT NULL);
 """
 
 # Tables that point at stored pieces; a "fix" (a piece re-uploaded after Discord lost it) updates them all.
@@ -724,6 +726,38 @@ class Index:
                     n += 1
         return n
 
+    # ------------------------------------------------------------ password locks
+    def locks_all(self):
+        with self.lock:
+            out = {}
+            for uid, rec in self.db.execute("SELECT uid, rec FROM locks").fetchall():
+                try:
+                    out[uid] = json.loads(rec)
+                except ValueError:
+                    pass
+            return out
+
+    def lock_put(self, uid, rec):
+        """Lock an item (or change its lock) here and on every device."""
+        with self.tx() as db:
+            db.execute("INSERT OR REPLACE INTO locks(uid, rec) VALUES(?, ?)", (uid, json.dumps(rec, separators=(",", ":"))))
+            self._queue(db, {"t": "lock", "u": uid, "r": rec})
+
+    def lock_drop(self, uid):
+        with self.tx() as db:
+            found = db.execute("DELETE FROM locks WHERE uid=?", (uid,)).rowcount > 0
+            self._queue(db, {"t": "unlock", "u": uid})
+        return found
+
+    def _op_lock(self, db, op, busy, changed):
+        rec = op["r"]
+        if not isinstance(rec, dict) or not rec.get("pw"):
+            raise ValueError("malformed lock")
+        db.execute("INSERT OR REPLACE INTO locks(uid, rec) VALUES(?, ?)", (str(op["u"]), json.dumps(rec, separators=(",", ":"))))
+
+    def _op_unlock(self, db, op, busy, changed):
+        db.execute("DELETE FROM locks WHERE uid=?", (str(op["u"]),))
+
     # ------------------------------------------------------------ share links
     def shares_all(self):
         with self.lock:
@@ -1018,7 +1052,7 @@ class Index:
         return self._free_name(db, parent, conflict_name(name, uid))
 
     # Operations a device running an older version skipped: replayed after an upgrade (see Journal.catch_up).
-    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge", "share", "unshare", "sharev")
+    EXTRA_OPS = ("par", "fix", "snap", "unsnap", "purge", "share", "unshare", "sharev", "lock", "unlock")
 
     def apply_ops(self, ops, cursor, busy=None, extras_only=False):
         """Apply journal operations (from message `cursor`) and advance the cursor.

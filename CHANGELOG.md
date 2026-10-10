@@ -3,6 +3,26 @@
 Every change to DiscordDrive gets a new version number and an entry here. The dashboard shows this
 list under the account menu, "What's new".
 
+## 0.11.0 (2026-10-09)
+
+- Password-locked folders and files. A locked item, and everything in it, is gone from the drive
+  letter and from the dashboard (files, search, gallery, deleted files, snapshots, shared links, the
+  log and upload progress) on every device, until its password is typed. Not even its name is shown.
+- Unlocking is by password alone: every lock with that password opens. In the dashboard (the padlock
+  at the top) it opens in that browser only; "Also show on the drive" or the `unlock` command shows it
+  on that device's drive letter. It locks again after 15 minutes without use (Settings, or
+  `config lock_timeout_minutes`), on sign-out, with "Lock again now" / `relock`, and when the drive
+  restarts.
+- Lock: right-click a folder or file in the dashboard, "Lock with a password", or `lock <path>`
+  (menu 7). Remove a lock with its password: "Remove the lock" or `unprotect <path>`; with a forgotten
+  password, `unprotect <path> --forgot` asks for the dashboard's password instead.
+- Wrong passwords are slowed down like wrong sign-ins. Browsers keep no copy of pictures and files from
+  locked folders. Folder sync keeps copying into a locked folder.
+- A lock is a gate, not a second encryption: locked files are encrypted with the drive's key like all
+  others, so it keeps out people using your computer, drive letter or dashboard, not somebody who has
+  your config file. Both devices need this version for a lock to apply on both.
+- Each sign-in to the dashboard is now its own session.
+
 ## 0.10.0 (2026-10-09)
 
 - Gallery: a new tab in the dashboard with every photo and video on the drive, newest first, month by
